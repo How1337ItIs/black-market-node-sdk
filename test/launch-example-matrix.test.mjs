@@ -89,7 +89,7 @@ function resolvedWithConversions(deadline = future()) {
     quote.conversion = quote.symbol === "WETH"
       ? { nativeWrap: true, nativeInputPerBuy: BigInt(fixture.buyAmountWei), buyCount }
       : { escrow, response: buildResponse({ quoteAsset: quote.tokenAddress,
-          amountIn: BigInt(fixture.buyAmountWei) * BigInt(buyCount), deadline }), nativeInputPerBuy: BigInt(fixture.buyAmountWei), buyCount };
+          amountIn: BigInt(fixture.buyAmountWei) * BigInt(buyCount), deadline }), nativeInputPerBuy: BigInt(fixture.buyAmountWei), buyCount, deadline };
     quote.usdSeed = quote.symbol === "WETH" ? validateApiWethUsdSeed({ snapshot: priceSnapshot(), apiUrl: fixture.apiUrl })
       : { source: "usd-peg", priceSource: "usd-peg", chainId: 4663, tokenAddress: usdg, tokenDecimals: 6, priceUsdX18: unit };
   }
@@ -121,7 +121,9 @@ test("native Swap funding aggregates quotes and exactly apportions protected out
   const usdgRow = result.funding.find((row) => row.asset.toLowerCase() === usdg.toLowerCase());
   assert.ok(wethRow && wethRow.kind === sdk.LifecycleFundingKind.NativeWrap && wethRow.inputAsset === weth && wethRow.amount === wethRow.inputAmount);
   assert.ok(usdgRow && usdgRow.kind === sdk.LifecycleFundingKind.Swap && usdgRow.inputAsset === zeroAddress);
-  const plan = { creator: fixture.creator, deadline: BigInt(quotes[1].conversion.response.expiresAt), markets, ...result };
+  // Plan execution deadline exceeds the conversion's own swap expiry (as in the
+  // runner: 3600s plan vs 300s conversion), satisfying deadline >= conversion.
+  const plan = { creator: fixture.creator, deadline: quotes[1].conversion.deadline + 3300n, markets, ...result };
   assertExampleConversionBindings({ plan, quotes });
   // WETH funding must stay NativeWrap/exact; each of these mutations must throw.
   for (const change of [{ kind: sdk.LifecycleFundingKind.Swap }, { inputAsset: zeroAddress }, { amount: 1n }, { data: "0x1234" }]) {

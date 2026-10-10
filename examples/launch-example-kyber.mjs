@@ -157,7 +157,7 @@ export async function buildExampleKyberConversions({ client, fixture, scenario, 
         slippageBps: EXAMPLE_CONVERSION_SLIPPAGE_BPS, deadline: deadline.toString() } });
     validateExampleKyberBuild({ response, quoteAsset: quote.tokenAddress, amountIn, escrow, deadline });
     quote.conversion = { apiOrigin: new URL(fixture.kyberApiUrl).origin, escrow, response, nativeInputPerBuy: BigInt(fixture.buyAmountWei), buyCount,
-      slippageBps: EXAMPLE_CONVERSION_SLIPPAGE_BPS };
+      slippageBps: EXAMPLE_CONVERSION_SLIPPAGE_BPS, deadline };
     artifacts.event("kyber-funding-built", { quoteAsset: quote.tokenAddress, conversion: quote.conversion });
   }
   const canonical = await client.request({ method: "eth_getBlockByNumber", params: [block.number, false] });
@@ -185,8 +185,12 @@ export function assertExampleConversionBindings({ plan, quotes }) {
       assert.equal(buys.reduce((sum, buy) => sum + buy.quoteAmountIn, 0n), funding.inputAmount, "Ordered native inputs exactly consume the wrap budget");
       continue;
     }
+    // The conversion's own swap expiry (not the plan's execution deadline) binds
+    // the reviewed build; it must remain within the plan's lifetime.
+    assert.ok(conversion.deadline !== undefined && conversion.deadline <= plan.deadline,
+      "Conversion swap expiry must not exceed the plan deadline");
     const minimum = validateExampleKyberBuild({ response: conversion.response, quoteAsset: quote.tokenAddress,
-      amountIn: uint(conversion.response.amountIn, "Reviewed native conversion input"), escrow: conversion.escrow, deadline: plan.deadline });
+      amountIn: uint(conversion.response.amountIn, "Reviewed native conversion input"), escrow: conversion.escrow, deadline: conversion.deadline });
     assert.equal(funding.kind, 2, "Funding remains Swap, never native-wrap or direct ERC20");
     assert.ok(same(funding.inputAsset, zeroAddress) && same(funding.target, conversion.response.transaction.to), "Exact native input and reviewed router");
     assert.equal(funding.inputAmount, BigInt(conversion.response.amountIn));

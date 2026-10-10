@@ -120,10 +120,26 @@ export async function discoverExampleQuoteOracles({ client, fixture, scenario, q
   let discovered;
   if (quotes.some((quote) => quote.symbol === "USDG")) {
     const topic = keccak256(toHex("OracleConfigRegistered(bytes32,uint24,uint16)"));
-    const logs = await client.request({ method: "eth_getLogs", params: [{
-      address: fixture.oracleFactory, topics: [topic], fromBlock: "0x0", toBlock: block.number,
-    }] });
-    if (!Array.isArray(logs)) throw exampleError("INVALID_RPC_RESPONSE", "Oracle factory registration logs must be an array");
+    // The RPC bounds eth_getLogs to 10,000,000 blocks per request; page the full
+    // canonical factory history in compliant windows rather than query from 0.
+    const window = 9_999_999n;
+    const head = BigInt(block.number);
+    const ranges = [];
+    for (let from = 0n; from <= head; from += window + 1n) {
+      ranges.push([from, from + window > head ? head : from + window]);
+    }
+    // Independent windows query in parallel; registration events are append-only
+    // and immutable, so order is restored by sorting on block/logIndex after merge.
+    const pages = await Promise.all(ranges.map(([from, to]) =>
+      client.request({ method: "eth_getLogs", params: [{
+        address: fixture.oracleFactory, topics: [topic], fromBlock: `0x${from.toString(16)}`, toBlock: `0x${to.toString(16)}`,
+      }] }).then((page) => {
+        if (!Array.isArray(page)) throw exampleError("INVALID_RPC_RESPONSE", "Oracle factory registration logs must be an array");
+        return page;
+      })));
+    const logs = pages.flat().sort((a, b) =>
+      Number(BigInt(a.blockNumber) - BigInt(b.blockNumber)) ||
+      Number(BigInt(a.logIndex ?? "0x0") - BigInt(b.logIndex ?? "0x0")));
     const registrations = new Map();
     for (const log of logs) {
       if (log.removed || !same(log.address, fixture.oracleFactory) || BigInt(log.blockNumber) > BigInt(block.number)) {
@@ -213,7 +229,9 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
   };
   const draft = {
     chainId: BigInt(fixture.chainId), orchestrator: fixture.orchestrator, creator: fixture.creator, nonce: identity.nonce,
-    token, funding: [], feeAssets: [], markets: [], buys: [], deadline: BigInt(Math.floor(Date.now() / 1000)) + 300n, executorFeeBps: 275,
+    // One-hour plan deadline: a transport failure plus resume must never strand a
+    // begun launch inside a too-tight window.
+    token, funding: [], feeAssets: [], markets: [], buys: [], deadline: BigInt(Math.floor(Date.now() / 1000)) + 3600n, executorFeeBps: 275,
   };
   // CREATE2 token identity is independent of finalized market config/hook salts.
   const predictedToken = await sdk.predictLifecycleToken({ client, plan: draft });
@@ -254,7 +272,10 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
     });
     return { adapterId: profile.registration.adapterId, profileId: profile.id, quoteAsset: quote.tokenAddress, tokenBudget, configVersion: spec.venue === "v4" ? profile.topology.configVersion : 1, config };
   });
-  await buildExampleKyberConversions({ client, fixture, scenario, markets, quotes, escrow, deadline: draft.deadline, sdk, block, artifacts, signal });
+  // The Kyber conversion carries its own near-term swap expiry (matching the app's
+  // launch-purpose window), decoupled from the plan's longer execution deadline.
+  const conversionDeadline = BigInt(Math.floor(Date.now() / 1000)) + 300n;
+  await buildExampleKyberConversions({ client, fixture, scenario, markets, quotes, escrow, deadline: conversionDeadline, sdk, block, artifacts, signal });
   const { buys, funding } = buildExampleBuysAndFunding({ sdk, fixture, scenario, markets, quotes, predictedToken });
   const feeAssets = [predictedToken, ...quotes.map((quote) => quote.tokenAddress)].sort((left, right) => BigInt(left) < BigInt(right) ? -1 : 1).map((asset) => {
     const rewardsBps = scenario.rewardMode === 0 ? 0 : 4000;
