@@ -71,4 +71,13 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Publish with provenance
-        run: npm publish --provenance --access public
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          # npm refuses prerelease versions without a dist-tag; publish them to
+          # `next` so they never become the default `latest` install.
+          if [[ "$VERSION" == *-* ]]; then
+            npm publish --provenance --access public --tag next
+          else
+            npm publish --provenance --access public
+          fi
