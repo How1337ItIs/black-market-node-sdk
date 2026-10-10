@@ -255,8 +255,8 @@ Existing invocation-local reuse for eligible fixed reads is unchanged.
 
 Each entry group owns one pinned block **number and hash**. Before session
 observations can be consumed, the invocation must read a fresh canonical head and
-chain identity. A changed head hash (including a same-height reorg), number,
-chain/source or request implementation clears the old group before use. Exact
+chain identity. A changed head hash (including a same-height reorg), number or
+chain identity clears the old group before use. Exact
 wire parameters also participate in identity; changed caller, target, calldata,
 value, gas or constructor economics cannot hit another request's entry.
 Externally supplied pins without a fresh invocation-owned head bypass the session.
@@ -264,6 +264,13 @@ Only successfully settled wire reads are shared; rejected requests, in-flight
 promises and obsolete completions after closure/invalidation are not retained.
 Final canonical/reorg and chain checks remain live and clear the session on
 identity failure.
+
+The caller-owned session is the cross-invocation identity boundary, not the
+reader object or `request` function. Recreated per-operation readers may share
+it while keeping their own transport cancellation signal. They still acquire
+fresh head/chain observations and run their own live requests; in-flight work
+and cancellation state are never shared. Do not route concurrent operation
+signals through one mutable global reader.
 
 The caller **must call `invalidate()` on wallet/chain switches and after every
 confirmed transaction**. It discards the pin and all memoized values immediately,

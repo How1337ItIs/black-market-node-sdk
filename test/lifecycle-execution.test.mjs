@@ -2619,16 +2619,26 @@ test("in-flight account state returns waiting before applying unstarted topology
   }
 });
 
-test("sequential admitted planLaunch RPC counts decrease only with the static session fast path", async (t) => {
+test("sequential admitted planLaunch RPC counts decrease across recreated per-signal readers only with the static session fast path", async (t) => {
   for (const batching of [false, true]) {
     for (const enabled of [false, true]) {
       const plan = makePlan({ chainId: 4663n });
       const client = clientFor(plan, { poster: 500n });
       client.supportsReadBatching = batching;
       if (enabled) client.sessionCache = createLifecycleSessionCache();
-      const options = { client, plan, account: ACCOUNT, mode: "staged" };
-      const first = await planLaunch(options), boundary = client.captured.length;
-      const second = await planLaunch(options), secondReads = client.captured.length - boundary;
+      const reader = (signal) => ({
+        supportsReadBatching: batching, sessionCache: client.sessionCache,
+        async request(args) {
+          signal.throwIfAborted();
+          const result = await client.request(args);
+          signal.throwIfAborted();
+          return result;
+        },
+      });
+      const firstSignal = new AbortController().signal, secondSignal = new AbortController().signal;
+      const options = { plan, account: ACCOUNT, mode: "staged" };
+      const first = await planLaunch({ ...options, client: reader(firstSignal), signal: firstSignal }), boundary = client.captured.length;
+      const second = await planLaunch({ ...options, client: reader(secondSignal), signal: secondSignal }), secondReads = client.captured.length - boundary;
       assert.equal(first.simulation.admitted, true);
       assert.deepEqual(second, first, "Static reuse cannot change commitments, commands, fees or proof outcomes");
       if (enabled) assert.ok(secondReads < boundary);
@@ -2641,6 +2651,11 @@ test("sequential admitted planLaunch RPC counts decrease only with the static se
       }
       assert.equal(client.captured.slice(boundary).filter((row) => row.method === "eth_simulateV1").length, 3,
         "The native Nitro probe, permissive measurement and validated replay each still execute");
+      const aborted = new AbortController();
+      aborted.abort();
+      const afterSecond = client.captured.length;
+      await assert.rejects(planLaunch({ ...options, client: reader(aborted.signal) }), { name: "AbortError" });
+      assert.equal(client.captured.length, afterSecond, "A warmed session cannot bypass a new reader's aborted transport");
       t.diagnostic(`admitted Nitro fixture batching=${batching}, session=${enabled}: first=${boundary} RPC reads, second=${secondReads} RPC reads`);
     }
   }

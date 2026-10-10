@@ -11,8 +11,6 @@ const diagnosticRpcMethods: Record<string, true> = {
 };
 
 type SessionReadGroup = {
-  source: LifecycleRpcClient;
-  request: LifecycleRpcClient["request"];
   chainId?: bigint;
   block: Readonly<Pick<LifecycleBlock, "number" | "hash">>;
   values: Map<string, Hex>;
@@ -29,24 +27,23 @@ class SessionLifecycleCache implements LifecycleSessionCache {
     this.#group = undefined;
   }
 
-  pin(source: LifecycleRpcClient, block: LifecycleBlock, chainId?: bigint): SessionReadGroup {
+  pin(block: LifecycleBlock, chainId?: bigint): SessionReadGroup {
     const group = this.#group;
-    if (group !== undefined && group.source === source && group.request === source.request &&
-      group.block.number === block.number && group.block.hash.toLowerCase() === block.hash.toLowerCase() &&
+    if (group !== undefined && group.block.number === block.number && group.block.hash.toLowerCase() === block.hash.toLowerCase() &&
       (chainId === undefined || group.chainId === undefined || group.chainId === chainId)) {
       if (chainId !== undefined) group.chainId = chainId;
       return group;
     }
     this.invalidate();
     return this.#group = {
-      source, request: source.request, chainId,
+      chainId,
       block: Object.freeze({ number: block.number, hash: block.hash }),
       values: new Map(),
     };
   }
 
   isCurrent(group: SessionReadGroup, block: LifecycleBlock): boolean {
-    return this.#group === group && group.request === group.source.request &&
+    return this.#group === group &&
       group.block.number === block.number && group.block.hash.toLowerCase() === block.hash.toLowerCase();
   }
 
@@ -132,7 +129,7 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
     if (this.session === undefined) return;
     this.assertOpen();
     if (latest) {
-      this.sessionGroup = this.session.pin(this.source, block, this.observedChainId);
+      this.sessionGroup = this.session.pin(block, this.observedChainId);
     } else if (this.sessionGroup?.block.number === block.number && this.sessionGroup.block.hash.toLowerCase() !== block.hash.toLowerCase()) {
       this.invalidateSession();
     }

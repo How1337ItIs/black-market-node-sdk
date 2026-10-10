@@ -1191,7 +1191,7 @@ test("closed owners cannot expose retained constructor hits or concurrent certif
   assert.equal((await readLifecycleProfiles({ client: profileSource, orchestrator: CORE, profileIds: [profileSource.id] }, block))[0].admitted, true);
 });
 
-test("session static reads bind the complete wire request, source and fresh canonical block", async () => {
+test("session static reads bind the complete wire request and fresh canonical identity across reader wrappers", async () => {
   const cache = createLifecycleSessionCache(), captured = [];
   let canonical = block;
   const source = { sessionCache: cache, async request({ method, params = [] }) {
@@ -1236,7 +1236,14 @@ test("session static reads bind the complete wire request, source and fresh cano
     await readLifecycleChainId(client);
     await lifecycleStaticRpc(client, "eth_call", [fields, toHex(pin.number)], pin);
   });
-  assert.equal(captured.filter((row) => row.method === "eth_call").length, 10, "A different source cannot borrow the same caller-owned cache's observations");
+  assert.equal(captured.filter((row) => row.method === "eth_call").length, 9, "A recreated reader can reuse the same caller-owned session at the same chain and canonical pin");
+  const switched = { sessionCache: cache, request: (args) => args.method === "eth_chainId" ? Promise.resolve("0x1238") : source.request(args) };
+  await withLifecycleReadClient(switched, async (client) => {
+    const pin = await readLifecycleBlock(client);
+    await readLifecycleChainId(client);
+    await lifecycleStaticRpc(client, "eth_call", [fields, toHex(pin.number)], pin);
+  });
+  assert.equal(captured.filter((row) => row.method === "eth_call").length, 10, "A different fresh chain identity cannot hit even when the block hash and wire parameters match");
 });
 
 test("session reuse requires a fresh head and never retains live or write-adjacent read classes", async () => {
