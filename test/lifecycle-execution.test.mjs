@@ -4,7 +4,7 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 import { decodeFunctionData, encodeAbiParameters, encodeErrorResult, encodeEventTopics, encodeFunctionData, encodeFunctionResult, keccak256, parseAbi, stringToHex, toHex, zeroAddress, zeroHash } from "viem";
 
 const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
-const { ABYSS_LIFECYCLE_CONFIG_SCHEMA, abyssLifecycleAdapterAbi, buildNextTransaction, decodeAbyssLifecycleMarketConfig, encodeAbyssLifecycleMarketConfig, fixedFeePoolHookV1Abi, getKnownLifecycleDeployment, getKnownLifecycleProfile, hashLaunchIdentity, hashLaunchPlan, KnownLifecycleProfile, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleFundingEscrowAbi, lifecycleRegistryAbi, LifecyclePhase, LIFECYCLE_REQUIRED_CAPABILITIES, LIFECYCLE_MULTI_POSITION_CAPABILITY, planLaunch, prepareAndPlanLifecycleLaunch, readLifecycleProfiles, simulateLaunchPlan } = await import(sdkPath);
+const { ABYSS_LIFECYCLE_CONFIG_SCHEMA, abyssLifecycleAdapterAbi, buildNextTransaction, createLifecycleSessionCache, decodeAbyssLifecycleMarketConfig, encodeAbyssLifecycleMarketConfig, fixedFeePoolHookV1Abi, getKnownLifecycleDeployment, getKnownLifecycleProfile, hashLaunchIdentity, hashLaunchPlan, KnownLifecycleProfile, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleFundingEscrowAbi, lifecycleRegistryAbi, LifecyclePhase, LIFECYCLE_REQUIRED_CAPABILITIES, LIFECYCLE_MULTI_POSITION_CAPABILITY, planLaunch, prepareAndPlanLifecycleLaunch, readLifecycleProfiles, simulateLaunchPlan } = await import(sdkPath);
 const { prepareLaunchSimulation, simulateLaunchTransactions } = await import(sdkPath.replace("index.", "simulation."));
 const { readLifecycleBlock, withLifecycleReadClient } = await import(sdkPath.replace("index.", "rpc."));
 const address = (n) => toHex(BigInt(n), { size: 20 });
@@ -65,7 +65,7 @@ function clientFor(plan, settings = {}) {
     captured.push({ method, params });
     if (["eth_sendTransaction", "eth_sendRawTransaction", "evm_snapshot", "anvil_reset"].includes(method)) assert.fail("Source and submission admission must remain read-only");
     if (method === "eth_chainId") return toHex(chainShifted ? plan.chainId + 1n : plan.chainId);
-    if (method === "eth_getBlockByNumber") return { number: toHex(42n), hash: reorged ? FOREIGN_HASH : HASH, timestamp: "0x64", gasLimit: toHex(state.headerGas ?? (plan.chainId === 4663n ? 1n << 50n : 30_000_000n)), baseFeePerGas: toHex(state.baseFeePerGas ?? state.gasPrice / 2n) };
+    if (method === "eth_getBlockByNumber") return { number: toHex(42n), hash: reorged ? FOREIGN_HASH : state.blockHash ?? HASH, timestamp: "0x64", gasLimit: toHex(state.headerGas ?? (plan.chainId === 4663n ? 1n << 50n : 30_000_000n)), baseFeePerGas: toHex(state.baseFeePerGas ?? state.gasPrice / 2n) };
     if (method === "eth_getCode") return typeof state.codeFor === "function" ? state.codeFor(params[0]) : params[0].toLowerCase() === ACCOUNT.toLowerCase() ? state.accountCode ?? "0x" : CODE;
     if (method === "eth_getBalance") return toHex(state.balance);
     if (method === "eth_getTransactionCount") return "0x0";
@@ -2617,4 +2617,99 @@ test("in-flight account state returns waiting before applying unstarted topology
     await assert.rejects(buildNextTransaction({ client, planned }), { code: "UNCONFIRMED_STATE" });
     assert.equal(economicRequests(source).length, 0, "Waiting never authorizes execution or a changed commitment");
   }
+});
+
+test("sequential admitted planLaunch RPC counts decrease only with the static session fast path", async (t) => {
+  for (const batching of [false, true]) {
+    for (const enabled of [false, true]) {
+      const plan = makePlan({ chainId: 4663n });
+      const client = clientFor(plan, { poster: 500n });
+      client.supportsReadBatching = batching;
+      if (enabled) client.sessionCache = createLifecycleSessionCache();
+      const options = { client, plan, account: ACCOUNT, mode: "staged" };
+      const first = await planLaunch(options), boundary = client.captured.length;
+      const second = await planLaunch(options), secondReads = client.captured.length - boundary;
+      assert.equal(first.simulation.admitted, true);
+      assert.deepEqual(second, first, "Static reuse cannot change commitments, commands, fees or proof outcomes");
+      if (enabled) assert.ok(secondReads < boundary);
+      else assert.equal(secondReads, boundary);
+      for (const method of ["eth_chainId", "eth_getBlockByNumber", "eth_getTransactionCount", "eth_getBalance", "eth_gasPrice", "eth_simulateV1"]) {
+        const firstCount = client.captured.slice(0, boundary).filter((row) => row.method === method).length;
+        const secondCount = client.captured.slice(boundary).filter((row) => row.method === method).length;
+        assert.ok(firstCount > 0);
+        assert.equal(secondCount, firstCount, `${method} must remain live per invocation`);
+      }
+      assert.equal(client.captured.slice(boundary).filter((row) => row.method === "eth_simulateV1").length, 3,
+        "The native Nitro probe, permissive measurement and validated replay each still execute");
+      t.diagnostic(`admitted Nitro fixture batching=${batching}, session=${enabled}: first=${boundary} RPC reads, second=${secondReads} RPC reads`);
+    }
+  }
+});
+
+test("prepare, simulate and build-next share static observations but retain live funding, account and fee authority", async () => {
+  const plan = knownAbyssPlan(), client = clientFor(plan, { poster: 500n }), events = [];
+  client.supportsReadBatching = true;
+  client.sessionCache = createLifecycleSessionCache();
+  client.onDiagnostic = (event) => events.push(event);
+  const prepared = await prepareAndPlanLifecycleLaunch({ client, plan, account: ACCOUNT, mode: "staged" });
+  assert.equal(prepared.simulation.admitted, true);
+  for (const operation of [
+    () => simulateLaunchPlan({ client, planned: prepared }),
+    () => buildNextTransaction({ client, planned: prepared }),
+  ]) {
+    const boundary = client.captured.length;
+    const result = await operation();
+    assert.ok(result?.admitted === true || result?.admission?.admitted === true);
+    const requests = client.captured.slice(boundary);
+    assert.equal(requests.filter((row) => row.method === "eth_call" && [ARB_SYS, GAS_INFO, NODE_INTERFACE].includes(row.params[0].to.toLowerCase())).length, 0);
+    assert.equal(requests.filter((row) => row.method === "eth_simulateV1").length, 3);
+    assert.ok(requests.some((row) => row.method === "eth_getCode" && row.params[0].toLowerCase() === ACCOUNT.toLowerCase()), "Account code is not static factory code");
+    assert.ok(requests.some((row) => row.method === "eth_getBalance"));
+    assert.ok(requests.some((row) => row.method === "eth_getTransactionCount" && row.params[1] === "pending"));
+    assert.ok(requests.some((row) => row.method === "eth_gasPrice"));
+  }
+  assert.equal(events.filter((event) => event.stage === "session-cache" && event.phase === "success").length, 3);
+  client.state.allowance = 0n;
+  client.state.gasPrice = 3n;
+  const refreshed = await planLaunch({ client, plan, account: ACCOUNT, mode: "staged" });
+  assert.equal(refreshed.simulation.admitted, true);
+  assert.equal(refreshed.transactions[0].kind, "approve", "Changed live allowance must affect the next command");
+  assert.ok(refreshed.transactions.every((transaction) => transaction.gasPrice === 3n));
+  client.state.tokenBalance = 0n;
+  const refused = await planLaunch({ client, plan, account: ACCOUNT, mode: "staged" });
+  assert.equal(refused.prerequisites[0].inputBalance, 0n, "ERC20 balances are never session observations");
+  assert.equal(refused.simulation.admitted, false, "Static hits cannot substitute for live funding/execution proof");
+});
+
+test("a fresh same-height canonical hash drops Nitro and registry observations before planning", async () => {
+  const plan = makePlan({ chainId: 4663n }), client = clientFor(plan), events = [];
+  client.sessionCache = createLifecycleSessionCache();
+  client.onDiagnostic = (event) => events.push(event);
+  const first = await planLaunch({ client, plan, account: ACCOUNT, mode: "staged" });
+  assert.equal(first.simulation.admitted, true);
+  const boundary = client.captured.length;
+  client.state.blockHash = FOREIGN_HASH;
+  client.state.rawVersion = 106n;
+  client.state.txCompute = 31_000_000n;
+  client.state.blockCompute = 63_000_000n;
+  const second = await planLaunch({ client, plan, account: ACCOUNT, mode: "staged" });
+  assert.equal(second.simulation.admitted, true);
+  assert.equal(second.simulation.blockHash, FOREIGN_HASH);
+  assert.equal(second.simulation.limits.arbOSVersion, 51n);
+  assert.equal(second.simulation.limits.maxTxComputeGas, 31_000_000n);
+  assert.equal(second.simulation.limits.maxBlockComputeGas, 63_000_000n);
+  assert.equal(client.captured.length - boundary, boundary);
+  const summaries = events.filter((event) => event.stage === "session-cache" && event.phase === "success");
+  assert.equal(summaries[1].hits, 0);
+  assert.ok(summaries[1].misses > 0);
+  assert.deepEqual(client.sessionCache.block, { number: 42n, hash: FOREIGN_HASH });
+});
+
+test("retained static observations never bypass final canonical reorg checks", async () => {
+  const plan = makePlan({ chainId: 4663n }), client = clientFor(plan);
+  client.sessionCache = createLifecycleSessionCache();
+  assert.equal((await planLaunch({ client, plan, account: ACCOUNT, mode: "staged" })).simulation.admitted, true);
+  client.state.reorg = true;
+  await assert.rejects(planLaunch({ client, plan, account: ACCOUNT, mode: "staged" }), { code: "STATE_REORGED" });
+  assert.equal(client.sessionCache.block, undefined, "Canonical failure clears retained static observations immediately");
 });

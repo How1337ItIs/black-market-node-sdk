@@ -7,13 +7,13 @@ import { concatHex, decodeFunctionData, encodeAbiParameters, encodeFunctionData,
 const sourceTests = process.env.SDK_SOURCE_TEST === "1";
 const sdkPath = sourceTests ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
 const rpcPath = sourceTests ? "../src/lifecycle/rpc.ts" : "../dist/lifecycle/rpc.js";
-const { decodePoolBoundV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, fixedFeePoolHookV1Abi, fixedFeePoolHookConfigV6Abi,
+const { createLifecycleSessionCache, decodePoolBoundV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, fixedFeePoolHookV1Abi, fixedFeePoolHookConfigV6Abi,
   hashLaunchBounds, hashLaunchDependencies, hashLaunchIdentity, hashLaunchPlan, hashLifecycleProfile, launchLifecycleAbi,
-  lifecycleAdapterAbi, lifecycleFundingEscrowAbi, lifecycleOracleFactoryAbi, lifecycleRegistryAbi, lifecycleV4LockerAbi,
+  lifecycleAdapterAbi, lifecycleErc20Abi, lifecycleFundingEscrowAbi, lifecycleOracleFactoryAbi, lifecycleRegistryAbi, lifecycleV4LockerAbi,
   poolFeeCollectorFactoryV1Abi, poolFeeCollectorFactoryConfigV6Abi, poolHookDeployerV1Abi, poolHookDeployerConfigV6Abi, poolMarketAdapterV1Abi, parseLaunchPlan, planLaunch,
   prepareAndPlanLifecycleLaunch, minePoolBoundHookSalt, readLaunchProgress, readPoolBoundHookDeployment, buildPoolBoundHookDeploymentTransaction, LIFECYCLE_MULTI_POSITION_CAPABILITY,
   LIFECYCLE_REQUIRED_CAPABILITIES, readLifecycleProfiles, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V5, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V6 } = await import(sdkPath);
-const { assertLifecycleBlock, lifecyclePinnedRpc, lifecycleRpc, readLifecycleContract, withLifecycleReadClient } = await import(rpcPath);
+const { assertLifecycleBlock, lifecyclePinnedRpc, lifecycleStaticRpc, lifecycleRpc, readLifecycleBlock, readLifecycleChainId, readLifecycleContract, readLifecycleStaticContract, withLifecycleReadClient } = await import(rpcPath);
 const address = (value) => toHex(BigInt(value), { size: 20 });
 const hash = (value) => toHex(BigInt(value), { size: 32 });
 const CORE = address(0xf0), REGISTRY = address(0xf1), ADAPTER = address(0xf2);
@@ -1191,3 +1191,250 @@ test("closed owners cannot expose retained constructor hits or concurrent certif
   assert.equal((await readLifecycleProfiles({ client: profileSource, orchestrator: CORE, profileIds: [profileSource.id] }, block))[0].admitted, true);
 });
 
+test("session static reads bind the complete wire request, source and fresh canonical block", async () => {
+  const cache = createLifecycleSessionCache(), captured = [];
+  let canonical = block;
+  const source = { sessionCache: cache, async request({ method, params = [] }) {
+    captured.push({ method, params });
+    if (method === "eth_chainId") return "0x1237";
+    if (method === "eth_getBlockByNumber") return { number: toHex(canonical.number), hash: canonical.hash, timestamp: "0x64", gasLimit: toHex(canonical.gasLimit) };
+    assert.equal(method, "eth_call");
+    return encodeAbiParameters([{ type: "uint256" }], [BigInt(captured.filter((row) => row.method === "eth_call").length)]);
+  } };
+  const fields = { to: CORE, from: address(1), data: encodeFunctionData({ abi: echoAbi, functionName: "echo" }), value: "0x0", gas: "0x10000" };
+  const read = (overrides = {}) => withLifecycleReadClient(source, async (client) => {
+    const pin = await readLifecycleBlock(client);
+    await readLifecycleChainId(client);
+    const request = [{ ...fields, ...overrides }, toHex(pin.number)];
+    const first = await lifecycleStaticRpc(client, "eth_call", request, pin);
+    assert.equal(await lifecycleStaticRpc(client, "eth_call", request, pin), first);
+    return first;
+  });
+  assert.equal(cache.block, undefined);
+  const first = await read();
+  assert.equal(await read(), first);
+  assert.equal(captured.filter((row) => row.method === "eth_call").length, 1);
+  assert.deepEqual(cache.block, { number: block.number, hash: block.hash });
+  assert.ok(Object.isFrozen(cache.block));
+  for (const overrides of [{ from: address(2) }, { to: REGISTRY }, { data: "0x12345678" }, { value: "0x1" }, { gas: "0x10001" }]) {
+    assert.notEqual(await read(overrides), first, "Every complete request field participates in session identity");
+  }
+  assert.equal(captured.filter((row) => row.method === "eth_call").length, 6);
+  canonical = { ...block, hash: hash(43) };
+  assert.notEqual(await read(), first, "A same-height reorg drops static authority before use");
+  assert.deepEqual(cache.block, { number: block.number, hash: hash(43) });
+  canonical = { ...block, number: 43n, hash: hash(44) };
+  await read();
+  assert.equal(captured.filter((row) => row.method === "eth_call").length, 8);
+  cache.invalidate();
+  assert.equal(cache.block, undefined);
+  await read();
+  assert.equal(captured.filter((row) => row.method === "eth_call").length, 9);
+  const other = { sessionCache: cache, request: (args) => source.request(args) };
+  await withLifecycleReadClient(other, async (client) => {
+    const pin = await readLifecycleBlock(client);
+    await readLifecycleChainId(client);
+    await lifecycleStaticRpc(client, "eth_call", [fields, toHex(pin.number)], pin);
+  });
+  assert.equal(captured.filter((row) => row.method === "eth_call").length, 10, "A different source cannot borrow the same caller-owned cache's observations");
+});
+
+test("session reuse requires a fresh head and never retains live or write-adjacent read classes", async () => {
+  const captured = [], cache = createLifecycleSessionCache();
+  const source = { sessionCache: cache, async request({ method, params = [] }) {
+    captured.push({ method, params });
+    if (method === "eth_getBlockByNumber") return { number: "0x2a", hash: block.hash, timestamp: "0x64", gasLimit: toHex(block.gasLimit) };
+    if (method === "eth_chainId") return "0x1237";
+    if (method === "eth_call") return encodeAbiParameters([{ type: "uint256" }], [1n]);
+    return "0x0";
+  } };
+  for (let invocation = 0; invocation < 2; invocation += 1) await withLifecycleReadClient(source, async (client) => {
+    await readLifecycleChainId(client);
+    await readLifecycleStaticContract(client, CORE, echoAbi, "echo", [], block);
+  });
+  assert.equal(cache.block, undefined, "An externally supplied pin is not a fresh canonical head observation");
+  assert.equal(captured.filter((row) => row.method === "eth_call").length, 2);
+  captured.length = 0;
+  const liveRequests = [
+    ["eth_getBlockByNumber", ["latest", false]], ["eth_getBlockByHash", [block.hash, false]],
+    ["eth_getTransactionReceipt", [hash(1)]], ["eth_getTransactionByHash", [hash(1)]],
+    ["eth_getTransactionCount", [address(1), "pending"]], ["eth_getTransactionCount", [address(1), "0x2a"]],
+    ["eth_estimateGas", [{ from: address(1), to: CORE, data: "0x" }, "latest"]],
+    ["eth_simulateV1", [{ blockStateCalls: [] }, "0x2a"]], ["eth_gasPrice", []],
+    ["eth_sendRawTransaction", ["0x1234"]],
+  ];
+  const fixedLiveRequests = [
+    ["eth_getBalance", [address(1), "0x2a"]], ["eth_getCode", [address(1), "0x2a"]],
+    ...[["balanceOf", [address(1)]], ["allowance", [address(1), CORE]]].map(([functionName, args]) =>
+      ["eth_call", [{ to: address(2), data: encodeFunctionData({ abi: lifecycleErc20Abi, functionName, args }) }, "0x2a"]]),
+    ["eth_call", [{ to: CORE, data: encodeFunctionData({ abi: launchLifecycleAbi, functionName: "tokenFactory" }) }, "0x2a"]],
+    ["eth_call", [{ to: CORE, data: encodeFunctionData({ abi: launchLifecycleAbi, functionName: "readLaunchProgress", args: [hash(1)] }) }, "0x2a"]],
+  ];
+  for (let invocation = 0; invocation < 2; invocation += 1) await withLifecycleReadClient(source, async (client) => {
+    await readLifecycleBlock(client);
+    await readLifecycleChainId(client);
+    for (const [method, params] of liveRequests) {
+      await lifecycleRpc(client, method, params);
+      await lifecycleRpc(client, method, params);
+    }
+    for (const [method, params] of fixedLiveRequests) {
+      await lifecyclePinnedRpc(client, method, params, block);
+      await lifecyclePinnedRpc(client, method, params, block);
+    }
+    await readLifecycleContract(client, CORE, echoAbi, "change", [], block);
+    await readLifecycleContract(client, CORE, echoAbi, "change", [], block);
+  });
+  for (const [method, params] of liveRequests) {
+    const count = captured.filter((row) => row.method === method && JSON.stringify(row.params) === JSON.stringify(params)).length;
+    assert.equal(count, method === "eth_getBlockByNumber" ? 6 : 4, `${method} remains live in both invocations`);
+  }
+  for (const [method, params] of fixedLiveRequests) {
+    assert.equal(captured.filter((row) => row.method === method && JSON.stringify(row.params) === JSON.stringify(params)).length, 2,
+      `${method} retains only existing invocation-local reuse`);
+  }
+  assert.equal(captured.filter((row) => row.method === "eth_call" && row.params[0].data === encodeFunctionData({ abi: echoAbi, functionName: "change" })).length, 4);
+});
+
+test("session cache emits count-only per-invocation diagnostics and isolates observer failures", async () => {
+  const source = boundProfileClient(), events = [];
+  source.sessionCache = createLifecycleSessionCache();
+  source.onDiagnostic = (event) => events.push(event);
+  for (let invocation = 0; invocation < 2; invocation += 1) {
+    const [profile] = await readLifecycleProfiles({ client: source, orchestrator: CORE, profileIds: [source.id, source.id] });
+    assert.equal(profile.admitted, true);
+  }
+  const summaries = events.filter((event) => event.stage === "session-cache" && event.phase === "success");
+  assert.equal(summaries.length, 2, "Nested profile continuations report one summary per public invocation");
+  assert.equal(summaries[0].hits, 0);
+  assert.ok(summaries[0].misses > 0 && summaries[0].reuses > 0);
+  assert.ok(summaries[1].hits > 0 && summaries[1].reuses > 0);
+  assert.equal(summaries[1].misses, 0);
+  assert.equal(events.filter((event) => event.stage === "session-cache" && event.phase === "start").length, 2);
+  const allowed = ["stage", "phase", "durationMs", "queueMs", "requestId", "method", "hits", "misses", "reuses"];
+  assert.ok(events.every((event) => Object.keys(event).every((key) => allowed.includes(key))));
+  for (const privateValue of [CORE, ADAPTER, REGISTRY, source.id, CODE, block.hash]) assert.equal(JSON.stringify(events).includes(privateValue), false);
+  for (const onDiagnostic of [
+    () => { throw new Error("Private observer error"); },
+    async () => { throw new Error("Private observer rejection"); },
+  ]) {
+    source.onDiagnostic = onDiagnostic;
+    assert.equal((await readLifecycleProfiles({ client: source, orchestrator: CORE, profileIds: [source.id] }))[0].admitted, true);
+    await nextTurn();
+  }
+  source.onDiagnostic = (event) => events.push(event);
+  source.state.chainDrift = true;
+  await assert.rejects(withLifecycleReadClient(source, async (client) => {
+    await readLifecycleBlock(client);
+    await assertLifecycleBlock(client, block, 4663n);
+  }), { code: "CHAIN_MISMATCH" });
+  assert.ok(events.some((event) => event.stage === "session-cache" && event.phase === "failure"));
+  assert.equal(source.sessionCache.block, undefined);
+});
+
+test("session misses evict rejected reads and invalidation cannot install an older in-flight result", async () => {
+  const cache = createLifecycleSessionCache(), failure = new Error("Unavailable private static response");
+  let calls = 0, fail = true, release, markStarted;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const source = { sessionCache: cache, supportsReadBatching: true, async request({ method }) {
+    if (method === "eth_chainId") return "0x1237";
+    if (method === "eth_getBlockByNumber") return { number: "0x2a", hash: block.hash, timestamp: "0x64", gasLimit: toHex(block.gasLimit) };
+    assert.equal(method, "eth_call");
+    calls += 1;
+    if (fail) { fail = false; throw failure; }
+    const value = calls;
+    if (value === 2) { markStarted(); await gate; }
+    return encodeFunctionResult({ abi: echoAbi, functionName: "echo", result: BigInt(value) });
+  } };
+  const read = () => withLifecycleReadClient(source, async (client) => {
+    const pin = await readLifecycleBlock(client);
+    await readLifecycleChainId(client);
+    return readLifecycleStaticContract(client, CORE, echoAbi, "echo", [], pin);
+  });
+  await assert.rejects(read(), (error) => error === failure);
+  const older = read();
+  await started;
+  cache.invalidate();
+  assert.equal(await read(), 3n);
+  release();
+  assert.equal(await older, 2n);
+  assert.equal(await read(), 3n, "The pre-invalidation response cannot overwrite the new entry group");
+  assert.equal(calls, 3);
+});
+
+test("session cache discards late responses from a closed read owner", async () => {
+  const cache = createLifecycleSessionCache();
+  let release, markStarted, pendingRead, calls = 0;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const source = { sessionCache: cache, async request({ method }) {
+    if (method === "eth_chainId") return "0x1237";
+    if (method === "eth_getBlockByNumber") return { number: "0x2a", hash: block.hash, timestamp: "0x64", gasLimit: toHex(block.gasLimit) };
+    calls += 1;
+    if (calls === 1) { markStarted(); await gate; }
+    return encodeFunctionResult({ abi: echoAbi, functionName: "echo", result: 44n });
+  } };
+  const failure = new Error("Required sibling read failed");
+  await assert.rejects(withLifecycleReadClient(source, async (client) => {
+    const pin = await readLifecycleBlock(client);
+    await readLifecycleChainId(client);
+    pendingRead = readLifecycleStaticContract(client, CORE, echoAbi, "echo", [], pin).catch((error) => error);
+    await started;
+    throw failure;
+  }), (error) => error === failure);
+  release();
+  assert.equal((await pendingRead).code, "READ_SCOPE_CLOSED");
+  await withLifecycleReadClient(source, async (client) => {
+    const pin = await readLifecycleBlock(client);
+    await readLifecycleChainId(client);
+    assert.equal(await readLifecycleStaticContract(client, CORE, echoAbi, "echo", [], pin), 44n);
+  });
+  assert.equal(calls, 2);
+});
+
+test("sequential bound planLaunch invocations reuse static graph, oracle, chunk and constructor reads only when opted in", async (t) => {
+  for (const enabled of [false, true]) {
+    const source = await boundPlanningClient(false);
+    source.state.fixedHead = 42n;
+    if (enabled) source.sessionCache = createLifecycleSessionCache();
+    const options = { client: source, plan: source.plan, account: source.plan.creator, mode: "staged", allowTopologyGaps: true };
+    const first = await planLaunch(options), boundary = source.captured.length;
+    const second = await planLaunch(options), secondReads = source.captured.length - boundary;
+    assert.deepEqual(second, first);
+    if (enabled) assert.ok(secondReads < boundary);
+    else assert.equal(secondReads, boundary);
+    for (const getter of ["arbOSVersion", "getMaxTxGasLimit", "getMaxBlockGasLimit", "requireEligible", "profile", "adapter",
+      "profileTopology", "profileEnvelope", "creationCodeHash", "codeChunk0", "codeChunk1", "oracleConfigs",
+      "poolBoundHookParameters", "hookDeploymentMetadata", "initCodeHash", "predict"]) {
+      const firstCount = source.captured.slice(0, boundary).filter((row) => row.functionName === getter).length;
+      const secondCount = source.captured.slice(boundary).filter((row) => row.functionName === getter).length;
+      assert.ok(firstCount > 0, `Fixture exercises ${getter}`);
+      assert.equal(secondCount, enabled ? 0 : firstCount, `${getter} follows the static session policy`);
+    }
+    for (const target of [source.source.graph.codeChunk0, source.source.graph.codeChunk1]) {
+      assert.equal(source.captured.slice(boundary).filter((row) => row.method === "eth_getCode" && row.params[0].toLowerCase() === target.toLowerCase()).length,
+        enabled ? 0 : 1, "Both reviewed creation-code chunks are covered");
+    }
+    for (const getter of ["predictToken", "tokenFactory", "readLaunchProgress", "registry", "core"]) {
+      assert.ok(source.captured.slice(boundary).some((row) => row.functionName === getter), `${getter} domain/progress reads stay live`);
+    }
+    t.diagnostic(`bound static fixture session=${enabled}: first=${boundary} RPC reads, second=${secondReads} RPC reads`);
+  }
+});
+
+test("combined bound preparation retains only same-block static reads across complete invocations", async () => {
+  const source = await boundPlanningClient(false);
+  source.state.fixedHead = 42n;
+  source.sessionCache = createLifecycleSessionCache();
+  const options = { client: source, plan: source.plan, account: source.plan.creator, mode: "staged" };
+  const first = await prepareAndPlanLifecycleLaunch(options), boundary = source.captured.length;
+  const second = await prepareAndPlanLifecycleLaunch(options);
+  assert.deepEqual(second, first);
+  assert.ok(source.captured.length - boundary < boundary);
+  assert.deepEqual(source.sessionCache.block, { number: 42n, hash: hash(42) });
+  assert.equal(source.captured.slice(boundary).filter((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "latest").length, 2,
+    "Draft construction and final execution still acquire independent fresh heads");
+  for (const getter of ["requireEligible", "creationCodeHash", "oracleConfigs"]) {
+    assert.equal(source.captured.slice(boundary).filter((row) => row.functionName === getter).length, 0);
+  }
+});

@@ -1,5 +1,5 @@
 import { decodeFunctionResult, encodeFunctionData, isAddress, isHex, parseAbi, toHex, type Abi, type Address, type Hex } from "viem";
-import { LifecyclePlanningError, type LifecycleBlock, type LifecycleDiagnosticEvent, type LifecycleDiagnosticListener, type LifecycleDiagnosticStage, type LifecycleLimitContext, type LifecycleLimitSource, type LifecycleLimits, type LifecycleRpcClient, type LifecycleTransaction, type ResolvedLifecycleLimits } from "./types.js";
+import { LifecyclePlanningError, type LifecycleBlock, type LifecycleDiagnosticEvent, type LifecycleDiagnosticListener, type LifecycleDiagnosticStage, type LifecycleLimitContext, type LifecycleLimitSource, type LifecycleLimits, type LifecycleRpcClient, type LifecycleSessionCache, type LifecycleTransaction, type ResolvedLifecycleLimits } from "./types.js";
 import { lifecycleRegistryAbi } from "./abi.js";
 import type { ProfileTopologyV1 } from "./schema.js";
 
@@ -10,6 +10,58 @@ const diagnosticRpcMethods: Record<string, true> = {
   eth_simulateV1: true, eth_getTransactionCount: true, eth_getTransactionReceipt: true, eth_getTransactionByHash: true,
 };
 
+type SessionReadGroup = {
+  source: LifecycleRpcClient;
+  request: LifecycleRpcClient["request"];
+  chainId?: bigint;
+  block: Readonly<Pick<LifecycleBlock, "number" | "hash">>;
+  values: Map<string, Hex>;
+};
+
+/** Private wire observations; callers can inspect the pin or discard it, never install values. */
+class SessionLifecycleCache implements LifecycleSessionCache {
+  #group?: SessionReadGroup;
+
+  get block(): LifecycleSessionCache["block"] { return this.#group?.block; }
+
+  invalidate(): void {
+    this.#group?.values.clear();
+    this.#group = undefined;
+  }
+
+  pin(source: LifecycleRpcClient, block: LifecycleBlock, chainId?: bigint): SessionReadGroup {
+    const group = this.#group;
+    if (group !== undefined && group.source === source && group.request === source.request &&
+      group.block.number === block.number && group.block.hash.toLowerCase() === block.hash.toLowerCase() &&
+      (chainId === undefined || group.chainId === undefined || group.chainId === chainId)) {
+      if (chainId !== undefined) group.chainId = chainId;
+      return group;
+    }
+    this.invalidate();
+    return this.#group = {
+      source, request: source.request, chainId,
+      block: Object.freeze({ number: block.number, hash: block.hash }),
+      values: new Map(),
+    };
+  }
+
+  isCurrent(group: SessionReadGroup, block: LifecycleBlock): boolean {
+    return this.#group === group && group.request === group.source.request &&
+      group.block.number === block.number && group.block.hash.toLowerCase() === block.hash.toLowerCase();
+  }
+
+  observeChain(group: SessionReadGroup, chainId: bigint): void {
+    if (this.#group !== group) return;
+    if (group.chainId !== undefined && group.chainId !== chainId) this.invalidate();
+    else group.chainId = chainId;
+  }
+}
+
+/** Opt in per caller/session; there is no global or transport-owned lifecycle cache. */
+export function createLifecycleSessionCache(): LifecycleSessionCache {
+  return new SessionLifecycleCache();
+}
+
 /** Owns only one invocation's immutable RPC observations, never live checks or writes. */
 class InvocationLifecycleClient implements LifecycleRpcClient {
   private readonly reads = new Map<string, Promise<unknown>>();
@@ -19,8 +71,19 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
   private diagnosticSequence = 0;
   private chainId?: Promise<bigint>;
   private readonly limitObservations = new Map<LifecycleLimitSource | undefined, Map<string, Promise<LifecycleLimitObservation>>>();
+  private readonly session?: SessionLifecycleCache;
+  private sessionGroup?: SessionReadGroup;
+  private observedChainId?: bigint;
+  private sessionHits = 0;
+  private sessionMisses = 0;
+  private sessionReuses = 0;
   constructor(readonly source: LifecycleRpcClient) {
     this.concurrency = source.supportsReadBatching === true ? lifecycleReadConcurrency : 1;
+    if (source.sessionCache !== undefined) {
+      if (!(source.sessionCache instanceof SessionLifecycleCache)) throw new LifecyclePlanningError("INVALID_SESSION_CACHE", "Lifecycle session cache must be created by createLifecycleSessionCache");
+      this.session = source.sessionCache;
+      if (source.onDiagnostic !== undefined) emitLifecycleDiagnostic(source.onDiagnostic, { stage: "session-cache", phase: "start" });
+    }
   }
 
   async request(args: { method: string; params?: readonly unknown[] }): Promise<unknown> {
@@ -54,11 +117,30 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
     try {
       const result = await pending;
       if (listener !== undefined) emitLifecycleDiagnostic(listener, { stage: "rpc", phase: "success", requestId, method: observedMethod, durationMs: performance.now() - started });
+      if (this.session !== undefined && method === "eth_chainId") {
+        this.observedChainId = rpcQuantity(result, "chain ID");
+        if (this.sessionGroup !== undefined) this.session.observeChain(this.sessionGroup, this.observedChainId);
+      }
       return result;
     } catch (error) {
       if (listener !== undefined) emitLifecycleDiagnostic(listener, { stage: "rpc", phase: "failure", requestId, method: observedMethod, durationMs: performance.now() - started });
       throw error;
     }
+  }
+
+  observeBlock(block: LifecycleBlock, latest: boolean): void {
+    if (this.session === undefined) return;
+    this.assertOpen();
+    if (latest) {
+      this.sessionGroup = this.session.pin(this.source, block, this.observedChainId);
+    } else if (this.sessionGroup?.block.number === block.number && this.sessionGroup.block.hash.toLowerCase() !== block.hash.toLowerCase()) {
+      this.invalidateSession();
+    }
+  }
+
+  invalidateSession(): void {
+    this.session?.invalidate();
+    this.sessionGroup = undefined;
   }
 
   observeChainId(): Promise<bigint> {
@@ -89,37 +171,63 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
     return observation.then((result) => { this.assertOpen(); result.assertCurrent(); return result; });
   }
 
-  read(method: string, params: readonly unknown[], block: LifecycleBlock): Promise<unknown> {
+  read(method: string, params: readonly unknown[], block: LifecycleBlock, staticRead = false): Promise<unknown> {
     this.assertOpen();
     // Source identity is this scope's original client. The complete wire call includes
     // caller, value, gas and any other call fields; no selector-only/ABI-name aliasing.
     const key = JSON.stringify([block.number.toString(), block.hash.toLowerCase(), method, params]);
     const existing = this.reads.get(key);
     if (existing !== undefined) {
+      if (staticRead && this.session !== undefined) this.sessionReuses += 1;
       const listener = this.source.onDiagnostic;
       if (listener !== undefined) emitLifecycleDiagnostic(listener, { stage: "rpc", phase: "reuse", method: diagnosticRpcMethods[method] === true ? method : "other" });
       return existing;
     }
-    const pending = this.run(method, params);
+    const group = staticRead && this.observedChainId !== undefined && this.sessionGroup !== undefined &&
+      this.session?.isCurrent(this.sessionGroup, block) ? this.sessionGroup : undefined;
+    const cached = group?.values.get(key);
+    let pending: Promise<unknown>;
+    if (cached !== undefined) {
+      this.sessionHits += 1;
+      pending = Promise.resolve(cached);
+    } else {
+      if (staticRead && this.session !== undefined) this.sessionMisses += 1;
+      pending = this.run(method, params);
+      if (group !== undefined) pending = pending.then((value) => {
+        // Never share in-flight work or install late results after invalidation/closure.
+        // Only wire hex is retained, so public decoded DTOs cannot mutate authority.
+        if (!this.closed && this.session?.isCurrent(group, block) && typeof value === "string" && isHex(value)) group.values.set(key, value);
+        return value;
+      });
+    }
     this.reads.set(key, pending);
     void pending.catch(() => { if (this.reads.get(key) === pending) this.reads.delete(key); });
     return pending;
   }
 
-  close(): void {
+  close(success: boolean): void {
     this.closed = true;
     this.reads.clear();
     this.chainId = undefined;
     this.limitObservations.clear();
+    const listener = this.source.onDiagnostic;
+    if (this.session !== undefined && listener !== undefined) emitLifecycleDiagnostic(listener, {
+      stage: "session-cache", phase: success ? "success" : "failure",
+      hits: this.sessionHits, misses: this.sessionMisses, reuses: this.sessionReuses,
+    });
   }
 }
 
-/** Internal callers join the same invocation; no process-wide/source-wide read cache. */
+/** Internal callers join the same invocation; only explicit static reads opt in to a session. */
 export async function withLifecycleReadClient<T>(source: LifecycleRpcClient, work: (client: LifecycleRpcClient) => Promise<T>): Promise<T> {
   if (source instanceof InvocationLifecycleClient) return work(source);
   const client = new InvocationLifecycleClient(source);
-  try { return await work(client); }
-  finally { client.close(); }
+  let success = false;
+  try {
+    const result = await work(client);
+    success = true;
+    return result;
+  } finally { client.close(success); }
 }
 
 export function lifecycleSourceClient(client: LifecycleRpcClient): LifecycleRpcClient {
@@ -160,9 +268,14 @@ async function observedLifecycleStage<T>(listener: LifecycleDiagnosticListener, 
 }
 
 /** Only explicitly pinned fixed-state reads may participate in invocation reuse. */
-export async function lifecyclePinnedRpc(client: LifecycleRpcClient, method: "eth_call" | "eth_getCode" | "eth_getBalance", params: readonly unknown[], block: LifecycleBlock): Promise<unknown> {
+export async function lifecyclePinnedRpc(client: LifecycleRpcClient, method: "eth_call" | "eth_getCode" | "eth_getBalance", params: readonly unknown[], block: LifecycleBlock, staticRead = false): Promise<unknown> {
   if (params.length !== 2 || params[1] !== toHex(block.number)) throw new LifecyclePlanningError("INVALID_READ_CONTEXT", "Reusable lifecycle reads require the exact pinned block and no state overrides");
-  return client instanceof InvocationLifecycleClient ? client.read(method, params, block) : lifecycleRpc(client, method, params);
+  return client instanceof InvocationLifecycleClient ? client.read(method, params, block, staticRead && method !== "eth_getBalance") : lifecycleRpc(client, method, params);
+}
+
+/** Explicit SDK-owned static class only; balances and execution calls never use this path. */
+export function lifecycleStaticRpc(client: LifecycleRpcClient, method: "eth_call" | "eth_getCode", params: readonly unknown[], block: LifecycleBlock): Promise<unknown> {
+  return lifecyclePinnedRpc(client, method, params, block, true);
 }
 
 export async function lifecycleRpc(client: LifecycleRpcClient, method: string, params: readonly unknown[] = []): Promise<unknown> {
@@ -207,35 +320,48 @@ export async function readLifecycleBlock(client: LifecycleRpcClient, tag: Hex | 
   const value = rpcObject(await lifecycleRpc(client, "eth_getBlockByNumber", [tag, false]), "block");
   const hash = rpcHex(value.hash, "block hash");
   if (hash.length !== 66) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Block hash must have 32 bytes");
-  return {
+  const block = {
     number: rpcQuantity(value.number, "block number"), hash,
     timestamp: rpcQuantity(value.timestamp, "block timestamp"), gasLimit: rpcQuantity(value.gasLimit, "block gas limit"),
     baseFeePerGas: value.baseFeePerGas === undefined || value.baseFeePerGas === null ? undefined : rpcQuantity(value.baseFeePerGas, "base fee"),
   };
+  if (client instanceof InvocationLifecycleClient) client.observeBlock(block, tag === "latest");
+  return block;
 }
 export async function assertLifecycleBlock(client: LifecycleRpcClient, block: LifecycleBlock, expectedChainId?: bigint): Promise<void> {
   const [chainId, current] = await Promise.all([
     expectedChainId === undefined ? undefined : lifecycleRpc(client, "eth_chainId"),
     readLifecycleBlock(client, toHex(block.number)),
   ]);
-  if (expectedChainId !== undefined && rpcQuantity(chainId, "chain ID") !== expectedChainId) throw new LifecyclePlanningError("CHAIN_MISMATCH", "Source RPC chain changed during the pinned operation");
-  if (current.hash.toLowerCase() !== block.hash.toLowerCase()) throw new LifecyclePlanningError("STATE_REORGED", "Pinned launch state changed during the operation; read canonical progress again");
+  if (expectedChainId !== undefined && rpcQuantity(chainId, "chain ID") !== expectedChainId) {
+    if (client instanceof InvocationLifecycleClient) client.invalidateSession();
+    throw new LifecyclePlanningError("CHAIN_MISMATCH", "Source RPC chain changed during the pinned operation");
+  }
+  if (current.hash.toLowerCase() !== block.hash.toLowerCase()) {
+    if (client instanceof InvocationLifecycleClient) client.invalidateSession();
+    throw new LifecyclePlanningError("STATE_REORGED", "Pinned launch state changed during the operation; read canonical progress again");
+  }
 }
-export async function readLifecycleContract<T>(client: LifecycleRpcClient, to: Address, abi: Abi, functionName: string, args: readonly unknown[], block: LifecycleBlock, from?: Address): Promise<T> {
+export async function readLifecycleContract<T>(client: LifecycleRpcClient, to: Address, abi: Abi, functionName: string, args: readonly unknown[], block: LifecycleBlock, from?: Address, staticRead = false): Promise<T> {
   const data = encodeFunctionData({ abi, functionName, args });
   const request = [{ to, from, data }, toHex(block.number)];
   const getter = abi.some((item) => item.type === "function" && item.name === functionName && (item.stateMutability === "view" || item.stateMutability === "pure"));
   const result = rpcHex(await (getter && functionName !== "readLaunchProgress"
-    ? lifecyclePinnedRpc(client, "eth_call", request, block)
+    ? staticRead ? lifecycleStaticRpc(client, "eth_call", request, block) : lifecyclePinnedRpc(client, "eth_call", request, block)
     : lifecycleRpc(client, "eth_call", request)), functionName);
   // ABI decoding validates scalar widths and tuple layout; T names that exact frozen ABI result.
   const decoded = decodeFunctionResult({ abi, functionName, data: result }) as T;
   return decoded;
 }
 
+/** Certification/configuration getters, explicitly selected by their SDK callsite. */
+export function readLifecycleStaticContract<T>(client: LifecycleRpcClient, to: Address, abi: Abi, functionName: string, args: readonly unknown[], block: LifecycleBlock, from?: Address): Promise<T> {
+  return readLifecycleContract<T>(client, to, abi, functionName, args, block, from, true);
+}
+
 /** A reviewed registry must supply topology; missing selectors never certify a profile. */
 export async function readLifecycleProfileTopology(client: LifecycleRpcClient, registry: Address, profileId: Hex, block: LifecycleBlock): Promise<ProfileTopologyV1> {
-  const topology = await readLifecycleContract<{ hookTopology: number; configVersion: number; hookDeployer: Address; hookCreationCodeHash: Hex }>(client, registry, lifecycleRegistryAbi, "profileTopology", [profileId], block);
+  const topology = await readLifecycleStaticContract<{ hookTopology: number; configVersion: number; hookDeployer: Address; hookCreationCodeHash: Hex }>(client, registry, lifecycleRegistryAbi, "profileTopology", [profileId], block);
   if (topology.hookTopology !== 0 && topology.hookTopology !== 1 && topology.hookTopology !== 2) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Registry returned an unsupported hook topology");
   return { ...topology, hookTopology: topology.hookTopology };
 }
@@ -250,7 +376,7 @@ const maxUint64 = (1n << 64n) - 1n;
 /** A poster quote is an envelope budget, never an execution/compute proof. */
 export async function readNitroPosterGas(transaction: LifecycleTransaction, context: LifecycleLimitContext): Promise<{ posterGas: bigint; baseFee: bigint; l1BaseFeeEstimate: bigint }> {
   const data = encodeFunctionData({ abi: nitroNodeInterfaceAbi, functionName: "gasEstimateL1Component", args: [transaction.to, false, transaction.data] });
-  const result = rpcHex(await lifecyclePinnedRpc(context.client, "eth_call", [{ from: transaction.from, to: nitroNodeInterface, data, value: toHex(transaction.value) }, toHex(context.block.number)], context.block), "Nitro poster estimate");
+  const result = rpcHex(await lifecycleStaticRpc(context.client, "eth_call", [{ from: transaction.from, to: nitroNodeInterface, data, value: toHex(transaction.value) }, toHex(context.block.number)], context.block), "Nitro poster estimate");
   if (result.length !== 194) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Nitro poster estimate must contain exactly three ABI words");
   const [posterGas, baseFee, l1BaseFeeEstimate] = decodeFunctionResult({ abi: nitroNodeInterfaceAbi, functionName: "gasEstimateL1Component", data: result });
   if (posterGas < 0n || posterGas > maxUint64 || baseFee <= 0n || l1BaseFeeEstimate < 0n) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Nitro poster estimate has invalid gas or fee values");
@@ -259,7 +385,7 @@ export async function readNitroPosterGas(transaction: LifecycleTransaction, cont
 
 async function readNitroScalar(context: LifecycleLimitContext, to: Address, abi: Abi, functionName: string): Promise<bigint> {
   const data = encodeFunctionData({ abi, functionName });
-  const result = rpcHex(await lifecyclePinnedRpc(context.client, "eth_call", [{ to, data }, toHex(context.block.number)], context.block), functionName);
+  const result = rpcHex(await lifecycleStaticRpc(context.client, "eth_call", [{ to, data }, toHex(context.block.number)], context.block), functionName);
   if (result.length !== 66) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", `${functionName} must return exactly one ABI word`);
   return decodeFunctionResult({ abi, functionName, data: result }) as bigint;
 }

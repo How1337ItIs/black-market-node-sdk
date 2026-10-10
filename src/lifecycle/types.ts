@@ -8,7 +8,7 @@ import type {
 export type LifecycleDiagnosticStage =
   | "plan" | "plan.context" | "plan.domain" | "plan.progress" | "plan.inputs" | "rpc"
   | "profile.certification" | "simulation.context" | "simulation.nitro"
-  | "simulation.poster" | "simulation.measure" | "simulation.replay" | "simulation.envelope";
+  | "simulation.poster" | "simulation.measure" | "simulation.replay" | "simulation.envelope" | "session-cache";
 export type LifecycleDiagnosticEvent = {
   stage: LifecycleDiagnosticStage;
   phase: "queued" | "start" | "success" | "failure" | "reuse";
@@ -16,6 +16,10 @@ export type LifecycleDiagnosticEvent = {
   queueMs?: number;
   requestId?: number;
   method?: string;
+  /** Static session hits/misses and invocation-local static reuse; counts only. */
+  hits?: number;
+  misses?: number;
+  reuses?: number;
 };
 export type LifecycleDiagnosticListener = (event: LifecycleDiagnosticEvent) => void | Promise<void>;
 
@@ -26,8 +30,16 @@ export type LifecycleRpcClient = {
   supportsReadBatching?: boolean;
   /** Optional local observer. Listener failures cannot change execution or admission. */
   onDiagnostic?: LifecycleDiagnosticListener;
+  /** Caller-owned, opt-in static observations; create with createLifecycleSessionCache(). */
+  sessionCache?: LifecycleSessionCache;
 };
 export type LifecycleBlock = { number: bigint; hash: Hash; timestamp: bigint; gasLimit: bigint; baseFeePerGas?: bigint };
+/** A session retains only static reads at one canonical block, never execution proof. */
+export type LifecycleSessionCache = {
+  readonly block: Readonly<Pick<LifecycleBlock, "number" | "hash">> | undefined;
+  /** Call on wallet/chain changes and after every confirmed transaction. */
+  invalidate(): void;
+};
 export type LifecycleLimitContext = { client: LifecycleRpcClient; account: Address; orchestrator: Address; block: LifecycleBlock; chainId: bigint };
 export type LifecycleLimits = {
   /** Optional tightening caps on the complete transaction gas envelope, including Nitro poster gas. */

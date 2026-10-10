@@ -2,7 +2,7 @@ import { concatHex, decodeFunctionData, encodeAbiParameters, encodeFunctionData,
 import { launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleOracleFactoryAbi, lifecycleRegistryAbi, poolFeeCollectorFactoryV1Abi, poolFeeCollectorFactoryConfigV6Abi, lifecycleV4HookAbi, lifecycleV4LockerAbi, poolHookDeployerV1Abi, poolHookDeployerConfigV6Abi, sharedHookDeployerV1Abi, fixedFeePoolHookV1Abi, fixedFeePoolHookConfigV6Abi, poolMarketAdapterV1Abi, sharedMarketAdapterV1Abi } from "./abi.js";
 import { buildPoolBoundHookParameters, decodePoolBoundV4LifecycleMarketConfig, encodePoolBoundHookParameters, hasLifecycleV4HookPermissions, isPoolBoundV4ConfigVersion, poolBoundHookInitCodeHash, predictPoolBoundHookAddress, validateV4LifecycleMarket, V4_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V5, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V6, type PoolBoundHookParameters, type PoolBoundLifecycleConfigVersion } from "./markets.js";
 import { hashLaunchIdentity, hashLaunchPlan, hashLaunchBounds, hashLaunchDependencies, hashLifecycleProfile, lifecycleTokenComponents, launchProgressV1Components, LifecycleMode, LifecyclePhase, LifecycleVenue, LIFECYCLE_REQUIRED_CAPABILITIES, LIFECYCLE_ERC404_CAPABILITY, LIFECYCLE_MULTI_POSITION_CAPABILITY, type AdapterRegistrationV1, type LaunchPlanV1, type LaunchProgressV1, type MarketIdentityV1, type MarketLiveStateV1, type PreparedMarketV1, type ProfileRegistrationV1, type ProfileTopologyV1, type LaunchEnvelopeV2, type LifecycleDeveloperTerms } from "./schema.js";
-import { assertLifecycleBlock, assertLifecycleReadClientOpen, lifecycleFailureReason, lifecyclePinnedRpc, lifecycleRpc, lifecycleStage, readLifecycleBlock, readLifecycleChainId, readLifecycleContract, readLifecycleProfileTopology, rpcHex, rpcObject, rpcQuantity, withLifecycleReadClient } from "./rpc.js";
+import { assertLifecycleBlock, assertLifecycleReadClientOpen, lifecycleFailureReason, lifecyclePinnedRpc, lifecycleStaticRpc, lifecycleRpc, lifecycleStage, readLifecycleBlock, readLifecycleChainId, readLifecycleContract, readLifecycleStaticContract, readLifecycleProfileTopology, rpcHex, rpcObject, rpcQuantity, withLifecycleReadClient } from "./rpc.js";
 import { LifecyclePlanningError, type CanonicalLaunchProgress, type LifecycleBlock, type LifecycleMarketProgress, type LifecycleProfile, type LifecycleReceiptReference, type LifecycleReceiptStatus, type LifecycleRpcClient, type PoolBoundHookDeployment, type ReadLaunchProgressOptions } from "./types.js";
 import { deriveKnownPoolBoundHookDeployment } from "./calibration.js";
 import { getKnownLifecycleDeployment, getKnownLifecycleProfile } from "./presets.js";
@@ -76,7 +76,7 @@ function lifecycleProfileCertificateKey(orchestrator: Address, registry: Address
 }
 
 async function readDependencyCode(client: LifecycleRpcClient, address: Address, block: LifecycleBlock): Promise<Hex> {
-  const code = rpcHex(await lifecyclePinnedRpc(client, "eth_getCode", [address, toHex(block.number)], block), "lifecycle dependency code");
+  const code = rpcHex(await lifecycleStaticRpc(client, "eth_getCode", [address, toHex(block.number)], block), "lifecycle dependency code");
   if (address === zeroAddress || code === "0x") throw new LifecyclePlanningError("PROFILE_DEPENDENCY", `Lifecycle dependency ${address} has no deployed code`);
   return code;
 }
@@ -118,7 +118,7 @@ async function certifyLifecycleProfileFresh(client: LifecycleRpcClient, orchestr
     const known = [0, 1, 2, 3].some((variant) => keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "uint256" }, { type: "address" }, { type: "uint8" }], [domain, chainId, factory, variant])).toLowerCase() === id.toLowerCase());
     if (!known || registration.venue.toLowerCase() !== factory.toLowerCase() || registration.hook !== zeroAddress) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Abyss profile is not the exact canonical factory/variant/schema binding");
     if (eligibility !== undefined && "failure" in eligibility) throw eligibility.failure;
-    const eligible = eligibility?.eligible ?? await readLifecycleContract<Address>(client, registry, lifecycleRegistryAbi, "requireEligible", [registration.adapterId, id, version, LIFECYCLE_REQUIRED_CAPABILITIES], block);
+    const eligible = eligibility?.eligible ?? await readLifecycleStaticContract<Address>(client, registry, lifecycleRegistryAbi, "requireEligible", [registration.adapterId, id, version, LIFECYCLE_REQUIRED_CAPABILITIES], block);
     if (eligible.toLowerCase() !== adapter.implementation.toLowerCase()) throw new LifecyclePlanningError("INELIGIBLE_PROFILE", "Registry refuses this profile for pending source admission");
     return Object.freeze({ topology: Object.freeze({ ...topology }) });
   }
@@ -147,28 +147,28 @@ async function certifyLifecycleProfileFresh(client: LifecycleRpcClient, orchestr
   // Frozen graph addresses permit independent evidence reads. Getter results
   // still have to match that graph; none of these observations is caller authority.
   const [eligible, metadata, actualVersion, dependencies, dependencyCodes, collectorDeployer, launcher, lockerManager, creationCodeHash, chunk0, chunk1, chunkCodes, sharedRoot] = await Promise.all([
-    readLifecycleContract<Address>(client, registry, lifecycleRegistryAbi, "requireEligible", [registration.adapterId, id, version, LIFECYCLE_REQUIRED_CAPABILITIES], block),
-    Promise.all((["PROFILE_ID", "CONFIG_SCHEMA", "implementationRegistry"] as const).map((getter) => readLifecycleContract<Hex>(client, adapter.implementation, abi, getter, [], block))),
-    readLifecycleContract<number>(client, adapter.implementation, abi, "CONFIG_VERSION", [], block),
-    Promise.all((["poolManager", "hookRoot", "oracleFactory", "locker", "collectorFactory", "hookDeployer"] as const).map((getter) => readLifecycleContract<Address>(client, adapter.implementation, abi, getter, [], block))),
+    readLifecycleStaticContract<Address>(client, registry, lifecycleRegistryAbi, "requireEligible", [registration.adapterId, id, version, LIFECYCLE_REQUIRED_CAPABILITIES], block),
+    Promise.all((["PROFILE_ID", "CONFIG_SCHEMA", "implementationRegistry"] as const).map((getter) => readLifecycleStaticContract<Hex>(client, adapter.implementation, abi, getter, [], block))),
+    readLifecycleStaticContract<number>(client, adapter.implementation, abi, "CONFIG_VERSION", [], block),
+    Promise.all((["poolManager", "hookRoot", "oracleFactory", "locker", "collectorFactory", "hookDeployer"] as const).map((getter) => readLifecycleStaticContract<Address>(client, adapter.implementation, abi, getter, [], block))),
     Promise.all(codeBindings.map(([address]) => readDependencyCode(client, address, block))),
-    readLifecycleContract<Address>(client, g.collectorFactory, poolFeeCollectorFactoryV1Abi, "collectorDeployer", [], block),
-    readLifecycleContract<Address>(client, g.locker, lifecycleV4LockerAbi, "launcher", [], block),
-    readLifecycleContract<Address>(client, g.locker, lifecycleV4LockerAbi, "poolManager", [], block),
-    readLifecycleContract<Hex>(client, g.hookDeployer, deployerAbi, "creationCodeHash", [], block),
-    readLifecycleContract<Address>(client, g.hookDeployer, deployerAbi, "codeChunk0", [], block),
-    readLifecycleContract<Address>(client, g.hookDeployer, deployerAbi, "codeChunk1", [], block),
+    readLifecycleStaticContract<Address>(client, g.collectorFactory, poolFeeCollectorFactoryV1Abi, "collectorDeployer", [], block),
+    readLifecycleStaticContract<Address>(client, g.locker, lifecycleV4LockerAbi, "launcher", [], block),
+    readLifecycleStaticContract<Address>(client, g.locker, lifecycleV4LockerAbi, "poolManager", [], block),
+    readLifecycleStaticContract<Hex>(client, g.hookDeployer, deployerAbi, "creationCodeHash", [], block),
+    readLifecycleStaticContract<Address>(client, g.hookDeployer, deployerAbi, "codeChunk0", [], block),
+    readLifecycleStaticContract<Address>(client, g.hookDeployer, deployerAbi, "codeChunk1", [], block),
     Promise.all([
       readDependencyCode(client, g.codeChunk0, block),
       g.codeChunk1 === zeroAddress ? Promise.resolve<Hex>("0x") : readDependencyCode(client, g.codeChunk1, block),
     ]),
     shared ? Promise.all([
       readDependencyCode(client, g.hookRoot, block),
-      readLifecycleContract<Hex>(client, g.hookDeployer, deployerAbi, "deployedCodeHash", [g.hookRoot], block),
-      readLifecycleContract<Address>(client, g.hookDeployer, sharedHookDeployerV1Abi, "predict", [g.manager, adapter.implementation, g.oracleFactory, g.sharedHookSalt], block),
-      Promise.all((["registrar", "poolManager", "oracleFactory"] as const).map((getter) => readLifecycleContract<Address>(client, g.hookRoot, lifecycleV4HookAbi, getter, [], block))),
-      readLifecycleContract<bigint>(client, g.hookRoot, lifecycleV4HookAbi, "REQUIRED_HOOK_FLAGS", [], block),
-      readLifecycleContract<bigint>(client, g.hookRoot, lifecycleV4HookAbi, "ALL_HOOK_MASK", [], block),
+      readLifecycleStaticContract<Hex>(client, g.hookDeployer, deployerAbi, "deployedCodeHash", [g.hookRoot], block),
+      readLifecycleStaticContract<Address>(client, g.hookDeployer, sharedHookDeployerV1Abi, "predict", [g.manager, adapter.implementation, g.oracleFactory, g.sharedHookSalt], block),
+      Promise.all((["registrar", "poolManager", "oracleFactory"] as const).map((getter) => readLifecycleStaticContract<Address>(client, g.hookRoot, lifecycleV4HookAbi, getter, [], block))),
+      readLifecycleStaticContract<bigint>(client, g.hookRoot, lifecycleV4HookAbi, "REQUIRED_HOOK_FLAGS", [], block),
+      readLifecycleStaticContract<bigint>(client, g.hookRoot, lifecycleV4HookAbi, "ALL_HOOK_MASK", [], block),
     ]) : undefined,
   ]);
   if (eligible.toLowerCase() !== adapter.implementation.toLowerCase()) throw new LifecyclePlanningError("INELIGIBLE_PROFILE", "Registry refuses this profile for pending source admission");
@@ -214,7 +214,7 @@ export async function validateV4LifecycleOracle(options: {
 }): Promise<void> {
   const { client, envelope, oracleConfigId, block } = options;
   if (oracleConfigId.toLowerCase() === zeroHash) throw new LifecyclePlanningError("INVALID_ORACLE_CONFIG", "Market oracle configuration must be nonzero");
-  const [move, cardinality] = await readLifecycleContract<readonly [number, number]>(client, envelope.graph.oracleFactory, lifecycleOracleFactoryAbi, "oracleConfigs", [oracleConfigId], block);
+  const [move, cardinality] = await readLifecycleStaticContract<readonly [number, number]>(client, envelope.graph.oracleFactory, lifecycleOracleFactoryAbi, "oracleConfigs", [oracleConfigId], block);
   if (move <= 0 || move > 887272 || cardinality < 2 || cardinality > envelope.bounds.maximumOracleCardinality) {
     throw new LifecyclePlanningError("INVALID_ORACLE_CONFIG", "Selected market oracle is unregistered or exceeds the admitted cardinality bounds");
   }
@@ -234,25 +234,25 @@ export async function readLifecycleProfiles(options: { client: LifecycleRpcClien
         if (offset < 0n || limit < 0n || limit > 100n) throw new LifecyclePlanningError("INVALID_PROFILE_PAGE", "Registry profile pages require unsigned offset and limit at most 100");
         let protocolMaximumDeveloperFeeBpsPromise: Promise<number> | undefined;
         const readProtocolMaximumDeveloperFeeBps = () => protocolMaximumDeveloperFeeBpsPromise ??=
-          readLifecycleContract<number>(client, registry, lifecycleRegistryAbi, "protocolMaximumDeveloperFeeBps", [], block);
+          readLifecycleStaticContract<number>(client, registry, lifecycleRegistryAbi, "protocolMaximumDeveloperFeeBps", [], block);
         const readProfile = async (id: Hex): Promise<LifecycleProfile> => {
-          const registration = await readLifecycleContract<ProfileRegistrationV1>(client, registry, lifecycleRegistryAbi, "profile", [id], block);
+          const registration = await readLifecycleStaticContract<ProfileRegistrationV1>(client, registry, lifecycleRegistryAbi, "profile", [id], block);
           const schema = registration.configSchema.toLowerCase();
           const venueKind = schema === V4_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() || schema === V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V5.toLowerCase() || schema === V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V6.toLowerCase() ? "uniswap-v4" : schema === ABYSS_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() ? "abyss" : "unknown";
           const [adapter, certification] = await Promise.all([
-            readLifecycleContract<AdapterRegistrationV1>(client, registry, lifecycleRegistryAbi, "adapter", [registration.adapterId], block),
+            readLifecycleStaticContract<AdapterRegistrationV1>(client, registry, lifecycleRegistryAbi, "adapter", [registration.adapterId], block),
             venueKind === "unknown" ? undefined : Promise.all([
               readLifecycleProfileTopology(client, registry, id, block),
               venueKind === "uniswap-v4" ? Promise.all([
-                readLifecycleContract<LaunchEnvelopeV2>(client, registry, lifecycleRegistryAbi, "profileEnvelope", [id], block),
-                readLifecycleContract<readonly [Address, Address, number, Hex, boolean]>(client, registry, lifecycleRegistryAbi, "developerTerms", [id], block),
+                readLifecycleStaticContract<LaunchEnvelopeV2>(client, registry, lifecycleRegistryAbi, "profileEnvelope", [id], block),
+                readLifecycleStaticContract<readonly [Address, Address, number, Hex, boolean]>(client, registry, lifecycleRegistryAbi, "developerTerms", [id], block),
                 readProtocolMaximumDeveloperFeeBps(),
               ]) : undefined,
               // The exact Abyss arguments follow from registration, independently
               // of adapter/topology responses. Handle refusal immediately, but
               // keep its original place after canonical/schema/topology checks.
               venueKind === "abyss" ? chainIdPromise.then(() =>
-                readLifecycleContract<Address>(client, registry, lifecycleRegistryAbi, "requireEligible", [registration.adapterId, id, 1, LIFECYCLE_REQUIRED_CAPABILITIES], block)
+                readLifecycleStaticContract<Address>(client, registry, lifecycleRegistryAbi, "requireEligible", [registration.adapterId, id, 1, LIFECYCLE_REQUIRED_CAPABILITIES], block)
               ).then((eligible) => ({ eligible }), (failure: unknown) => ({ failure })) : undefined,
             ]).then((values) => ({ values }), (failure: unknown) => ({ failure })),
           ]);
@@ -345,16 +345,16 @@ async function readPoolBoundHookDeploymentDetailsFresh(options: { client: Lifecy
   const registry = await readLifecycleContract<Address>(client, plan.orchestrator, launchLifecycleAbi, "registry", [], block);
   const [authority, registration] = await Promise.all([
     readLifecycleContract<Address>(client, registry, lifecycleRegistryAbi, "core", [], block),
-    readLifecycleContract<ProfileRegistrationV1>(client, registry, lifecycleRegistryAbi, "profile", [market.profileId], block),
+    readLifecycleStaticContract<ProfileRegistrationV1>(client, registry, lifecycleRegistryAbi, "profile", [market.profileId], block),
   ]);
   if (authority.toLowerCase() !== plan.orchestrator.toLowerCase()) throw new LifecyclePlanningError("REGISTRY_BINDING", "Registry is not bound to this lifecycle core");
-  const adapter = await readLifecycleContract<AdapterRegistrationV1>(client, registry, lifecycleRegistryAbi, "adapter", [registration.adapterId], block);
+  const adapter = await readLifecycleStaticContract<AdapterRegistrationV1>(client, registry, lifecycleRegistryAbi, "adapter", [registration.adapterId], block);
   if (registration.adapterId.toLowerCase() !== market.adapterId.toLowerCase()) throw new LifecyclePlanningError("INVALID_BOUND_MARKET", "Market adapter differs from the profile's immutable registration");
   const [recorded, envelope, [implementation, beneficiary, maximumDeveloperFeeBps, termsDigest, enabled], protocolMaximumDeveloperFeeBps, token] = await Promise.all([
     readLifecycleProfileTopology(client, registry, market.profileId, block),
-    readLifecycleContract<LaunchEnvelopeV2>(client, registry, lifecycleRegistryAbi, "profileEnvelope", [market.profileId], block),
-    readLifecycleContract<readonly [Address, Address, number, Hex, boolean]>(client, registry, lifecycleRegistryAbi, "developerTerms", [market.profileId], block),
-    readLifecycleContract<number>(client, registry, lifecycleRegistryAbi, "protocolMaximumDeveloperFeeBps", [], block),
+    readLifecycleStaticContract<LaunchEnvelopeV2>(client, registry, lifecycleRegistryAbi, "profileEnvelope", [market.profileId], block),
+    readLifecycleStaticContract<readonly [Address, Address, number, Hex, boolean]>(client, registry, lifecycleRegistryAbi, "developerTerms", [market.profileId], block),
+    readLifecycleStaticContract<number>(client, registry, lifecycleRegistryAbi, "protocolMaximumDeveloperFeeBps", [], block),
     readLifecycleContract<Address>(client, plan.orchestrator, launchLifecycleAbi, "predictToken", [plan], block),
   ]);
   const { boundGraph } = await certifyLifecycleProfile(client, plan.orchestrator, registry, market.profileId, registration, adapter, recorded, envelope, block, chainId);
@@ -374,10 +374,10 @@ async function readPoolBoundHookDeploymentDetailsFresh(options: { client: Lifecy
   const deployerAbi = config.version === 5 ? poolHookDeployerV1Abi : poolHookDeployerConfigV6Abi;
   const collectorAbi = config.version === 5 ? poolFeeCollectorFactoryV1Abi : poolFeeCollectorFactoryConfigV6Abi;
   const [[parameters, parameterSalt], [deployer, initCodeHash, salt, predictedHook], remoteInitCodeHash, remotePrediction] = await Promise.all([
-    readLifecycleContract<readonly [PoolBoundHookParameters, Hex]>(client, boundGraph.collectorFactory, collectorAbi, "poolBoundHookParameters", [adapter.implementation, token, market], block),
-    readLifecycleContract<readonly [Address, Hex, Hex, Address]>(client, adapter.implementation, poolMarketAdapterV1Abi, "hookDeploymentMetadata", [token, market], block),
-    readLifecycleContract<Hex>(client, boundGraph.deployer, deployerAbi, "initCodeHash", [expected], block),
-    readLifecycleContract<Address>(client, boundGraph.deployer, deployerAbi, "predict", [expected, config.hookSalt], block),
+    readLifecycleStaticContract<readonly [PoolBoundHookParameters, Hex]>(client, boundGraph.collectorFactory, collectorAbi, "poolBoundHookParameters", [adapter.implementation, token, market], block),
+    readLifecycleStaticContract<readonly [Address, Hex, Hex, Address]>(client, adapter.implementation, poolMarketAdapterV1Abi, "hookDeploymentMetadata", [token, market], block),
+    readLifecycleStaticContract<Hex>(client, boundGraph.deployer, deployerAbi, "initCodeHash", [expected], block),
+    readLifecycleStaticContract<Address>(client, boundGraph.deployer, deployerAbi, "predict", [expected, config.hookSalt], block),
   ]);
   const localInitCodeHash = poolBoundHookInitCodeHash(boundGraph.creationCode, expected, config.version);
   const localPrediction = predictPoolBoundHookAddress({ deployer: boundGraph.deployer, initCodeHash: localInitCodeHash, salt: config.hookSalt });
@@ -385,7 +385,7 @@ async function readPoolBoundHookDeploymentDetailsFresh(options: { client: Lifecy
   const hookCode = rpcHex(await lifecyclePinnedRpc(client, "eth_getCode", [predictedHook, toHex(block.number)], block), "bound hook code");
   if (hookCode !== "0x") {
     const [deployedCodeHash, dependencies, requiredFlags, allFlags, actualPoolId, deploymentConfigHash, marketCommitment, opening, positions, feePolicy] = await Promise.all([
-      readLifecycleContract<Hex>(client, deployer, deployerAbi, "deployedCodeHash", [predictedHook], block),
+      readLifecycleStaticContract<Hex>(client, deployer, deployerAbi, "deployedCodeHash", [predictedHook], block),
       Promise.all((["poolManager", "registrar", "oracleFactory", "core", "liquidityLocker", "token"] as const).map((getter) => readLifecycleContract<Address>(client, predictedHook, fixedFeePoolHookV1Abi, getter, [], block))),
       readLifecycleContract<bigint>(client, predictedHook, fixedFeePoolHookV1Abi, "REQUIRED_HOOK_FLAGS", [], block),
       readLifecycleContract<bigint>(client, predictedHook, fixedFeePoolHookV1Abi, "ALL_HOOK_MASK", [], block),

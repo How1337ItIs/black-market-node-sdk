@@ -196,6 +196,112 @@ exact simulated `gas` and `gasPrice`.
 
 
 
+## Opt-in static session fast path
+
+`createLifecycleSessionCache()` creates a caller-owned `LifecycleSessionCache`.
+Pass it as `LifecycleRpcClient.sessionCache` to retain the SDK's **explicit static
+read class** across `prepareAndPlanLifecycleLaunch`, `planLaunch`,
+`simulateLaunchPlan` and `buildNextTransaction`. Omit the option to preserve the
+default: only existing invocation-local fixed-state reuse, with no session events
+or cross-invocation observations. The SDK neither creates a global cache nor
+changes transport batching, selected mode or execution admission.
+
+```ts
+import { createLifecycleSessionCache, planLaunch } from "@black-market/sdk/lifecycle";
+
+const sessionCache = createLifecycleSessionCache();
+const client = {
+  ...publicClient,
+  sessionCache,
+  supportsReadBatching: true, // Only when this transport actually batches.
+  onDiagnostic: (event) => { console.debug("[launch-sdk]", event); },
+};
+
+const first = await planLaunch({ client, plan, account, mode: "staged" });
+const second = await planLaunch({ client, plan, account, mode: "staged" });
+// At the same canonical head, the second call reuses matching static reads only.
+// Execution simulation, funding and canonical checks still run independently.
+
+sessionCache.block; // readonly { number: bigint, hash } or undefined
+sessionCache.invalidate(); // Wallet/chain switch, or each confirmed transaction.
+```
+
+The retained class is deliberately narrow:
+
+| Static observations eligible for session reuse | Scope |
+| --- | --- |
+| Nitro capability getters and compute ceilings | Pinned `ArbSys.arbOSVersion`, `ArbGasInfo.getMaxTxGasLimit` / `getMaxBlockGasLimit` |
+| Nitro poster quotes | Pinned NodeInterface `gasEstimateL1Component`, including the exact payer, destination, calldata and value |
+| Frozen-profile registry certification | Profile/adapter registration (including dependency digest), topology, reviewed envelope, developer terms/cap and exact `requireEligible` request |
+| Reviewed immutable certification graph | Adapter metadata/dependency getters, graph runtime-code checks, locker/collector authorities and shared-hook constructor/runtime provenance |
+| Oracle configuration and factory presence | Pinned `oracleConfigs(configId)`, certified oracle-factory code and token-factory code-presence checks |
+| Hook deployer creation/constructor/runtime evidence | Creation-code hash, both chunk addresses/bytes, exact constructor metadata, initcode/CREATE2 comparisons and deployer-recorded runtime digests |
+
+Known construction presets continue to avoid discovery/getter mirrors they already
+omit; enabling a cache does not introduce extra certification reads. Unlisted
+profiles still use their normal frozen-envelope certification. Session hits retain
+private wire hex, not mutable public profile/deployment DTOs. Each consumer still
+decodes and checks its exact registration, graph, constructor and market bindings.
+
+**Never retained across invocations:** native/ERC20 balances, allowances,
+progress/market and core domain/prediction/binding reads, receipts/transactions,
+chain identity, head/latest/pending observations, account code/nonces,
+`eth_estimateGas`, `eth_simulateV1`, gas-price recommendations, funding-target
+admission, non-view calls, submission preflight and all write-adjacent calls.
+In particular the **native Nitro metering simulation probe is not cached**:
+its `eth_simulateV1` request remains separate from the static ArbSys/ArbGasInfo
+getters, and permissive measurement plus exact validated replay stay live.
+Existing invocation-local reuse for eligible fixed reads is unchanged.
+
+Each entry group owns one pinned block **number and hash**. Before session
+observations can be consumed, the invocation must read a fresh canonical head and
+chain identity. A changed head hash (including a same-height reorg), number,
+chain/source or request implementation clears the old group before use. Exact
+wire parameters also participate in identity; changed caller, target, calldata,
+value, gas or constructor economics cannot hit another request's entry.
+Externally supplied pins without a fresh invocation-owned head bypass the session.
+Only successfully settled wire reads are shared; rejected requests, in-flight
+promises and obsolete completions after closure/invalidation are not retained.
+Final canonical/reorg and chain checks remain live and clear the session on
+identity failure.
+
+The caller **must call `invalidate()` on wallet/chain switches and after every
+confirmed transaction**. It discards the pin and all memoized values immediately,
+including preventing older pending reads from repopulating the discarded group.
+It does not cancel an operation, freeze the chain or grant permission to submit
+a saved transaction. A new block causes fresh static reads; the cache is a
+same-snapshot acceleration, not a TTL or an assumption that facts never change.
+
+With `onDiagnostic`, each opted-in invocation emits a `session-cache` start and
+success/failure summary. `hits` counts static reads resolved from the session,
+`misses` counts new static reads, and `reuses` counts existing invocation-local
+static reuse. Summaries contain counts only: no cache keys, pins, RPC URLs,
+parameters, addresses, calldata, results or errors. Nested continuations share one
+summary, and listener failures remain isolated from financial behavior.
+
+Correctness follows from deterministic static observations at the **same exact
+canonical snapshot**, complete request identity and preserved live proof. The
+session never stores an admission certificate or replaces balances, receipt/nonce
+continuity, native capability simulation, execution replay or submission checks.
+Offline RPC-count regressions compare two sequential complete `planLaunch`
+operations with and without the option; they prove fewer repeated static reads,
+not a live end-to-end latency guarantee.
+
+Deterministic offline measurements (RPC messages, not HTTP batches):
+
+| Fixture, two sequential `planLaunch` calls at the same pin | Cache off: first / second | Cache on: first / second |
+| --- | --- | --- |
+| Admitted Nitro/Abyss staged plan, serial or batching transport | 33 / 33 | 33 / 22 |
+| Two-bound-market, two-creation-chunk V4 certification/constructor fixture | 64 / 64 | 64 / 19 |
+
+The first fixture performs the native Nitro probe, measurement and validated
+replay on **both** calls (three `eth_simulateV1` requests per call). The bound
+fixture deliberately refuses a smart account after completing read-only metadata;
+its savings prove static-read reuse, not economic execution. Both compare the
+complete returned plans for equality. Reproduce after `pnpm build` with
+`node --test test/lifecycle-read-pipeline.test.mjs test/lifecycle-execution.test.mjs`;
+the tests print the per-call counts and assert unchanged counts with the cache off.
+
 ## 0.6.3 certification and dependency-round reductions
 
 The public API, deployment authority and protocol admission rules are unchanged. With an
@@ -319,7 +425,7 @@ and swap-funding checks remain conditional on the actual committed plan. There i
 weakened single-pool mode: adapter eligibility, live code hashes, authority/dependency
 bindings, schema/topology and applicable frozen terms remain mandatory.
 
-Identical fixed-state reads share observations only within one planning invocation.
+Without the optional static session fast path above, identical fixed-state reads share observations only within one planning invocation.
 Identity includes the original source client, pinned block number/hash and complete
 request parameters, including caller, target, calldata, value and gas context. Rejected
 reads are not retained. State changes, another caller/source/block or a subsequent public

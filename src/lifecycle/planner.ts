@@ -5,7 +5,7 @@ import { launchLifecycleAbi, lifecycleAdapterAbi, lifecycleErc20Abi } from "./ab
 import { hashLaunchIdentity, hashLaunchPlan, LifecycleFundingKind, LifecyclePhase, LifecycleRewardMode, LifecycleTokenKind, LIFECYCLE_MAX_REWARD_ERC20_SUPPLY, LIFECYCLE_MAX_ERC404_SUPPLY, parseLaunchPlan, serializeLaunchPlan, type LaunchPlanV1 } from "./schema.js";
 import { readLaunchProgress, readLifecycleProfiles, readLifecycleTokenAtBlock, readPoolBoundHookDeployment } from "./progress.js";
 import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, isPoolBoundV4ConfigVersion, minePoolBoundHookSalt, type AbyssLifecycleMarketConfig, type V4LifecycleMarketConfig, type V4PoolBoundLifecycleMarketConfig } from "./markets.js";
-import { assertLifecycleBlock, assertLifecycleReadClientOpen, lifecycleFailureReason, lifecyclePinnedRpc, lifecycleRpc, lifecycleStage, readLifecycleBlock, readLifecycleChainId, readLifecycleContract, resolveLifecycleLimits, rpcHex, rpcQuantity, withLifecycleReadClient } from "./rpc.js";
+import { assertLifecycleBlock, assertLifecycleReadClientOpen, lifecycleFailureReason, lifecyclePinnedRpc, lifecycleStaticRpc, lifecycleRpc, lifecycleStage, readLifecycleBlock, readLifecycleChainId, readLifecycleContract, resolveLifecycleLimits, rpcHex, rpcQuantity, withLifecycleReadClient } from "./rpc.js";
 import { prepareLaunchSimulation, simulateLaunchTransactions, type NextTransactionEnvelope } from "./simulation.js";
 import { LifecyclePlanningError, type BuildNextTransactionOptions, type CanonicalLaunchProgress, type LifecycleBlock, type LifecycleConstructionProfile, type LifecycleFundingPrerequisite, type LifecyclePoolBoundHookDeployment, type LifecycleProfile, type LifecycleRpcClient, type LifecycleSimulation, type LifecycleTransaction, type PlannedLaunch, type PlanLaunchOptions, type PrepareAndPlanLifecycleLaunchOptions, type SimulateLaunchPlanOptions } from "./types.js";
 import { deriveKnownPoolBoundHookDeployment, protectOrderedBuyMinimums, validateBuySlippageBps } from "./calibration.js";
@@ -193,7 +193,7 @@ function assertReviewedTransactionUnchanged(options: BuildNextTransactionOptions
 async function readTokenFactoryBinding(client: LifecycleRpcClient, orchestrator: Address, block: LifecycleBlock): Promise<Pick<PlannedLaunch, "tokenFactory" | "tokenFactoryCodeHash">> {
   const tokenFactory = await readLifecycleContract<Address>(client, orchestrator, launchLifecycleAbi, "tokenFactory", [], block);
   const [codeValue, authority] = await Promise.all([
-    lifecyclePinnedRpc(client, "eth_getCode", [tokenFactory, toHex(block.number)], block),
+    lifecycleStaticRpc(client, "eth_getCode", [tokenFactory, toHex(block.number)], block),
     readLifecycleContract<Address>(client, tokenFactory, lifecycleAdapterAbi, "core", [], block),
   ]);
   const code = rpcHex(codeValue, "token factory code");
