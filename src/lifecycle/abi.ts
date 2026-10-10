@@ -361,6 +361,8 @@ export const lifecycleErc404Abi = [
   { type: "function", name: "unit", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { type: "function", name: "baseURI", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
   { type: "function", name: "mirrorERC721", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  // Present on LaunchERC404V1; read for ERC404 supply/custody verification.
+  { type: "function", name: "maxNFTSupply", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
 ] as const;
 export const lifecycleErc404MirrorAbi = [
   { type: "function", name: "baseERC20", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
