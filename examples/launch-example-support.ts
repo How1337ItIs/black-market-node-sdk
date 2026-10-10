@@ -2,8 +2,7 @@ import { appendFileSync, closeSync, constants, existsSync, fstatSync, fsyncSync,
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createPublicClient, custom, isAddress, keccak256, toHex } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
-import { createInterface } from "node:readline/promises";
+import { privateKeyToAccount, privateKeyToAddress } from "viem/accounts";
 import { createDecipheriv, createHash, scrypt, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 
@@ -248,21 +247,6 @@ export function economicReviewHash(review) {
   return keccak256(toHex(JSON.stringify(review, (_key, value) => typeof value === "bigint" ? value.toString() : value)));
 }
 
-export function assertEconomicReviewAdmission(reviewHash, admittedHash) {
-  if (admittedHash !== reviewHash) throw exampleError("ECONOMIC_REVIEW_REQUIRED", "Explicit admission must match this exact economic review hash");
-}
-
-export async function admitEconomicReview(reviewHash) {
-  let admittedHash = process.env.EXAMPLE_ECONOMIC_REVIEW_HASH;
-  if (!admittedHash && process.stdin.isTTY && process.stdout.isTTY) {
-    const prompt = createInterface({ input: process.stdin, output: process.stdout });
-    try { admittedHash = await prompt.question("Type the economic review hash to authorize this exact launch: "); }
-    finally { prompt.close(); }
-  }
-  assertEconomicReviewAdmission(reviewHash, admittedHash);
-  return { reviewHash, admittedAt: new Date().toISOString(), policy: "unchanged-exact-api-price-and-source; upstream-age-preserved" };
-}
-
 
 export function exampleError(code, message, details = {}) {
   return Object.assign(new Error(message), { name: "LaunchExampleError", code, ...details });
@@ -413,10 +397,10 @@ export async function loadExampleKeystore({ path, password = "", redactor = new 
     plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
     const privateKey = toHex(plaintext);
     redactor.addSecret(privateKey); redactor.addSecret(privateKey.slice(2));
-    let account;
-    try { account = privateKeyToAccount(privateKey); }
+    let address;
+    try { address = privateKeyToAddress(privateKey); }
     catch { throw exampleError("KEYSTORE_INVALID_KEY", "Authenticated keystore contains an invalid private key"); }
-    if (json.address !== undefined && account.address.toLowerCase() !== `0x${json.address}`.toLowerCase()) {
+    if (json.address !== undefined && address.toLowerCase() !== `0x${json.address}`.toLowerCase()) {
       throw exampleError("KEYSTORE_ADDRESS_MISMATCH", "Keystore address does not match the decrypted key");
     }
     return privateKey;
@@ -523,8 +507,8 @@ export async function readExampleConfiguration(sdk, redactor, env = process.env)
   if (!env.LAUNCH_API_URL?.trim()) throw exampleError("MISSING_CONFIGURATION", "LAUNCH_API_URL is required in the environment or working-directory .env");
   const privateKey = hasKey ? env.PRIVATE_KEY : await loadExampleKeystore({ path: env.EXAMPLE_KEYSTORE_PATH, password: env.EXAMPLE_KEYSTORE_PASSWORD ?? "", redactor });
   if (!/^0x[\da-f]{64}$/i.test(privateKey)) throw exampleError("INVALID_PRIVATE_KEY", "PRIVATE_KEY must be a 32-byte hex private key");
-  let account;
-  try { account = privateKeyToAccount(privateKey); }
+  let creator;
+  try { creator = privateKeyToAddress(privateKey); }
   catch { throw exampleError("INVALID_PRIVATE_KEY", "PRIVATE_KEY must be a valid 32-byte secp256k1 hex private key"); }
   const addresses = sdk.getAddresses(4663);
   const rpcUrl = executionRpcUrl(env.RPC_URL || sdk.robinhoodMainnet.rpcUrls.default.http[0]);
@@ -545,7 +529,7 @@ export async function readExampleConfiguration(sdk, redactor, env = process.env)
   const fixture = {
     chainId: "4663", rpcUrl, apiUrl: launchApiUrl(env.LAUNCH_API_URL),
     kyberApiUrl: launchApiUrl(env.EXAMPLE_KYBER_API_URL || env.LAUNCH_API_URL),
-    orchestrator: addresses.launchOrchestrator, implementationRegistry: addresses.launchImplementationRegistry, creator: account.address,
+    orchestrator: addresses.launchOrchestrator, implementationRegistry: addresses.launchImplementationRegistry, creator,
     quoteAsset: addresses.weth, quoteDecimals: 18, oracleFactory: addresses.abyssFactory,
     targetMarketCapUsdX18: targetMarketCapUsdX18(env.EXAMPLE_TARGET_MARKET_CAP_USD),
     nftBaseUri: env.NFT_BASE_URI || "",
@@ -713,7 +697,10 @@ export class Redactor {
       const result = {};
       const keys = item instanceof Error ? [...new Set(["name", "message", "stack", "cause", ...Object.getOwnPropertyNames(item)])] : Object.keys(item);
       for (const key of keys) {
-        if (/private.?key|secret|signature|capability|authorization|authentication|password|credential|mnemonic|seed.?phrase|(?:access|refresh|auth)[_-]?token|api[_-]?key|cookie/i.test(key)) result[key] = "[REDACTED]";
+        // A mode-authorization record is public provenance, not an API credential.
+        if (key === "authorization" && item[key] === "--broadcast" &&
+            /^0x[\da-fA-F]{64}$/.test(item.reviewHash) && typeof item.admittedAt === "string") result[key] = "--broadcast";
+        else if (/private.?key|secret|signature|capability|authorization|authentication|password|credential|mnemonic|seed.?phrase|(?:access|refresh|auth)[_-]?token|api[_-]?key|cookie/i.test(key)) result[key] = "[REDACTED]";
         else if (key === "apiOrigin") {
           try {
             const origin = new URL(launchApiUrl(item[key])).origin;

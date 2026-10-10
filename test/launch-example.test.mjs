@@ -13,7 +13,7 @@ import {
   rpcRequestSignal, RunArtifacts, exampleError, submitSignedRecorded,
   targetMarketCapUsdX18, validateApiWethUsdSeed, readApiWethUsdSeed, assertUnchangedEconomicQuote, allocateMarketBudgets,
   guardEconomicReviewWallet,
-  deriveExampleMarketEconomics, openingEconomics, economicReviewHash, assertEconomicReviewAdmission,
+  deriveExampleMarketEconomics, openingEconomics, economicReviewHash,
 } from "../examples/launch-example-support.ts";
 import { validateCase, verifyLaunchInventory } from "../examples/launch-example.ts";
 const pricingSdk = await import(process.env.SDK_SOURCE_TEST === "1" ? "../src/index.ts" : "../dist/index.js");
@@ -544,7 +544,7 @@ test("API reader fails closed on source configuration, HTTP, JSON, endpoint, tim
   assert.equal(calls, 1, "Network failure has no retry or fallback");
 });
 
-test("target input and explicit admission never authorize changed economics", () => {
+test("target parsing and review provenance preserve exact economics", () => {
   assert.equal(targetMarketCapUsdX18(), 5000n * 10n ** 18n);
   assert.equal(targetMarketCapUsdX18("5000.000000000000000001"), 5000n * 10n ** 18n + 1n);
   for (const value of ["0", "-5", "5e3", "5000.0000000000000000001", " 5000", "05000"]) assert.throws(() => targetMarketCapUsdX18(value), { code: "INVALID_CONFIGURATION" });
@@ -560,9 +560,8 @@ test("target input and explicit admission never authorize changed economics", ()
     assert.throws(() => assertUnchangedEconomicQuote(quote, { ...quote, ...changed }), { code: "ECONOMIC_REVIEW_CHANGED" });
   }
   const hash = economicReviewHash({ quote, target: 5000n });
-  assert.doesNotThrow(() => assertEconomicReviewAdmission(hash, hash));
-  assert.throws(() => assertEconomicReviewAdmission(hash, undefined), { code: "ECONOMIC_REVIEW_REQUIRED" });
-  assert.throws(() => assertEconomicReviewAdmission(economicReviewHash({ quote, target: 6000n }), hash), { code: "ECONOMIC_REVIEW_REQUIRED" });
+  assert.equal(hash, economicReviewHash({ quote, target: "5000" }));
+  assert.notEqual(hash, economicReviewHash({ quote, target: 6000n }));
 });
 
 test("production economic guard refuses both signature paths on changed source/price and preserves original review", async (t) => {

@@ -25,7 +25,7 @@ The quickstart reads available launch profiles without a wallet.
 For token launches, set `LAUNCH_API_URL` and exactly one signer source in your
 working folder's `.env`: `PRIVATE_KEY` or `EXAMPLE_KEYSTORE_PATH` (local V3 scrypt
 keystore; `EXAMPLE_KEYSTORE_PASSWORD` defaults to empty). Optional `RPC_URL`
-overrides the default endpoint. Choose one example for the intended launch:
+overrides the default endpoint. Choose one example for an unsigned dry run:
 
 ```sh
 node examples/launch-erc20-v4.ts
@@ -51,8 +51,21 @@ and `EXAMPLE_IMAGE_PATH` customize identity and artwork. Image-enabled success
 requires staged/published/indexed image bindings and a bounded public-image fetch,
 not merely metadata staging. See the [example guide](examples/README.md).
 
-Launch examples spend real funds and publish to your configured API.
-Plans, transaction hashes, receipts, and errors are saved in `launch-results/`.
+Launch cases **default to a dry run**: they print **DRY RUN — no transactions signed
+or broadcast.**, perform the full planning/economic review and save artifacts, then
+exit successfully without creating a wallet signer or writing to the chain/API.
+The last output line gives the same case command with `--broadcast`:
+
+```sh
+node examples/launch-erc20-v4.ts --broadcast
+```
+
+**`--broadcast` is the authorization to sign, spend real funds and publish.** It
+deliberately skips manual review admission—no hash prompt or hash input—while
+retaining the economic review/hash as provenance and all planner, deadline,
+image and canonical/reorg safety checks. It replans against current state rather
+than submitting the dry run's saved plan. All eleven wrappers support these modes.
+Plans, reviews, transaction hashes, receipts and errors are saved in `launch-results/`.
 Continue the original committed launch with
 `node examples/<case>.ts --resume launch-results/<original-run-directory>`.
 Preparing/Ready continues only remaining steps; Active verifies and publishes

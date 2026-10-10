@@ -826,8 +826,25 @@ local-execution opt-in and required files.
 
 Eleven independent `examples/launch-erc20-*.ts` / `launch-erc404-*.ts` files invoke
 the shared `runLaunchExample(caseObject)` using valuation-driven economics with no
-required CLI parameters or fixture files. Optional `--resume <recovery-dir>`
-continues the original committed launch. The eight original cases remain; the three additions
+required CLI parameters or fixture files. **No mode flag means a dry run**:
+the first output is `DRY RUN — no transactions signed or broadcast.`, followed by
+the full economic review and retained planning artifacts. Successful planning exits
+`0` without constructing a wallet signer, signing, broadcasting, uploading or publishing.
+The final output line is the same case command with `--broadcast` appended:
+
+```sh
+node examples/launch-erc20-v4.ts
+node examples/launch-erc20-v4.ts --broadcast
+```
+
+**`--broadcast` authorizes full execution and intentionally skips manual
+economic-review admission.** It prints/saves the same review and computed hash,
+plans afresh against current state, then performs guarded signing, broadcast,
+chain verification, image upload and publication. It does not execute the dry run's
+saved plan. Unknown, duplicate or mixed flags fail fast with usage text.
+Optional `--resume <recovery-dir>` continues the original committed launch unchanged,
+without needing `--broadcast`. CLI dry-run/broadcast selection is independent of
+the case's atomic/staged execution mode. The eight original cases remain; the three additions
 (`launch-erc20-multi-quote.ts`, `launch-erc20-depth-v4.ts`, and
 `launch-erc20-dividends-multiquote-mixed.ts`) await user live-run validation before
 any replacement decision. See the [example guide](../examples/README.md#individual-token-creation)
@@ -838,9 +855,10 @@ work: `PRIVATE_KEY`, or `EXAMPLE_KEYSTORE_PATH` for an owner-only local V3
 scrypt/AES-128-CTR JSON keystore. `EXAMPLE_KEYSTORE_PASSWORD` defaults to the empty
 string; both/neither sources reject. The bounded keystore loader authenticates the
 MAC and declared address before deriving the creator. There is no default key,
-guessed metadata API or API-omission mode. Running a case prepares an unsigned
-financial review first; signing requires explicit admission of its exact review hash.
-Admitted mainnet writes are irreversible. The official chain-4663 RPC is the default.
+guessed metadata API or API-omission mode. Dry runs derive only the public creator
+address (keystore decryption is allowed for this); local signing methods are constructed
+only for broadcast or nonterminal resume execution. Broadcast mainnet writes are
+irreversible. The official chain-4663 RPC is the default.
 
 The implementation imports public `@black-market/sdk`, resolves `getAddresses(4663)`,
 derives the creator from the selected signer and discovers actual admitted profiles.
@@ -917,9 +935,10 @@ all-in average USD/token and fee-plus-price-impact premium. This is not a claim
 of simulated final marginal spot. Alignment and buys mean the eventual valuation
 need not equal USD 5000; use actual retained supply and observed post-buy price.
 
-The interactive prompt requires the exact review hash; noninteractive
-`EXAMPLE_ECONOMIC_REVIEW_HASH` must match this freshly generated review. Admission
-binds the entire economic payload and finalized plan, not merely target or a yes.
+The computed review hash is provenance evidence, never an authorization input:
+there is no interactive prompt or environment hash gate. `--broadcast` alone is
+the explicit mode authorization, recorded in `economic-admission.json` as
+`authorization: "--broadcast"` with the computed hash; this artifact is not another gate.
 Before each attribution/transaction signature, the immutable review hash, saved
 plan/supply/order/target and fresh RPC token prediction are rechecked, then the same
 API source is reread. A changed exact price, API origin, chain, WETH/decimals or
@@ -981,26 +1000,28 @@ Any failed binding, HTTP/type/size/body check exits nonzero with retained eviden
 there is no image retry or metadata-only fallback. Without an image path, the
 metadata-only null-image behavior remains.
 
-Every new launch automatically creates fresh `launch-results/<timestamp-case-random>/`;
-`--resume` appends recovery evidence in the original directory:
+Every dry run or broadcast automatically creates fresh `launch-results/<timestamp-case-random>/`;
+`--resume` appends recovery evidence in the original directory. Dry runs retain
+all planning/review/recovery artifacts, but no admission, signed bytes, API session
+or publication artifacts:
 
 | Artifact | Evidence |
 | --- | --- |
 | `events.jsonl` | Timestamped case/stage events, RPC/API errors, admission/simulation and actual chain observations. |
 | `plan.json` | Redacted finalized plan for public inspection, not exact recovery authority. |
 | `economic-review.json` | Public exact quotes, native Kyber inputs/calldata/minima/deadline, metadata/image descriptors, target, aligned minted/retained valuation, position budgets/debits/dust, fees, protected buys and simulated all-in execution prices; redacted, not recovery authority. |
-| `economic-admission.json` | Explicit review hash admission before any signature. |
-| `receipts.json` | Exact signed-envelope hashes retained pre-broadcast, followed by real receipts/references. |
-| `result.json` | `black-market.launch-example-result.v1`, end-to-end status, failure stage and causal evidence. |
+| `economic-admission.json` | Broadcast-only mode authorization (`authorization: "--broadcast"`) and computed review hash as provenance, not supplied-hash admission. |
+| `receipts.json` | Empty for a dry run; execution retains exact signed-envelope hashes pre-broadcast, followed by real receipts/references. |
+| `result.json` | `black-market.launch-example-result.v1`, runMode, scope, status, failure stage and causal evidence. A successful dry run has `scope: "planning"` and `execution: "dry-run"`; it does not claim chain/API completion. |
 | `published-token.json` | Actual indexed API representation. |
 | `published-image.json` | Optional bounded public-image HTTP/type/length/SHA-256 verification, transformation qualification or failure evidence. |
-| `private-recovery.json` | Mode `0600`; complete exact finalized `plan`, original `mode`/`confirmations`, immutable economic review/hash/admission saved before the first signature, plus signed raw bytes, API signature and one-time capability retained across updates. Never share/commit. |
+| `private-recovery.json` | Mode `0600`; complete exact finalized `plan`, original `mode`/`confirmations` and immutable economic review/hash saved during planning. Broadcast adds immutable mode authorization/hash provenance, signed raw bytes, API signature and one-time capability retained across updates. Never share/commit. |
 
 Public artifacts preserve structured field names and redact sensitive values:
 known keys/signatures/raw bytes/capabilities/auth values and endpoint secrets,
 while retaining public calldata/hashes/revert bytes. `node examples/<case>.ts
---resume <recovery-dir>` reloads the owner-only exact plan, economic admission,
-original mode/confirmations/restrictions and typed original inclusion references.
+--resume <recovery-dir>` reloads the owner-only exact plan, retained economic authorization
+provenance, original mode/confirmations/restrictions and typed original inclusion references.
 Fresh `planLaunch` (never preparation/mining) re-admits that commitment.
 Canonical Preparing/Ready runs only the remaining build-next sequence; canonical
 Active recovers the retained activation receipt and performs verification and
@@ -1016,9 +1037,10 @@ Configuration, admission, broadcast, publication and interruption failures exit
 nonzero and preserve evidence. No source rollback, cancellation, broadcast retry or
 relaunch occurs.
 Inspect retained transaction hashes before deciding to run a new case after an
-ambiguous send. `test/launch-example.test.mjs`, `test/launch-example-matrix.test.mjs`
-and `test/launch-example-resume.test.mjs` cover offline financial bounds,
-funding/rounding, quote/admission, signing/retention/config and resume boundaries,
+ambiguous send. `test/launch-example.test.mjs`, `test/launch-example-matrix.test.mjs`,
+`test/launch-example-mode.test.mjs` and `test/launch-example-resume.test.mjs` cover offline
+financial bounds, funding/rounding, quote/admission, signing/retention/config, default
+dry-run/no-signing/banner/command, broadcast routing and resume boundaries,
 not actual chain/API proof. The older independent whole-graph local
 Solidity-exported proof remains separate.
 

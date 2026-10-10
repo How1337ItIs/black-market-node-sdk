@@ -6,8 +6,8 @@ this checkout before using the new cases; an older installed package does not
 acquire the new `positionGaps` API automatically. The current chain-4663 graph is
 the October8 mined pool-bound V4 config6/V2 and canonical Abyss config1 deployment.
 Historical October5 config5 evidence is not relabeled as the new graph. Discovery
-is read-only; running a fixed launch example with configured signer/API deliberately
-executes real writes.
+is read-only; fixed launch examples default to an unsigned dry run. Only
+`--broadcast` (or deliberate `--resume` continuation) authorizes real writes.
 
 Use Node 24+ to run these TypeScript files directly, for example
 `pnpm build && node examples/quickstart.ts`. No extra runtime dependency or
@@ -20,7 +20,7 @@ examples; their relative support imports use explicit `.ts` extensions for Node 
 | `launch.ts` | Reviews/reconstructs an explicit saved plan and selected atomic/staged mode; optional offchain config6/V2 salt mining. Prints simulation, progress, and an admitted unsigned next transaction when evidence permits. |
 | `generate-lifecycle-commitment-fixture.ts` | Frozen independent historical config4/Abyss ABI bytes/hash/identity vector. Its pre-cutover allocations are not an executable 0.7.1 plan. |
 | `launch-lifecycle-smoke.ts` | Actual SDK launch/recovery/custody/fee operations, only on an explicitly authorized owned disposable loopback graph. |
-| `launch-erc20-*.ts`, `launch-erc404-*.ts` | Eleven independent zero-parameter cases: the eight existing examples plus three candidate replacements awaiting user live-run validation, with actual SDK admission, local signing, chain verification and mandatory API publication/indexing. |
+| `launch-erc20-*.ts`, `launch-erc404-*.ts` | Eleven independent fixed cases: unsigned end-to-end planning by default; `--broadcast` adds guarded local signing, chain verification and mandatory API publication/indexing. The eight existing examples and three candidate additions remain intact. |
 
 ## Deployed read-only discovery
 
@@ -91,9 +91,39 @@ See [service prerequisites](../docs/launch-lifecycle.md#real-http-api-integratio
 
 ## Individual token creation
 
-**Running one of these files can sign and broadcast a real launch and write to your
-configured API after explicit economic-review admission. Mainnet execution is
-irreversible and spends real funds.** Choose one command per intended launch.
+**Without a mode flag, these files are dry runs: no transactions are signed or
+broadcast, and no metadata/image is uploaded or published. `--broadcast` signs,
+spends real funds and publishes to your configured API. Mainnet execution is
+irreversible.** Choose one case per intended launch.
+
+### Two-step flow: dry run, then broadcast
+
+```sh
+# 1. Discover, build funding and plan; print the complete economic review and save artifacts.
+node examples/launch-erc20-v4.ts
+# 2. After reviewing the output, explicitly execute the same case.
+node examples/launch-erc20-v4.ts --broadcast
+```
+
+The default output starts with **DRY RUN — no transactions signed or broadcast.**
+It performs the same profile discovery, quote/funding builds, image descriptor
+freezing, economics, salt preparation and planner admission as execution, then
+exits `0` on successful planning. It saves `plan.json`, `economic-review.json`,
+`planning.json` and all other planning evidence in a fresh `launch-results/` directory.
+The creator's public address is derived locally (including authenticated keystore
+decryption when selected), but no wallet signer is created. The final output line
+is the exact case command with `--broadcast` appended.
+
+**Choosing `--broadcast` is the authorization. It deliberately skips manual
+economic-review admission: there is no interactive hash prompt or hash input.**
+The full review is still printed and saved, including its computed provenance hash.
+The broadcast run plans afresh with current state, fresh random identity and funding
+builds; it does not submit the dry run's saved plan. Planner admission, unchanged
+economic authority, deadlines, image verification and canonical/reorg barriers remain
+mandatory before signing and publication.
+`--resume <recovery-dir>` retains its existing continuation/publication behavior;
+it does not become a dry run and does not need `--broadcast`. Unknown, duplicated
+or combined mode flags fail before configuration or artifact creation with usage text.
 
 ### Setup once
 
@@ -123,6 +153,8 @@ Configure **exactly one** signer: your funded EOA's 32-byte `PRIVATE_KEY`, or
 sources reject. The keystore must be a regular owner-only file owned by your user;
 the bounded loader authenticates its Keccak MAC and declared address before deriving
 the creator. It uses Node crypto and existing viem, with no extra dependency.
+Dry-run configuration derives only the public creator address; signing methods are
+constructed only in broadcast or nonterminal resume execution.
 Never commit the keystore/password or use a published test key for a real launch.
 Set `LAUNCH_API_URL` to your actual HTTPS or owned loopback service root. There is
 no default wallet, guessed metadata API, or silent API skip. The API needs actual
@@ -200,15 +232,14 @@ seed, token/quote orientation and aligned valuation; multi-quote FDVs are not ad
 
 
 Before any attribution or transaction signature, the runner saves
-`economic-review.json` and exact owner-only recovery, prints its financial summary,
-and requires you to type **that exact economic review hash** at the interactive
-prompt. Noninteractive execution requires `EXAMPLE_ECONOMIC_REVIEW_HASH` to equal
-the freshly generated review hash, never a blanket yes. The hash binds all quotes,
-target, actual supply, predicted per-market token order, every allocation, fees,
-protected buys, Kyber conversion bytes/minima/deadline, metadata/image and finalized
-plan. Random launch identity makes admission specific to this run.
-Missing or mismatched admission stops unsigned, with review artifacts retained.
-Before every later signature it rereads the same configured API snapshot and
+`economic-review.json` and exact owner-only recovery and prints its financial summary.
+The computed hash binds all quotes, target, actual supply, predicted per-market
+token order, every allocation, fees, protected buys, Kyber conversion bytes/minima/
+deadline, metadata/image and finalized plan. It is provenance evidence, never an
+authorization input. Dry runs stop here without signing; broadcast runs save
+`economic-admission.json` with `authorization: "--broadcast"` and that hash as
+evidence of the chosen mode, not another gate.
+Before every later signature the runner rereads the same configured API snapshot and
 rechecks the immutable review, target, supply, finalized plan and predicted token
 order. Any exact price, API origin, chain, WETH/decimals or direct-anchor identity,
 kind or source change stops execution. Failed or unpriced reads also reject.
@@ -256,6 +287,10 @@ RPC before signing. Calldata, value, gas and gas price must remain exactly as re
 There is no mode fallback, admission override, automatic submission replay or reduced case.
 
 ### Commands and launch matrix
+
+Every command below defaults to a dry run. Append `--broadcast` to execute the
+selected case; the table's atomic/staged mode is independent of the CLI dry-run/
+broadcast choice.
 
 ```sh
 node examples/launch-erc20-v4.ts
@@ -340,27 +375,31 @@ Poster allocation is already inside Nitro gas/affordability and is not charged t
 
 ### Evidence and failure recovery
 
-Each new launch automatically creates `launch-results/<timestamp-case-random>/`;
+Each dry run or broadcast automatically creates `launch-results/<timestamp-case-random>/`;
 `--resume` reuses the original directory rather than creating another launch. Inspect
-`result.json`, `events.jsonl`, finalized `plan.json`,
-`receipts.json`, `publication-progress.json`, `published-token.json` and, when an image
-is configured, `published-image.json`. Exact admitted wallet envelopes are signed
-locally; computed hashes and unsigned envelopes are durably retained as
-`broadcast-attempt` **before the one raw broadcast**. Real receipts are saved before
+`result.json`, `events.jsonl`, finalized `plan.json`, `planning.json`,
+`economic-review.json` and `receipts.json`. A dry-run result has `runMode: "dry-run"`,
+`scope: "planning"` and `execution: "dry-run"`, with no transactions or API writes.
+Publication-only artifacts (`publication-progress.json`, `published-token.json` and,
+when configured, `published-image.json`) are produced only during broadcast/resume.
+Exact admitted wallet envelopes are signed locally only during execution; computed
+hashes and unsigned envelopes are durably retained as `broadcast-attempt`
+**before the one raw broadcast**. Real receipts are saved before
 status/canonical-state assertions. No unlocked-account signing or sending is used.
 Public evidence preserves structured field names but redacts sensitive values:
 known keys, signatures, signed raw bytes, API capabilities, authorization values
 and endpoint credentials. Public `plan.json` may therefore differ from the exact
 commitment and is **not recovery authority**. Before the first attribution or chain
 signature, `private-recovery.json` durably retains the complete unredacted finalized
-`plan`, original `mode`, `confirmations`, `economicReview` and exact
-`economicAdmission`. This owner-only file (mode `0600` inside the mode `0700` run
-directory) also retains raw signed transactions and one-time API recovery material
-across session updates. Original plan and economic review/admission are immutable.
+`plan`, original `mode`, `confirmations` and `economicReview`. Broadcast additionally
+saves `economicAdmission` with the computed review hash and `authorization: "--broadcast"`.
+This owner-only file (mode `0600` inside the mode `0700` run directory) also retains
+raw signed transactions and one-time API recovery material across session updates.
+Original plan and economic review/admission provenance are immutable.
 Never share or commit it.
 `launch-results/` is ignored.
 
-Every case requires actual API metadata staging (and verified image completion
+Every broadcast case requires actual API metadata staging (and verified image completion
 when configured), publication using the activation hash, and an indexed DTO
 matching token/creator/hash/metadata/image. Genuine pending-indexer HTTP `202`
 responses are polled for up to 90 seconds respecting `Retry-After`. Before **each
@@ -455,7 +494,7 @@ addresses from an application script.
 | Flow | Shared contract / intentional difference |
 | --- | --- |
 | Eleven launch wrappers | Unified preparation/admission, explicit mode, exact allocations, immutable config6 fees, protected ordered buys, reviewed next envelopes and canonical Active/custody verification. Eight original descriptors remain; three new matrix additions await user live validation. |
-| App Node launch/deploy | Both use valuation-driven recipes with actual supply, per-quote orientation/budgets and native ETH-to-quote Kyber funding. Examples retain an indicative validated API WETH USD seed and the reviewed USDG peg; exact economic-hash admission is separate from RPC execution proof. |
+| App Node launch/deploy | Both use valuation-driven recipes with actual supply, per-quote orientation/budgets and native ETH-to-quote Kyber funding. Examples retain an indicative validated API WETH USD seed and the reviewed USDG peg; they default to a dry run, while `--broadcast` supplies explicit authorization independently of mandatory RPC execution proof. |
 | Browser wallet | Browser account/provider authority and explicit UI review are application-owned. The examples instead derive an EOA locally, hold one source/submission RPC, recheck chain before signing/sending, and preserve computed signed hashes before one raw send. A browser integration must bind the active account/provider/chain again after review and pass that provider's RPC adapter as `submissionClient`; read proof alone does not authorize wallet submission. |
 | App creation funding | All fixed examples use integrated native-input `Swap` funding. Current registry target/spender/code hash, native/quote precision and decoded exact receiver/input/minimum/calldata are checked. No separate swap, native-wrap fallback or ERC20 approval is submitted on refusal. Other app payment paths are not this example runner's signing allowlist. |
 | App metadata/image | Both sign chain/core/wallet-bound attribution. Optional `EXAMPLE_IMAGE_PATH` signs actual SHA-256/type/length, uses the exact issued `putImage` URL/headers and requires `completeUpload` verification before launch. Publication/indexed association and one bounded public image GET are also required before example success; transformed served bytes are recorded separately. Unset keeps metadata-only behavior. Signer may be a local key or authenticated V3 keystore; app legal/UI consent remains application-owned. |

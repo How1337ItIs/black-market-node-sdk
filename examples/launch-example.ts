@@ -1,8 +1,8 @@
-// A launch case signs, broadcasts and publishes only after exact economic review admission.
+// Launch cases default to unsigned planning; --broadcast explicitly signs, broadcasts and publishes.
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import {
   decodeEventLog, decodeFunctionResult, encodeAbiParameters, encodeFunctionData, erc20Abi, keccak256,
   recoverTypedDataAddress, toHex, zeroAddress, zeroHash,
@@ -14,7 +14,7 @@ import {
   submitSignedRecorded, transactionEnvelope, readExampleQuoteUsdSeed, assertUnchangedEconomicQuote,
   resolveExampleQuotes, buildExampleBuysAndFunding, assertFutureLaunchDeadline, resolveExampleIdentity, readExampleImage,
   exampleImageUrl, readExamplePublishedImage,
-  allocateMarketBudgets, deriveExampleMarketEconomics, economicReviewHash, admitEconomicReview, guardEconomicReviewWallet,
+  allocateMarketBudgets, deriveExampleMarketEconomics, economicReviewHash, guardEconomicReviewWallet,
 } from "./launch-example-support.ts";
 import { buildExampleKyberConversions, assertExampleConversionAdmission, assertExampleConversionBindings } from "./launch-example-kyber.ts";
 const UNIT = 10n ** 18n;
@@ -855,7 +855,10 @@ async function verifyExampleDeployment({ client, fixture, sdk, artifacts, signal
   return chainId;
 }
 
-async function executeExample({ fixture, privateKey, scenario, sdk, artifacts, signal }) {
+async function executeExample({ fixture, privateKey, scenario, sdk, artifacts, signal, broadcast = false,
+  client = rpcClient(fixture.rpcUrl, artifacts, signal, "execution"),
+  createWallet = createLocalLaunchWallet, stage = stageMetadata,
+  execute = executePlan, verify = verifyChain, publish = publishAndVerify }) {
   validateCase(scenario);
   const metadata = resolveExampleIdentity(scenario, fixture.identityOverrides);
   const image = readExampleImage({ sdk, path: fixture.imagePath });
@@ -864,9 +867,8 @@ async function executeExample({ fixture, privateKey, scenario, sdk, artifacts, s
   artifacts.result.chain.orchestrator = fixture.orchestrator; artifacts.result.chain.creator = fixture.creator;
   artifacts.result.api = { status: "not-run", endpoint: fixture.apiUrl };
   artifacts.save("run-config.json", { configuration: fixture, case: scenario });
-  const client = rpcClient(fixture.rpcUrl, artifacts, signal, "execution");
   const chainId = await verifyExampleDeployment({ client, fixture, sdk, artifacts, signal });
-  // The local wallet is created only after the exact economic review is admitted.
+  // Planning and review need only the public creator address, never a wallet signer.
   const limits = limitSource(fixture, artifacts);
   const { planned, predictedToken, economicReview, reviewHash } = await constructPlan({ client, fixture, scenario, sdk, artifacts, signal, limits, metadata, image });
   const { plan } = planned;
@@ -875,9 +877,14 @@ async function executeExample({ fixture, privateKey, scenario, sdk, artifacts, s
   assert.equal(planned.mode, scenario.mode, "Never silently change requested mode"); addressEqual(planned.predictedToken, predictedToken, "Planner token prediction");
   if (!planned.simulation.admitted) throw exampleError("PLAN_NOT_ADMITTED", planned.simulation.reason ?? "The actual SDK did not admit this exact launch", { simulation: planned.simulation });
   const usd = (value) => `${value / UNIT}.${(value % UNIT).toString().padStart(18, "0")}`;
+  const fundingSummary = economicReview.quotes.every((quote) => quote.conversion.nativeWrap === true)
+    ? "payable native wrap"
+    : economicReview.quotes.some((quote) => quote.conversion.nativeWrap === true)
+      ? "native wrap for the wrapped-native quote, Kyber conversion for the rest"
+      : "Kyber conversion";
   console.log(`Economic review ${reviewHash}\n${metadata.name} (${metadata.symbol}); target USD ${usd(economicReview.targetMarketCapUsdX18)}; minted supply ${usd(economicReview.actualMintedSupply)}\n` +
     economicReview.markets.map((market) => `Market ${market.marketIndex} ${market.venue}/${market.quoteSymbol}: retained-supply opening valuation USD ${usd(market.retainedSupplyOpeningValuationUsdX18)} (minted-supply USD ${usd(market.openingValuationUsdX18)}), token USD ${usd(market.unitPriceUsdX18)}, token ${market.quoteSymbol} ${usd(market.unitPriceQuoteX18)}, ${market.positions.length} positions`).join("\n") +
-    `\nExpected rounding burn ${economicReview.expectedUnusedBurn} raw token units; ${planned.plan.buys.length} ordered buys, native input ${fixture.buyAmountWei} wei each via Kyber conversion; 50 bps conversion and ordered-buy protection.\nLP fee 3000 pips; V4 hook max 10000/min 1000 pips (fixed maximum schedule); executor 275 bps.\nImage ${image ? `${image.descriptor.contentType}, ${image.descriptor.contentLength} bytes, ${image.descriptor.sha256}` : "none (metadata only)"}.\nReview allocations, fees and exact protected buys: ${artifacts.directory}/economic-review.json`);
+    `\nExpected rounding burn ${economicReview.expectedUnusedBurn} raw token units; ${planned.plan.buys.length} ordered buys, native input ${fixture.buyAmountWei} wei each (${fundingSummary}); 50 bps conversion and ordered-buy protection.\nLP fee 3000 pips; V4 hook max 10000/min 1000 pips (fixed maximum schedule); executor 275 bps.\nImage ${image ? `${image.descriptor.contentType}, ${image.descriptor.contentLength} bytes, ${image.descriptor.sha256}` : "none (metadata only)"}.\nReview allocations, fees and exact protected buys: ${artifacts.directory}/economic-review.json`);
   console.log(economicReview.initialBuy.simulatedBuys.map((buy) => `Buy ${buy.buyIndex} market ${buy.marketIndex}/${buy.quoteSymbol}: quote spent ${buy.quoteSpent} raw units; simulated all-in USD/token ${usd(buy.allInUnitPriceUsdX18)}; fees + price-impact premium ${buy.feeAndPriceImpactPremiumBps} bps vs opening`).join("\n"));
   for (const quote of economicReview.quotes) {
     const seed = quote.usdSeed;
@@ -887,27 +894,41 @@ async function executeExample({ fixture, privateKey, scenario, sdk, artifacts, s
         ? `Native-wrap payable funding; input ${quote.conversion.nativeInputPerBuy} wei per buy across ${quote.conversion.buyCount} buy(s); oracle ${quote.oracle.oracleConfigId}.`
         : `Kyber ${quote.conversion.apiOrigin}; input ${quote.conversion.response.amountIn} native wei; protected quote output ${quote.conversion.response.amountOutMinimum} raw ${quote.symbol}; conversion price impact ${quote.conversion.response.priceImpactBps ?? "unknown"} bps; expires ${quote.conversion.response.expiresAt}; oracle ${quote.oracle.oracleConfigId}.`));
   }
-  const economicAdmission = await admitEconomicReview(reviewHash);
+  if (!broadcast) {
+    artifacts.result.execution = "dry-run";
+    artifacts.stage("dry-run-completed");
+    return;
+  }
+  // --broadcast is the authorization; the hash is retained only as provenance.
+  const economicAdmission = { authorization: "--broadcast", reviewHash, admittedAt: new Date().toISOString(),
+    policy: "unchanged-exact-api-price-and-source; upstream-age-preserved" };
   artifacts.privateRecovery({ economicAdmission });
   artifacts.save("economic-admission.json", economicAdmission);
   const assertEconomicAuthority = () => assertExampleEconomicAuthority({ client, fixture, planned, economicReview, reviewHash, sdk, artifacts, signal, image });
-  const localWallet = createLocalLaunchWallet({ privateKey, creator: fixture.creator, chainId, orchestrator: fixture.orchestrator, client, redactor: artifacts.redactor });
+  const localWallet = createWallet({ privateKey, creator: fixture.creator, chainId, orchestrator: fixture.orchestrator, client, redactor: artifacts.redactor });
   const wallet = guardEconomicReviewWallet(localWallet, assertEconomicAuthority);
   const transport = apiTransport({ artifacts, signal, apiUrl: fixture.apiUrl });
-  const session = await stageMetadata({ fixture, plan, sdk, artifacts, transport, wallet, metadata, image });
-  const executed = await executePlan({ client, fixture, planned, sdk, artifacts, signal, limits, wallet });
-  await verifyChain({ client, planned, ...executed, fixture, scenario, sdk, artifacts });
-  await publishAndVerify({ client, fixture, planned, ...executed, session, sdk, artifacts, transport, signal, timeoutSeconds: 90 });
+  const session = await stage({ fixture, plan, sdk, artifacts, transport, wallet, metadata, image });
+  const executed = await execute({ client, fixture, planned, sdk, artifacts, signal, limits, wallet });
+  await verify({ client, planned, ...executed, fixture, scenario, sdk, artifacts });
+  await publish({ client, fixture, planned, ...executed, session, sdk, artifacts, transport, signal, timeoutSeconds: 90 });
   artifacts.stage("completed");
 }
 
 export function readLaunchExampleArguments(argv) {
-  if (!argv.length) return undefined;
-  if (argv[0] !== "--resume") throw exampleError("INVALID_ARGUMENTS", "Launch examples accept only --resume <recovery-dir> or no arguments");
+  const usage = "Usage: node examples/<case>.ts [--broadcast | --resume <recovery-dir>]\nOmit flags for a dry run; --broadcast authorizes signing, transactions and publication.";
+  if (!argv.length) return { mode: "dry-run" };
+  if (argv.length === 1 && argv[0] === "--broadcast") return { mode: "broadcast" };
+  if (argv[0] !== "--resume") throw exampleError("INVALID_ARGUMENTS", usage);
   if (argv.length !== 2 || typeof argv[1] !== "string" || !argv[1].trim() || argv[1].startsWith("--")) {
-    throw exampleError("MISSING_RECOVERY", "--resume requires exactly one recovery directory");
+    throw exampleError("MISSING_RECOVERY", `--resume requires exactly one recovery directory.\n${usage}`);
   }
-  return argv[1];
+  return { mode: "resume", resumeDirectory: argv[1] };
+}
+
+export function launchExampleBroadcastCommand({ script = process.argv[1], cwd = process.cwd(), execArgv = process.execArgv } = {}) {
+  const quote = (value) => /^[\w./:-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+  return ["node", ...execArgv, relative(cwd, script), "--broadcast"].map(quote).join(" ");
 }
 
 function assertRetainedExampleReceipts({ progress, references, artifacts }) {
@@ -1089,15 +1110,17 @@ export async function resumeLaunchExample({ fixture, privateKey, sdk, artifacts,
   artifacts.stage("completed");
 }
 
-export async function runLaunchExample(caseObject, argv = process.argv.slice(2)) {
+export async function runLaunchExample(caseObject, argv = process.argv.slice(2), { sdk: suppliedSdk, env = process.env, ...runtime } = {}) {
   const redactor = new Redactor();
   let artifacts;
   let resumeDirectory;
+  let mode;
   const controller = new AbortController();
   const interrupted = () => controller.abort(exampleError("INTERRUPTED", "Launch example interrupted; submitted hashes and chain state are retained"));
   process.on("SIGINT", interrupted); process.on("SIGTERM", interrupted);
   try {
-    resumeDirectory = readLaunchExampleArguments(argv);
+    ({ mode, resumeDirectory } = readLaunchExampleArguments(argv));
+    if (mode === "dry-run") console.log("DRY RUN — no transactions signed or broadcast.");
     const caseId = caseObject.id;
     assert.match(caseId, /^[a-z0-9-]+$/, "Example case ID must be a safe directory label");
     if (resumeDirectory) artifacts = new RunArtifacts(resumeDirectory, caseId, redactor, { resume: true });
@@ -1106,17 +1129,21 @@ export async function runLaunchExample(caseObject, argv = process.argv.slice(2))
       artifacts = new RunArtifacts(join("launch-results", `${new Date().toISOString().replaceAll(":", "-")}-${caseId}-${randomUUID()}`), caseId, redactor);
     }
     artifacts.initialize();
+    artifacts.result.runMode = mode;
+    if (mode === "dry-run") artifacts.result.scope = "planning";
     loadExampleEnvironment();
-    redactor.addSecret(process.env.PRIVATE_KEY);
-    if (typeof process.env.PRIVATE_KEY === "string") redactor.addSecret(process.env.PRIVATE_KEY.slice(2));
-    // Import after .env loading: the public SDK resolves address overrides on import.
-    const sdk = await import("@black-market/sdk");
-    const { fixture, privateKey } = await readExampleConfiguration(sdk, redactor);
-    const options = { fixture, privateKey, sdk, artifacts, signal: controller.signal };
+    redactor.addSecret(env.PRIVATE_KEY);
+    if (typeof env.PRIVATE_KEY === "string") redactor.addSecret(env.PRIVATE_KEY.slice(2));
+    // A static SDK import would resolve address overrides before .env loading.
+    const sdk = suppliedSdk ?? await import("@black-market/sdk");
+    const { fixture, privateKey } = await readExampleConfiguration(sdk, redactor, env);
+    const options = { ...runtime, fixture, privateKey, sdk, artifacts, signal: controller.signal };
     if (resumeDirectory) await resumeLaunchExample(options);
-    else await executeExample({ ...options, scenario: caseObject });
+    else await executeExample({ ...options, scenario: caseObject, broadcast: mode === "broadcast" });
     artifacts.finish("passed");
-    console.log(`Actual chain launch and API publication/indexing passed${resumeDirectory ? " (resumed)" : ""}\nArtifacts: ${artifacts.directory}\nToken: ${artifacts.result.chain.token}`);
+    if (mode === "dry-run") {
+      console.log(`Dry-run planning and economic review passed.\nArtifacts: ${artifacts.directory}\nTo sign, broadcast and publish, re-run with --broadcast:\n${launchExampleBroadcastCommand()}`);
+    } else console.log(`Actual chain launch and API publication/indexing passed${resumeDirectory ? " (resumed)" : ""}\nArtifacts: ${artifacts.directory}\nToken: ${artifacts.result.chain.token}`);
     return artifacts.result;
   } catch (failure) {
     const error = controller.signal.aborted ? controller.signal.reason : failure;

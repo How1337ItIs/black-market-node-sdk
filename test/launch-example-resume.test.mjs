@@ -129,13 +129,18 @@ function context(t, { phase = sdk.LifecyclePhase.Active, mode = "staged", image,
   return { options, original, artifacts, fixture, recovery, plan, planned, progress, response, references, receipts, calls, transport, parent };
 }
 
-test("resume arguments accept only the original directory and reject ambiguous launch commands", () => {
-  assert.equal(readLaunchExampleArguments([]), undefined);
-  assert.equal(readLaunchExampleArguments(["--resume", "launch-results/original"]), "launch-results/original");
-  for (const args of [["--resume"], ["--resume", ""], ["--resume", "  "], ["--resume", "--other"], ["--resume", "dir", "extra"]]) {
-    assert.throws(() => readLaunchExampleArguments(args), { code: "MISSING_RECOVERY" });
+test("launch arguments select dry-run, broadcast or resume and reject ambiguous commands with usage", () => {
+  assert.deepEqual(readLaunchExampleArguments([]), { mode: "dry-run" });
+  assert.deepEqual(readLaunchExampleArguments(["--broadcast"]), { mode: "broadcast" });
+  assert.deepEqual(readLaunchExampleArguments(["--resume", "launch-results/original"]), { mode: "resume", resumeDirectory: "launch-results/original" });
+  for (const args of [["--resume"], ["--resume", ""], ["--resume", "  "], ["--resume", "--other"], ["--resume", "dir", "extra"],
+    ["--resume", "dir", "--broadcast"]]) {
+    assert.throws(() => readLaunchExampleArguments(args), { code: "MISSING_RECOVERY", message: /Usage:.*--broadcast.*--resume/s });
   }
-  for (const args of [["dir"], ["--unknown"], ["--resuem", "dir"]]) assert.throws(() => readLaunchExampleArguments(args), { code: "INVALID_ARGUMENTS" });
+  for (const args of [["dir"], ["--unknown"], ["--resuem", "dir"], ["--dry-run"], ["--broadcast=true"], ["--broadcast", "false"],
+    ["--broadcast", "--broadcast"], ["--broadcast", "--resume", "dir"]]) {
+    assert.throws(() => readLaunchExampleArguments(args), { code: "INVALID_ARGUMENTS", message: /Usage:.*--broadcast.*--resume/s });
+  }
 });
 
 test("all eleven wrapper commands route --resume before configuration and never create a replacement run", (t) => {
