@@ -53,6 +53,11 @@ not merely metadata staging. See the [example guide](examples/README.md).
 
 Launch examples spend real funds and publish to your configured API.
 Plans, transaction hashes, receipts, and errors are saved in `launch-results/`.
+Continue the original committed launch with
+`node examples/<case>.ts --resume launch-results/<original-run-directory>`.
+Preparing/Ready continues only remaining steps; Active verifies and publishes
+without re-execution. Retain the private session/capability and, for a pending image,
+reload the original bytes via `EXAMPLE_IMAGE_PATH`. See the recovery guide above.
 Keep `.env`, keystores and private recovery files out of Git.
 
 The published `0.7.1` package includes the breaking lifecycle cutover.

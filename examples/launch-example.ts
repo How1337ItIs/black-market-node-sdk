@@ -338,7 +338,7 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
   // Complete exact intent is owner-only and durable before attribution or chain signing.
   artifacts.privateRecovery({
     schema: "black-market.launch-example-recovery.v1", sdk: "node", caseId: artifacts.result.caseId,
-    plan: finalizedPlan, mode: scenario.mode, confirmations, economicReview: { ...economicReview, reviewHash },
+    plan: finalizedPlan, mode: scenario.mode, confirmations, executionLimits: fixture.executionLimits, economicReview: { ...economicReview, reviewHash },
   });
   artifacts.save("plan.json", finalizedPlan);
   artifacts.save("hook-deployments.json", planned.hookDeployments);
@@ -476,8 +476,8 @@ function limitSource(fixture, artifacts) {
   };
 }
 
-async function executePlan({ client, fixture, planned, sdk, artifacts, signal, limits, wallet }) {
-  const references = [];
+async function executePlan({ client, fixture, planned, sdk, artifacts, signal, limits, wallet, references: retainedReferences = [] }) {
+  const references = [...retainedReferences];
   let activation;
   for (let step = 0; step < 64; step += 1) {
     artifacts.stage("build-next", { step });
@@ -486,6 +486,10 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
     if (!next) return { references, activation };
     assert.ok(reviewedTransaction, "No transaction outside the saved review may be submitted");
     for (const field of ["id", "kind", "chainId", "from", "to", "data", "value", "gas", "gasPrice"]) assert.equal(next[field], reviewedTransaction[field], `Fresh ${field} must match the saved review`);
+    if (retainedReferences.length) {
+      const progress = await sdk.readLaunchProgress({ client, planned, receipts: references, confirmations: planned.confirmations, signal });
+      assertRetainedExampleReceipts({ progress, references, artifacts });
+    }
     artifacts.event("next-admitted", { transaction: next });
     assert.equal(next.chainId, Number(planned.chainId));
     assert.equal(BigInt(await client.request({ method: "eth_chainId" })), planned.chainId, "Recheck execution chain before every send");
@@ -535,8 +539,8 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
     const includedBlock = await client.request({ method: "eth_getBlockByNumber", params: [receipt.blockNumber, false] });
     addressEqual(includedBlock?.hash, receipt.blockHash, "Canonical included block");
     const latest = BigInt(await client.request({ method: "eth_blockNumber" }));
-    assert.ok(latest >= BigInt(receipt.blockNumber), "Required one confirmation must be included canonically");
-    const reference = { transactionHash: row.transactionHash, observedBlockNumber: BigInt(receipt.blockNumber), observedBlockHash: receipt.blockHash, confirmations: 1 };
+    assert.ok(latest >= BigInt(receipt.blockNumber) + BigInt(planned.confirmations) - 1n, "Required confirmations must be included canonically");
+    const reference = { transactionHash: row.transactionHash, observedBlockNumber: BigInt(receipt.blockNumber), observedBlockHash: receipt.blockHash, confirmations: planned.confirmations };
     row.status = "confirmed"; row.reference = reference; artifacts.saveReceipts();
     references.push(reference);
     if (["atomic", "activate"].includes(next.kind)) {
@@ -553,7 +557,7 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
 async function verifyChain({ client, planned, references, activation, fixture, scenario, sdk, artifacts }) {
   artifacts.stage("chain-verification");
   assert.ok(activation, "A real atomic/activate receipt is required");
-  const progress = await sdk.readLaunchProgress({ client, planned, receipts: references, confirmations: 1 });
+  const progress = await sdk.readLaunchProgress({ client, planned, receipts: references, confirmations: planned.confirmations });
   artifacts.result.chain.progress = progress;
   artifacts.save("progress.json", progress);
   artifacts.event("canonical-progress", { progress });
@@ -839,6 +843,18 @@ export async function assertExampleEconomicAuthority({ client, fixture, planned,
   artifacts.event("economic-authority-rechecked", { reviewHash, currentQuotes });
 }
 
+async function verifyExampleDeployment({ client, fixture, sdk, artifacts, signal }) {
+  signal?.throwIfAborted();
+  artifacts.stage("deployment-provenance");
+  const chainId = BigInt(await client.request({ method: "eth_chainId" }));
+  assert.equal(chainId, 4663n, "Examples require Robinhood chain 4663");
+  assert.equal(await client.request({ method: "eth_getCode", params: [fixture.creator, "latest"] }), "0x", "Creator must be an EOA");
+  assert.notEqual(await client.request({ method: "eth_getCode", params: [fixture.orchestrator, "latest"] }), "0x", "Current orchestrator must be deployed");
+  addressEqual(await contractReader(client)(fixture.orchestrator, sdk.launchLifecycleAbi, "registry"), fixture.implementationRegistry, "Configured deployment registry");
+  artifacts.event("deployment-verified", { chainId, creator: fixture.creator, orchestrator: fixture.orchestrator });
+  return chainId;
+}
+
 async function executeExample({ fixture, privateKey, scenario, sdk, artifacts, signal }) {
   validateCase(scenario);
   const metadata = resolveExampleIdentity(scenario, fixture.identityOverrides);
@@ -849,14 +865,8 @@ async function executeExample({ fixture, privateKey, scenario, sdk, artifacts, s
   artifacts.result.api = { status: "not-run", endpoint: fixture.apiUrl };
   artifacts.save("run-config.json", { configuration: fixture, case: scenario });
   const client = rpcClient(fixture.rpcUrl, artifacts, signal, "execution");
-  artifacts.stage("deployment-provenance");
-  const chainId = BigInt(await client.request({ method: "eth_chainId" }));
-  assert.equal(chainId, 4663n, "Examples require Robinhood chain 4663");
-  assert.equal(await client.request({ method: "eth_getCode", params: [fixture.creator, "latest"] }), "0x", "Creator must be an EOA");
-  assert.notEqual(await client.request({ method: "eth_getCode", params: [fixture.orchestrator, "latest"] }), "0x", "Current orchestrator must be deployed");
-  addressEqual(await contractReader(client)(fixture.orchestrator, sdk.launchLifecycleAbi, "registry"), fixture.implementationRegistry, "Configured deployment registry");
+  const chainId = await verifyExampleDeployment({ client, fixture, sdk, artifacts, signal });
   // The local wallet is created only after the exact economic review is admitted.
-  artifacts.event("deployment-verified", { chainId, creator: fixture.creator, orchestrator: fixture.orchestrator });
   const limits = limitSource(fixture, artifacts);
   const { planned, predictedToken, economicReview, reviewHash } = await constructPlan({ client, fixture, scenario, sdk, artifacts, signal, limits, metadata, image });
   const { plan } = planned;
@@ -891,17 +901,210 @@ async function executeExample({ fixture, privateKey, scenario, sdk, artifacts, s
   artifacts.stage("completed");
 }
 
-export async function runLaunchExample(caseObject) {
+export function readLaunchExampleArguments(argv) {
+  if (!argv.length) return undefined;
+  if (argv[0] !== "--resume") throw exampleError("INVALID_ARGUMENTS", "Launch examples accept only --resume <recovery-dir> or no arguments");
+  if (argv.length !== 2 || typeof argv[1] !== "string" || !argv[1].trim() || argv[1].startsWith("--")) {
+    throw exampleError("MISSING_RECOVERY", "--resume requires exactly one recovery directory");
+  }
+  return argv[1];
+}
+
+function assertRetainedExampleReceipts({ progress, references, artifacts }) {
+  if (!progress.confirmationSafe || progress.receipts.length !== references.length || references.some((reference) => {
+    const receipt = progress.receipts.find((row) => same(row.transactionHash, reference.transactionHash));
+    return receipt?.status !== "confirmed" || !same(receipt.effectiveHash, reference.transactionHash) ||
+      receipt.blockNumber !== reference.observedBlockNumber || !same(receipt.blockHash, reference.observedBlockHash);
+  })) {
+    artifacts.result.execution = "reconciliation-required";
+    artifacts.result.chain.status = "canonicality-failed";
+    artifacts.save("resume-progress.json", { progress, references });
+    throw exampleError("RECEIPT_RECONCILIATION_REQUIRED",
+      "Retained receipts are no longer confirmation-safe at their original block number/hash; reconcile read-only, never replay or relaunch");
+  }
+}
+
+export async function refreshExampleUploadSession({ fixture, planned, recovery, sdk, artifacts, transport, signal }) {
+  artifacts.stage("api-resume-session");
+  const api = new sdk.LaunchApiClient({ baseUrl: fixture.apiUrl, retries: 1, fetch: transport.fetch.bind(transport) });
+  const sessionId = recovery.session?.sessionId;
+  const capability = recovery.capability ?? recovery.session?.capability;
+  assert.ok(typeof sessionId === "string" && sessionId.length && typeof capability === "string" && capability.length,
+    "Recovery requires the original API session and one-time capability");
+  if (recovery.session.capability) assert.equal(recovery.session.capability, capability, "Original one-time capability");
+  artifacts.redactor.addSecret(capability);
+  const metadata = recovery.economicReview.metadata;
+  const image = recovery.economicReview.image ?? undefined;
+  assert.deepEqual(recovery.request.metadata, metadata, "Original signed metadata");
+  assert.deepEqual(recovery.request.image ?? null, image ?? null, "Original signed image descriptor");
+  const retain = (current) => {
+    // Read/renew/complete responses never echo the one-time capability.
+    const session = { ...current, capability };
+    artifacts.privateRecovery({ session, capability });
+    artifacts.result.api.session = session;
+    artifacts.result.api.sessionId = sessionId;
+    assert.equal(session.sessionId, sessionId, "Original API session"); assert.equal(session.chainId, Number(planned.chainId));
+    addressEqual(session.wallet, planned.plan.creator, "Resumed session wallet");
+    assert.equal(session.metadata.name, metadata.name); assert.equal(session.metadata.symbol, metadata.symbol);
+    assert.equal(session.metadata.description, metadata.description || null);
+    if (session.transactionHash != null) {
+      addressEqual(session.transactionHash, artifacts.recovery.activation?.transactionHash, "Original session activation");
+    }
+    if (session.token != null) addressEqual(session.token, planned.predictedToken, "Original session token");
+    if (image) for (const field of ["sha256", "contentType", "contentLength"]) assert.equal(session.image?.[field], image[field], `Resumed signed image ${field}`);
+    else assert.equal(session.image, null, "Original metadata-only session");
+    return session;
+  };
+  signal?.throwIfAborted();
+  let session = retain(await api.getUploadSession(Number(planned.chainId), sessionId, capability));
+  if (image && session.imageStatus !== "ready") {
+    assert.ok(session.status === "awaiting_upload" && session.upload, "Live session must await the original image upload");
+    if (!fixture.imagePath) throw exampleError("IMAGE_INVALID", "Resume with an unready image requires EXAMPLE_IMAGE_PATH for the original signed bytes");
+    const reloaded = readExampleImage({ sdk, path: fixture.imagePath });
+    assert.deepEqual(reloaded.descriptor, image, "Reloaded image bytes must match the original signed SHA-256, content type and length");
+    const put = async () => {
+      signal?.throwIfAborted();
+      transport.authorizeImageUpload(session.upload, image);
+      await api.putImage(session.upload, new Blob([reloaded.bytes], { type: image.contentType }));
+    };
+    try { await put(); }
+    catch (error) {
+      if (!(error instanceof sdk.LaunchApiError) || ![403, 410, 412].includes(error.status) || typeof api.renewUploadUrl !== "function") throw error;
+      artifacts.event("image-upload-url-expired", { status: error.status });
+      session = retain(await api.renewUploadUrl(Number(planned.chainId), sessionId, capability));
+      assert.ok(session.status === "awaiting_upload" && session.upload, "Renewed session must issue the original image's fresh PUT URL");
+      await put(); // Only one renewal/retry, always the same signed bytes.
+    }
+    signal?.throwIfAborted();
+    session = retain(await api.completeUpload(Number(planned.chainId), sessionId, capability));
+    assert.equal(session.imageStatus, "ready", "Original image upload must be verified");
+    for (const field of ["width", "height"]) assert.ok(Number.isSafeInteger(session.image[field]) && session.image[field] > 0 && session.image[field] <= 4096, `Verified image ${field}`);
+    artifacts.event("image-upload-completed", { session });
+  }
+  assert.ok(["ready_to_launch", "transaction_submitted", "awaiting_indexer", "optimistic", "final"].includes(session.status), "Resumed session must be reusable for publication");
+  artifacts.result.api.status = "session-ready";
+  return { api, sessionId, capability, metadata, image };
+}
+
+export async function resumeLaunchExample({ fixture, privateKey, sdk, artifacts, signal,
+  client = rpcClient(fixture.rpcUrl, artifacts, signal, "execution"),
+  transport = apiTransport({ artifacts, signal, apiUrl: fixture.apiUrl }),
+  execute = executePlan, verify = verifyChain, publish = publishAndVerify }) {
+  const recovery = artifacts.recovery;
+  assert.ok(recovery && ["atomic", "staged"].includes(recovery.mode) && recovery.plan, "Recovery requires the original committed plan and mode");
+  const plan = sdk.parseLaunchPlan(JSON.stringify(recovery.plan));
+  const confirmations = recovery.confirmations;
+  assert.ok(Number.isSafeInteger(confirmations) && confirmations > 0, "Retained confirmation policy");
+  assert.ok(recovery.economicReview?.reviewHash && Array.isArray(recovery.economicReview.markets), "Recovery requires the retained economic review");
+  const { reviewHash, ...economicReview } = recovery.economicReview;
+  assert.equal(economicReviewHash(economicReview), reviewHash, "Retained economic review hash");
+  assert.equal(recovery.economicAdmission?.reviewHash, reviewHash, "Retained explicit economic admission");
+  assert.deepEqual(JSON.parse(sdk.serializeLaunchPlan(plan)), economicReview.finalizedPlan, "Original reviewed finalized plan");
+  assert.equal(sdk.hashLaunchPlan(plan), economicReview.planHash, "Original reviewed plan commitment");
+  // Rehydrate only the wide review values read by the existing signing guard.
+  economicReview.targetMarketCapUsdX18 = BigInt(economicReview.targetMarketCapUsdX18);
+  economicReview.actualMintedSupply = BigInt(economicReview.actualMintedSupply);
+  for (const quote of economicReview.quotes) {
+    quote.conversion = { ...quote.conversion, nativeInputPerBuy: BigInt(quote.conversion.nativeInputPerBuy),
+      ...(quote.conversion.deadline === undefined ? {} : { deadline: BigInt(quote.conversion.deadline) }) };
+  }
+  const scenario = { id: recovery.caseId ?? artifacts.result.caseId, mode: recovery.mode,
+    tokenKind: plan.token.kind, rewardMode: plan.token.rewardMode,
+    markets: economicReview.markets.map((market) => ({ venue: market.venue, positions: market.positions.length })) };
+  assert.equal(scenario.markets.length, plan.markets.length, "Retained review market count");
+  assert.ok(scenario.markets.every((market) => ["v4", "abyss"].includes(market.venue) && market.positions > 0), "Retained review market topology");
+  assert.equal(plan.chainId, BigInt(fixture.chainId), "Original execution chain");
+  addressEqual(fixture.creator, plan.creator, "Configured signer must be the retained creator");
+  addressEqual(fixture.orchestrator, plan.orchestrator, "Original orchestrator");
+  assert.equal(launchApiUrl(recovery.apiUrl), launchApiUrl(fixture.apiUrl), "Original API endpoint");
+  fixture = { ...fixture, targetMarketCapUsdX18: economicReview.targetMarketCapUsdX18,
+    executionLimits: recovery.executionLimits ?? artifacts.configuration?.executionLimits ?? fixture.executionLimits };
+  assert.ok(Array.isArray(recovery.receipts) && recovery.receipts.length, "Resume requires retained confirmed receipt evidence");
+  const references = recovery.receipts.map((reference) => {
+    assert.match(reference.transactionHash, /^0x[\da-fA-F]{64}$/, "Original receipt hash");
+    assert.match(reference.observedBlockHash, /^0x[\da-fA-F]{64}$/, "Original receipt block hash");
+    assert.ok(reference.observedBlockNumber !== undefined && reference.observedBlockNumber !== null, "Original receipt block number");
+    return { ...reference, observedBlockNumber: BigInt(reference.observedBlockNumber), confirmations: reference.confirmations ?? confirmations };
+  });
+  const retainedHashes = new Set(references.map((reference) => reference.transactionHash.toLowerCase()));
+  if (references.some((reference) => reference.replacementHash && !same(reference.replacementHash, reference.transactionHash)) ||
+      [...(recovery.signedTransactions ?? []), ...artifacts.transactions].some((row) => !retainedHashes.has(row.transactionHash.toLowerCase()))) {
+    artifacts.result.execution = "reconciliation-required";
+    throw exampleError("RECEIPT_RECONCILIATION_REQUIRED", "A signed or replaced hash lacks original confirmed inclusion evidence; reconcile read-only before resuming, never resend");
+  }
+  artifacts.result.network = "chain-4663";
+  Object.assign(artifacts.result.chain, { chainId: fixture.chainId, rpcUrl: fixture.rpcUrl, orchestrator: plan.orchestrator, creator: plan.creator, confirmations });
+  artifacts.result.api.endpoint = fixture.apiUrl;
+  const chainId = await verifyExampleDeployment({ client, fixture, sdk, artifacts, signal });
+  const limits = limitSource(fixture, artifacts);
+  artifacts.stage("resume-planning");
+  const planned = await sdk.planLaunch({ client, account: plan.creator, plan, mode: recovery.mode, limits, confirmations, receipts: references, signal });
+  assert.deepEqual(JSON.parse(sdk.serializeLaunchPlan(planned.plan)), recovery.plan, "Resume cannot remine or change the committed plan");
+  assert.equal(planned.mode, recovery.mode, "Original admitted mode");
+  assert.equal(planned.planHash, economicReview.planHash, "Original admitted commitment");
+  assert.equal(planned.launchId, sdk.hashLaunchIdentity(plan), "Original launch identity");
+  addressEqual(planned.predictedToken, economicReview.predictedToken, "Original predicted token");
+  const progress = await sdk.readLaunchProgress({ client, planned, receipts: references, confirmations, signal });
+  assertRetainedExampleReceipts({ progress, references, artifacts });
+  if (![sdk.LifecyclePhase.Preparing, sdk.LifecyclePhase.Ready, sdk.LifecyclePhase.Active].includes(progress.canonical.phase)) {
+    throw exampleError("RESUME_PHASE_UNSUPPORTED", "Resume requires canonical Preparing, Ready or Active; an unstarted or cancelled launch must never be relaunched");
+  }
+  if (!planned.simulation.admitted) throw exampleError("PLAN_NOT_ADMITTED", planned.simulation.reason ?? "Remaining committed launch work was not admitted", { simulation: planned.simulation });
+  Object.assign(artifacts.result.chain, { planHash: planned.planHash, launchId: planned.launchId, predictedToken: planned.predictedToken });
+  // Canonical receipts restore the begin/deployment logs needed by verifyChain.
+  for (const reference of references) {
+    const receipt = await client.request({ method: "eth_getTransactionReceipt", params: [reference.transactionHash] });
+    if (!receipt || BigInt(receipt.status) !== 1n || !same(receipt.transactionHash, reference.transactionHash) ||
+        BigInt(receipt.blockNumber) !== reference.observedBlockNumber || !same(receipt.blockHash, reference.observedBlockHash)) {
+      artifacts.result.execution = "reconciliation-required";
+      throw exampleError("RECEIPT_RECONCILIATION_REQUIRED", "Retained receipt inclusion changed; reconcile read-only, never replay");
+    }
+    let row = artifacts.transactions.find((transaction) => same(transaction.transactionHash, reference.transactionHash));
+    if (!row) { row = { transactionHash: reference.transactionHash }; artifacts.transactions.push(row); }
+    Object.assign(row, { status: "confirmed", reference, receipt });
+  }
+  artifacts.saveReceipts();
+  let executed;
+  if (progress.canonical.phase === sdk.LifecyclePhase.Active) {
+    const activationHash = recovery.activation?.transactionHash ?? references.at(-1).transactionHash;
+    const row = artifacts.transactions.find((transaction) => same(transaction.transactionHash, activationHash));
+    assert.ok(row && retainedHashes.has(activationHash.toLowerCase()), "Active resume requires the retained activation receipt");
+    executed = { references, activation: { transactionHash: activationHash, receipt: row.receipt } };
+    artifacts.result.chain.activationTransactionHash = activationHash;
+    artifacts.privateRecovery({ activation: executed.activation });
+    await assertCanonicalExampleActivation({ client, planned, ...executed, sdk, artifacts, signal });
+    // Terminal planLaunch deliberately omits execution metadata; verifyChain still
+    // needs the committed profiles' adapters to check permanent position custody.
+    planned.profiles = await sdk.readLifecycleProfiles({ client, orchestrator: plan.orchestrator,
+      profileIds: [...new Set(plan.markets.map((market) => market.profileId))] });
+  }
+  const session = await refreshExampleUploadSession({ fixture, planned, recovery: artifacts.recovery, sdk, artifacts, transport, signal });
+  if (!executed) {
+    const localWallet = createLocalLaunchWallet({ privateKey, creator: plan.creator, chainId, orchestrator: plan.orchestrator, client, redactor: artifacts.redactor });
+    const wallet = guardEconomicReviewWallet(localWallet, () => assertExampleEconomicAuthority({ client, fixture, planned, economicReview, reviewHash, sdk, artifacts, signal }));
+    executed = await execute({ client, fixture, planned, sdk, artifacts, signal, limits, wallet, references });
+  }
+  await verify({ client, planned, ...executed, fixture, scenario, sdk, artifacts });
+  await publish({ client, fixture, planned, ...executed, session, sdk, artifacts, transport, signal, timeoutSeconds: 90 });
+  artifacts.stage("completed");
+}
+
+export async function runLaunchExample(caseObject, argv = process.argv.slice(2)) {
   const redactor = new Redactor();
   let artifacts;
+  let resumeDirectory;
   const controller = new AbortController();
   const interrupted = () => controller.abort(exampleError("INTERRUPTED", "Launch example interrupted; submitted hashes and chain state are retained"));
   process.on("SIGINT", interrupted); process.on("SIGTERM", interrupted);
   try {
+    resumeDirectory = readLaunchExampleArguments(argv);
     const caseId = caseObject.id;
     assert.match(caseId, /^[a-z0-9-]+$/, "Example case ID must be a safe directory label");
-    mkdirSync("launch-results", { recursive: true, mode: 0o700 });
-    artifacts = new RunArtifacts(join("launch-results", `${new Date().toISOString().replaceAll(":", "-")}-${caseId}-${randomUUID()}`), caseId, redactor);
+    if (resumeDirectory) artifacts = new RunArtifacts(resumeDirectory, caseId, redactor, { resume: true });
+    else {
+      mkdirSync("launch-results", { recursive: true, mode: 0o700 });
+      artifacts = new RunArtifacts(join("launch-results", `${new Date().toISOString().replaceAll(":", "-")}-${caseId}-${randomUUID()}`), caseId, redactor);
+    }
     artifacts.initialize();
     loadExampleEnvironment();
     redactor.addSecret(process.env.PRIVATE_KEY);
@@ -909,9 +1112,11 @@ export async function runLaunchExample(caseObject) {
     // Import after .env loading: the public SDK resolves address overrides on import.
     const sdk = await import("@black-market/sdk");
     const { fixture, privateKey } = await readExampleConfiguration(sdk, redactor);
-    await executeExample({ fixture, privateKey, scenario: caseObject, sdk, artifacts, signal: controller.signal });
+    const options = { fixture, privateKey, sdk, artifacts, signal: controller.signal };
+    if (resumeDirectory) await resumeLaunchExample(options);
+    else await executeExample({ ...options, scenario: caseObject });
     artifacts.finish("passed");
-    console.log(`Actual chain launch and API publication/indexing passed\nArtifacts: ${artifacts.directory}\nToken: ${artifacts.result.chain.token}`);
+    console.log(`Actual chain launch and API publication/indexing passed${resumeDirectory ? " (resumed)" : ""}\nArtifacts: ${artifacts.directory}\nToken: ${artifacts.result.chain.token}`);
     return artifacts.result;
   } catch (failure) {
     const error = controller.signal.aborted ? controller.signal.reason : failure;
@@ -922,7 +1127,7 @@ export async function runLaunchExample(caseObject) {
       try { artifacts.finish("failed", error); }
       catch (storageError) { console.error(JSON.stringify(redactor.value({ artifactWriteError: errorEvidence(storageError), originalError: errorEvidence(error) }))); }
     }
-    console.error(JSON.stringify(redactor.value({ sdk: "node", caseId: artifacts?.result.caseId, status: "failed", stage: artifacts?.result.stage ?? "configuration", error: errorEvidence(error), artifacts: artifacts?.directory }), null, 2));
+    console.error(JSON.stringify(redactor.value({ sdk: "node", caseId: artifacts?.result.caseId, status: "failed", stage: artifacts?.result.stage ?? (argv[0] === "--resume" ? "resume" : "configuration"), error: errorEvidence(error), artifacts: artifacts?.directory ?? resumeDirectory }), null, 2));
     process.exitCode = 1;
     return artifacts?.result;
   } finally {

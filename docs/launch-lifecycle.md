@@ -825,8 +825,9 @@ local-execution opt-in and required files.
 ## Individual token creation examples
 
 Eleven independent `examples/launch-erc20-*.ts` / `launch-erc404-*.ts` files invoke
-the shared `runLaunchExample(caseObject)` using valuation-driven economics and no CLI
-parameters or fixture files. The eight original cases remain; the three additions
+the shared `runLaunchExample(caseObject)` using valuation-driven economics with no
+required CLI parameters or fixture files. Optional `--resume <recovery-dir>`
+continues the original committed launch. The eight original cases remain; the three additions
 (`launch-erc20-multi-quote.ts`, `launch-erc20-depth-v4.ts`, and
 `launch-erc20-dividends-multiquote-mixed.ts`) await user live-run validation before
 any replacement decision. See the [example guide](../examples/README.md#individual-token-creation)
@@ -980,7 +981,8 @@ Any failed binding, HTTP/type/size/body check exits nonzero with retained eviden
 there is no image retry or metadata-only fallback. Without an image path, the
 metadata-only null-image behavior remains.
 
-Every run automatically creates fresh `launch-results/<timestamp-case-random>/`:
+Every new launch automatically creates fresh `launch-results/<timestamp-case-random>/`;
+`--resume` appends recovery evidence in the original directory:
 
 | Artifact | Evidence |
 | --- | --- |
@@ -996,16 +998,28 @@ Every run automatically creates fresh `launch-results/<timestamp-case-random>/`:
 
 Public artifacts preserve structured field names and redact sensitive values:
 known keys/signatures/raw bytes/capabilities/auth values and endpoint secrets,
-while retaining public calldata/hashes/revert bytes. For recovery select the private
-exact plan, mode and confirmation policy, then reconcile receipt references on the
-same source RPC; never reload redacted `plan.json` as the commitment. See
+while retaining public calldata/hashes/revert bytes. `node examples/<case>.ts
+--resume <recovery-dir>` reloads the owner-only exact plan, economic admission,
+original mode/confirmations/restrictions and typed original inclusion references.
+Fresh `planLaunch` (never preparation/mining) re-admits that commitment.
+Canonical Preparing/Ready runs only the remaining build-next sequence; canonical
+Active recovers the retained activation receipt and performs verification and
+publication only. Missing/unconfirmed, moved/reorged or replaced receipt evidence
+and unresolved signed hashes stop for read-only reconciliation, never replay.
+The API session is refreshed while retaining its one-time capability. A pending
+image requires the original `EXAMPLE_IMAGE_PATH` bytes and signed SHA-256/type/length;
+only expired PUT responses (403/410/412) permit one upload-URL renewal/retry.
+Existing chain verification and every publication canonicality barrier remain required.
+Never reload redacted `plan.json` as the commitment. See
 [recovery instructions](../examples/README.md#evidence-and-failure-recovery).
 Configuration, admission, broadcast, publication and interruption failures exit
 nonzero and preserve evidence. No source rollback, cancellation, broadcast retry or
 relaunch occurs.
 Inspect retained transaction hashes before deciding to run a new case after an
-ambiguous send. `test/launch-example.test.mjs` covers offline financial bounds,
-funding/rounding, quote/admission and signing/retention/config boundaries, not actual chain/API proof. The older independent whole-graph local
+ambiguous send. `test/launch-example.test.mjs`, `test/launch-example-matrix.test.mjs`
+and `test/launch-example-resume.test.mjs` cover offline financial bounds,
+funding/rounding, quote/admission, signing/retention/config and resume boundaries,
+not actual chain/API proof. The older independent whole-graph local
 Solidity-exported proof remains separate.
 
 ## Real HTTP API integration

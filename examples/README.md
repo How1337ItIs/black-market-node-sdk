@@ -340,8 +340,9 @@ Poster allocation is already inside Nitro gas/affordability and is not charged t
 
 ### Evidence and failure recovery
 
-Each run automatically creates `launch-results/<timestamp-case-random>/`; there is
-no user output option. Inspect `result.json`, `events.jsonl`, finalized `plan.json`,
+Each new launch automatically creates `launch-results/<timestamp-case-random>/`;
+`--resume` reuses the original directory rather than creating another launch. Inspect
+`result.json`, `events.jsonl`, finalized `plan.json`,
 `receipts.json`, `publication-progress.json`, `published-token.json` and, when an image
 is configured, `published-image.json`. Exact admitted wallet envelopes are signed
 locally; computed hashes and unsigned envelopes are durably retained as
@@ -373,14 +374,37 @@ never retries a raw send, relaunches, cancels or rolls back the source chain.
 **Do not blindly rerun after an ambiguous broadcast**: inspect the durable hash first.
 See [chain/API invariants](../docs/launch-lifecycle.md#individual-token-creation-examples).
 
+Continue a begun launch with the same signer source and API endpoint:
+
+```sh
+node examples/launch-erc20-v4.ts --resume launch-results/<original-run-directory>
+```
+
+All eleven wrappers accept this option; the retained plan/review, not the wrapper's
+case descriptor or new identity overrides, determines the resumed launch.
+The runner loads owner-only `private-recovery.json`, restores the original mode,
+confirmation policy, execution restrictions and typed receipts with observed block
+number/hash, and re-admits `parseLaunchPlan(JSON.stringify(recovery.plan))` with
+`planLaunch` against current canonical state. It does **not** call
+`prepareAndPlanLifecycleLaunch`, remine salts, recalibrate buys, or repeat begin.
+Canonical **Preparing/Ready** resumes only remaining `buildNextTransaction` steps
+under the saved economic admission and signing gates; canonical **Active** recovers
+the original activation receipt and runs chain verification/publication only,
+including after the signing deadline. Unstarted/Cancelled state, changed inclusion,
+replacement or unresolved signed hashes stop for read-only reconciliation.
+
+Before publication the original API session is refreshed with `getUploadSession`;
+the retained one-time capability is carried across every read/renew/complete response
+because the API does not echo it. If an image is still awaiting upload, set
+`EXAMPLE_IMAGE_PATH` to the original bytes: SHA-256, content type and length must
+match the signed descriptor. An expired PUT URL is renewed once on HTTP 403/410/412
+with `renewUploadUrl`, then the same bytes are uploaded and completed. A live ready
+image is never reuploaded. No new attribution signature or session is created.
+All existing chain/image/indexer checks and canonical activation barriers still apply.
+
 After interruption, timeout, replacement or reorg, preserve the original identity,
-`private-recovery.json` and every signed hash. Select its exact `plan`, `mode` and
-`confirmations`, not redacted public `plan.json` or diagnostic `planning.json`.
-Parse the private structured plan using
-`parseLaunchPlan(JSON.stringify(recovery.plan))`, reconstruct that exact commitment
-with `planLaunch({ client, account, plan, mode: recovery.mode, confirmations: recovery.confirmations, receipts })`,
-then use `readLaunchProgress` and fresh `buildNextTransaction` with the same policy
-on the intended source RPC. Never remine salts, recalibrate buys or restart a wrapper.
+`private-recovery.json` and every signed hash. Public `plan.json` and diagnostic
+`planning.json` are not recovery authority; do not rerun a wrapper without `--resume`.
 Supply receipt references including observed block number/hash;
 when a replacement is known retain both `transactionHash` (original) and
 `replacementHash` (effective). A same-nonce cancellation is not successful activation;
@@ -405,10 +429,14 @@ The signer exposes `address`, `signTypedData(typedData)` and `signTransaction(wi
 returning `{wire,rawTransaction,transactionHash}`. Retain the result privately.
 Use `RunArtifacts(output,caseId,redactor)` with `Redactor` and a fresh directory for
 durable evidence; call `initialize()` before work and `finish(status,error)` afterward.
-The shared `runLaunchExample(caseObject)` in `launch-example.ts` takes the same fixed
-case objects as the eleven files, loads environment and auto-creates its output.
-Offline diagnostics are in `test/launch-example.test.mjs` and
-`test/launch-example-matrix.test.mjs`; they do not claim real launch/indexer proof.
+The shared `runLaunchExample(caseObject, argv = process.argv.slice(2))` in
+`launch-example.ts` takes the same fixed case objects as the eleven files, loads
+environment and either auto-creates output for a new launch or resumes in place.
+`RunArtifacts(output,caseId,redactor,{resume:true})` reopens private recovery and
+retained transaction evidence without truncating the journal.
+Offline diagnostics are in `test/launch-example.test.mjs`,
+`test/launch-example-matrix.test.mjs` and `test/launch-example-resume.test.mjs`;
+they do not claim real launch/indexer proof.
 
 ## Relationship to the application flows
 

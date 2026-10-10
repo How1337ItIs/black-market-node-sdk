@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, constants, fstatSync, fsyncSync, mkdirSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, constants, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createPublicClient, custom, isAddress, keccak256, toHex } from "viem";
@@ -754,11 +754,29 @@ function durableWrite(path, content, mode = 0o600) {
 }
 
 export class RunArtifacts {
-  constructor(output, caseId, redactor = new Redactor()) {
+  constructor(output, caseId, redactor = new Redactor(), { resume = false } = {}) {
     this.directory = resolve(output);
-    mkdirSync(this.directory, { mode: 0o700 }); // EEXIST deliberately refuses reuse.
     this.redactor = redactor;
     this.transactions = [];
+    if (resume) {
+      const recoveryPath = join(this.directory, "private-recovery.json");
+      if (!existsSync(recoveryPath)) throw exampleError("MISSING_RECOVERY", "Resume requires private-recovery.json in the original recovery directory");
+      this.recovery = JSON.parse(readBoundedExampleFile(recoveryPath, 16 * 1024 * 1024, "Private launch recovery", true).toString("utf8"));
+      for (const secret of [this.recovery.capability, this.recovery.session?.capability, this.recovery.request?.authorization?.signature,
+        ...(this.recovery.signedTransactions ?? []).map((row) => row.rawTransaction)]) redactor.addSecret(secret);
+      for (const value of [this.recovery.apiUrl, this.recovery.session?.upload?.url, this.recovery.plan?.token?.metadataURI]) registerEndpointSecrets(redactor, value);
+      const receiptsPath = join(this.directory, "receipts.json");
+      if (existsSync(receiptsPath)) {
+        const retained = JSON.parse(readBoundedExampleFile(receiptsPath, 16 * 1024 * 1024, "Retained launch receipts").toString("utf8"));
+        if (!Array.isArray(retained.transactions)) throw exampleError("INVALID_RECOVERY", "Retained receipt journal requires transaction rows");
+        this.transactions = retained.transactions;
+      }
+      const configurationPath = join(this.directory, "run-config.json");
+      if (existsSync(configurationPath)) {
+        this.configuration = JSON.parse(readBoundedExampleFile(configurationPath, 16 * 1024 * 1024, "Retained launch configuration").toString("utf8")).configuration;
+      }
+      caseId = this.recovery.caseId ?? caseId;
+    } else mkdirSync(this.directory, { mode: 0o700 }); // EEXIST deliberately refuses reuse.
     this.result = {
       schema: "black-market.launch-example-result.v1", sdk: "node", caseId: caseId ?? null,
       status: "failed", stage: "configuration", scope: "end-to-end", execution: "not-run",
@@ -766,10 +784,14 @@ export class RunArtifacts {
       api: { status: "not-run" }, startedAt: new Date().toISOString(), completedAt: null,
     };
     this.stageStartedAt = Date.now();
+    if (resume) {
+      this.result.stage = "resume";
+      this.result.execution = "resuming";
+    }
   }
   initialize() {
-    this.event("started", { directory: this.directory });
-    this.save("receipts.json", { schema: "black-market.launch-example-receipts.v1", sdk: "node", caseId: this.result.caseId, transactions: this.transactions });
+    this.event(this.recovery ? "resumed" : "started", { directory: this.directory });
+    if (!this.recovery) this.saveReceipts();
   }
   event(event, observations = {}) {
     const row = this.redactor.value({ timestamp: new Date().toISOString(), sdk: "node", caseId: this.result.caseId, stage: this.result.stage, event, ...observations });
