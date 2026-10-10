@@ -1,19 +1,21 @@
 # Examples
 
-The launch examples use the installed public `@black-market/sdk` package and viem,
-including when copied into a consumer project. The current chain-4663 graph is the
-October8 mined pool-bound V4 config6/V2 and canonical Abyss config1 deployment.
+The launch examples use the public `@black-market/sdk` package and viem.
+This working tree builds on 0.7.1 with unreleased topology/example changes: build
+this checkout before using the new cases; an older installed package does not
+acquire the new `positionGaps` API automatically. The current chain-4663 graph is
+the October8 mined pool-bound V4 config6/V2 and canonical Abyss config1 deployment.
 Historical October5 config5 evidence is not relabeled as the new graph. Discovery
-is read-only; running a fixed launch example with configured wallet/API deliberately
+is read-only; running a fixed launch example with configured signer/API deliberately
 executes real writes.
 
 | Script | Behavior |
 | --- | --- |
 | `quickstart.mjs` | Reads the current mainnet orchestrator, checks its registry binding, and discovers admitted profiles. No wallet or writes. |
 | `launch.mjs` | Reviews/reconstructs an explicit saved plan and selected atomic/staged mode; optional offchain config6/V2 salt mining. Prints simulation, progress, and an admitted unsigned next transaction when evidence permits. |
-| `generate-lifecycle-commitment-fixture.mjs` | Frozen independent historical config4/Abyss ABI bytes/hash/identity vector. Its pre-cutover allocations are not an executable 0.7.0 plan. |
+| `generate-lifecycle-commitment-fixture.mjs` | Frozen independent historical config4/Abyss ABI bytes/hash/identity vector. Its pre-cutover allocations are not an executable 0.7.1 plan. |
 | `launch-lifecycle-smoke.mjs` | Actual SDK launch/recovery/custody/fee operations, only on an explicitly authorized owned disposable loopback graph. |
-| `launch-erc20-*.mjs`, `launch-erc404-*.mjs` | Eight independent zero-parameter launch cases with actual SDK admission, local signing, chain verification and mandatory API publication/indexing. |
+| `launch-erc20-*.mjs`, `launch-erc404-*.mjs` | Eleven independent zero-parameter cases: the eight existing examples plus three candidate replacements awaiting user live-run validation, with actual SDK admission, local signing, chain verification and mandatory API publication/indexing. |
 
 ## Deployed read-only discovery
 
@@ -84,16 +86,17 @@ See [service prerequisites](../docs/launch-lifecycle.md#real-http-api-integratio
 
 ## Individual token creation
 
-**Running one of these files signs and broadcasts a real launch and writes to your
-configured API. Mainnet execution is irreversible and spends real funds.** Choose
-one command per intended launch; there are no flags, parameters or fixture files.
+**Running one of these files can sign and broadcast a real launch and write to your
+configured API after explicit economic-review admission. Mainnet execution is
+irreversible and spends real funds.** Choose one command per intended launch.
 
 ### Setup once
 
 Use **Node 24+**. In this repository run `pnpm install`. In a consumer project install
 both public dependencies with `pnpm add @black-market/sdk viem` (or
 `npm install @black-market/sdk viem`) and copy the selected files with
-`launch-example.mjs` and `launch-example-support.mjs` into `examples/`.
+`launch-example.mjs`, `launch-example-support.mjs`, and `launch-example-kyber.mjs`
+into `examples/`, using the matching updated SDK build.
 Copy `examples/.env.example` to `.env` in the directory you will run commands from:
 
 ```sh
@@ -109,24 +112,128 @@ LAUNCH_API_URL=
 RPC_URL=
 ```
 
-Set `PRIVATE_KEY` to **your funded EOA's** 32-byte hex key and `LAUNCH_API_URL` to
-your actual HTTPS or owned loopback API service root. There is no default wallet,
-public development key, guessed API URL, or silent API skip. The API needs actual
+Configure **exactly one** signer: your funded EOA's 32-byte `PRIVATE_KEY`, or
+`EXAMPLE_KEYSTORE_PATH` pointing to a local V3 scrypt/AES-128-CTR JSON keystore.
+`EXAMPLE_KEYSTORE_PASSWORD` defaults to the empty string; both/neither signer
+sources reject. The keystore must be a regular owner-only file owned by your user;
+the bounded loader authenticates its Keccak MAC and declared address before deriving
+the creator. It uses Node crypto and existing viem, with no extra dependency.
+Never commit the keystore/password or use a published test key for a real launch.
+Set `LAUNCH_API_URL` to your actual HTTPS or owned loopback service root. There is
+no default wallet, guessed metadata API, or silent API skip. The API needs actual
 application storage and an indexer observing the same chain as the execution RPC.
 Existing environment variables take precedence over the working-directory `.env`,
 loaded once using Node's native `process.loadEnvFile`. No shell interpolation is used.
 
+`EXAMPLE_BUY_AMOUNT_WEI` sets the exact **native ETH conversion input per opening
+buy**, not the eventual WETH/USDG amount. Use a positive canonical decimal uint256
+wei string; the default is `10000000000000` (**0.00001 ETH**). Kyber's app-compatible
+exact-input domain additionally requires each aggregate input to be below `2^255`.
+The runner aggregates ETH inputs per quote, obtains one fresh
+`POST EXAMPLE_KYBER_API_URL/api/v1/quote/kyber/build?chainId=4663` build per quote,
+and binds native zero-address input, exact input, sender/recipient equal to the
+actual funding escrow, **50 bps conversion slippage**, and the same 300-second
+launch-purpose deadline as the plan. The API owns fresh route preview; a preview
+GET is not executable funding. `EXAMPLE_KYBER_API_URL` defaults to `LAUNCH_API_URL`
+(the app's public trade default is `https://api.abyss.trading`); an explicit override
+must meet the same HTTPS/owned-loopback safety rules.
+
+Each funding row is `LifecycleFundingKind.Swap`, native zero-address `inputAsset`,
+the reviewed router target and original built calldata. The runner decodes the
+reviewed `swap` entry point and checks currencies, escrow recipient, exact input,
+output floor, executor payload, flags and absence of redirected inputs/extra fees.
+`amountOutMinimum = floor(amountOut * 9950 / 10000)` is the exact quote budget.
+That budget is divided across the quote's ordered buys, with the integer remainder
+in the last such buy, so their inputs sum exactly to the API minimum. No WETH/USDG
+wallet balance or ERC20 approval is needed; the creator needs native ETH **plus gas**.
+Registry target/spender/runtime admission is checked on the launch graph and
+rechecked before signatures. Refusal, unavailable route, changed binding or expiry
+stops unsigned with retained evidence: **never fall back to native-wrap, direct ERC20
+funding, a separate wallet swap, dropped buys, or rewritten quote bytes/deadline**.
+
+Optional `EXAMPLE_TOKEN_NAME`, `EXAMPLE_TOKEN_SYMBOL`, and
+`EXAMPLE_TOKEN_DESCRIPTION` override each case's default metadata. Text is NFC
+normalized and trimmed, with the unchanged API/lifecycle bounds (name: 100 Unicode
+codepoints/128 UTF-8 bytes; symbol: 32 codepoints/bytes; description: 2000 codepoints).
+`EXAMPLE_IMAGE_PATH` optionally loads 1 byte through 5 MiB of actual PNG/JPEG/WebP
+bytes. The frozen image SHA-256/type/length is reviewed and signed, uploaded using
+only the exact API-issued PUT URL/headers, and completed/verified before execution.
+Without it the session remains metadata-only; no artwork is invented. API image
+verification may reject malformed or animated files even when their type is valid.
+With an image set, success additionally requires matching staged/published image
+SHA-256/type/length, the same non-null public image URL in the publication and
+indexed token DTO, and one bounded no-redirect GET of that URL returning **HTTP
+200**, an image content-type family and nonempty bytes. Byte-identical output
+must match the signed type/length/SHA-256. Different served bytes may be an API/CDN
+transformation: `published-image.json` records the actual SHA-256/type/length and
+that limited family/nonempty-body check, explicitly not byte identity. HTTP/type/
+empty/oversized failures stop nonzero with evidence; no image retry or metadata-only
+fallback occurs. The final canonical RPC barrier runs after this GET.
+
+
+The target is **USD 5000**, not a fixed token/WETH ratio. Optional
+`EXAMPLE_TARGET_MARKET_CAP_USD` accepts a positive exact USD decimal (up to 18
+fractional digits). It does not grant signing permission or override the USD seed.
+The runner makes one bounded, uncached GET to
+`LAUNCH_API_URL/api/v1/token-prices?chainId=4663&limit=100`, without pagination,
+redirects or retries. It selects the reviewed chain-4663 WETH address and requires
+ready metadata, 18 decimals, `priced: true`, `source: "anchor"`, and direct
+Chainlink-anchor provenance bound to WETH and the reviewed aggregator
+`0x78F3556b67E17Df817D51Ef5a990cDaF09E8d3A9`. The exact positive uint256
+`priceUsdX18` is an **indicative API-published launch seed**, not an executable
+swap quote or on-chain execution authority. HTTP/body/validation failure or a missing
+WETH row stops unsigned; there is no manual price or alternate-source fallback.
+Each request has a 30-second timeout and a 1 MiB streamed response limit.
+The review and console preserve API origin, index/graph blocks, upstream observation
+timestamp and age, and local retrieval time. Retrieval does not make an old upstream
+observation fresh. The API may continue publishing its price as upstream age grows;
+the runner does not impose a 15-minute contract-round freshness gate.
+USDG markets use the SDK-exported chain-4663 Global Dollar address, **6 decimals**
+and the reviewed `usdPeg` source at exactly `1e18` USD-X18, matching the app. There
+is no substituted WETH/USD value. Every market has its own quote precision, USD
+seed, token/quote orientation and aligned valuation; multi-quote FDVs are not additive.
+
+
+Before any attribution or transaction signature, the runner saves
+`economic-review.json` and exact owner-only recovery, prints its financial summary,
+and requires you to type **that exact economic review hash** at the interactive
+prompt. Noninteractive execution requires `EXAMPLE_ECONOMIC_REVIEW_HASH` to equal
+the freshly generated review hash, never a blanket yes. The hash binds all quotes,
+target, actual supply, predicted per-market token order, every allocation, fees,
+protected buys, Kyber conversion bytes/minima/deadline, metadata/image and finalized
+plan. Random launch identity makes admission specific to this run.
+Missing or mismatched admission stops unsigned, with review artifacts retained.
+Before every later signature it rereads the same configured API snapshot and
+rechecks the immutable review, target, supply, finalized plan and predicted token
+order. Any exact price, API origin, chain, WETH/decimals or direct-anchor identity,
+kind or source change stops execution. Failed or unpriced reads also reject.
+Index/graph blocks and observation/retrieval times may advance with the identical
+price and source; they never replace the original review. Changed economics require
+a new explicit review, never silent plan rewriting or submission replay. Actual
+RPC chain, balances, nonce, prediction, deadline and native execution proof remain
+execution authority; API block fields are observations, not RPC canonicality pins.
+The original plan deadline must still be future at metadata signing/staging and
+before each later signature, including **after asynchronous quote/authority reads**.
+Expiry requires a new explicit review; the runner never extends the saved deadline.
+
+
 Blank `RPC_URL` uses the SDK official Robinhood chain-4663 mainnet endpoint; HTTPS
 providers and explicit owned loopback HTTP execution RPCs are supported.
-The creator is derived locally from the key, and the deployment/WETH addresses come
-from `getAddresses(4663)`. The runner checks chain identity, EOA, deployed core and
-its configured registry binding, discovers admitted profiles, verifies the funding
-escrow core/wrapped-native binding and reads the registered P1 `(1,4096)` oracle
-configuration. No fixture defines these facts. V4 fixed cases require config6/V2;
-an old config5 profile is not silently selected instead.
-V4 fixed cases now encode max `10000`, min `1000` pips and sensitivity `7654321`
-fee-pips × seconds/tick; all are immutable. The current defaults resolve the matching
-October8 mined config6 graph. Position maxima exactly cover market budgets and budgets
+The creator is derived locally from the configured signer; deployment/WETH addresses
+come from `getAddresses(4663)`. The runner checks chain identity, EOA, deployed core
+and registry, admitted profiles, funding escrow/core/native binding and each quote's
+actual decimals. WETH keeps the registered P1 `(1,4096)` oracle. USDG discovers
+`OracleConfigRegistered` history at a pinned block, rereads the factory mapping at
+that same block, and selects a compatible registered config deterministically by
+increasing max tick move, decreasing cardinality, then config ID. Factory configs
+are generic, not a separate hardcoded USDG ID. No compatible config, unavailable
+history, or a changed canonical pin fails loudly. V4 cases require config6/V2;
+an old config5 profile is never selected instead.
+V4 fixed cases encode max `10000`, min `1000` pips and sensitivity `7654321`
+fee-pips × seconds/tick; all are immutable. The reviewed `FixedFeePoolHookV1` charges
+the fixed maximum `10000` pips (1%) on applicable amounts. Minimum and sensitivity
+are stored and exposed, not used for a dynamic fee calculation. The current defaults
+resolve the matching October8 mined config6 graph. Position maxima exactly cover market budgets and budgets
 exactly cover minted supply. Actual unused inventory burns before buys, never to the
 creator. Verification accounts for burn `Transfer` logs, reduced `totalSupply`, an
 empty core token balance, and creator balance equal only to paid opening-buy output.
@@ -143,7 +250,7 @@ the saved `reviewedTransaction` and preflighted read-only through the same execu
 RPC before signing. Calldata, value, gas and gas price must remain exactly as reviewed.
 There is no mode fallback, admission override, automatic submission replay or reduced case.
 
-### Commands and fixed cases
+### Commands and launch matrix
 
 ```sh
 node examples/launch-erc20-v4.mjs
@@ -154,6 +261,9 @@ node examples/launch-erc20-staking-v4.mjs
 node examples/launch-erc20-dividends-abyss.mjs
 node examples/launch-erc20-burn-mixed.mjs
 node examples/launch-erc404-dividends-mixed.mjs
+node examples/launch-erc20-multi-quote.mjs
+node examples/launch-erc20-depth-v4.mjs
+node examples/launch-erc20-dividends-multiquote-mixed.mjs
 ```
 
 | File suffix | Token / rewards | Markets and permanent positions | Mode / opening buys |
@@ -166,10 +276,30 @@ node examples/launch-erc404-dividends-mixed.mjs
 | `erc20-dividends-abyss` | ERC20 / dividends | Abyss: 3 | staged / 1 |
 | `erc20-burn-mixed` | ERC20 / token-only burn 3000 bps | dual-fee V4: 2; Abyss: 1 | staged / 1 per market |
 | `erc404-dividends-mixed` | ERC404 / dividends | V4: 2; Abyss: 3 | staged / 1 per market |
+| `erc20-multi-quote` (new) | ERC20 / none | V4 WETH: 1; V4 USDG: 1; Abyss WETH: 1 | staged / 1 per market (3 total) |
+| `erc20-depth-v4` (new) | ERC20 / none | V4 WETH: 4, Early Scarcity / progressive Depth | staged / 1 |
+| `erc20-dividends-multiquote-mixed` (new) | ERC20 / dividends 4000 bps | V4 WETH: 2; V4 USDG: 2; Abyss WETH: 3 | staged / 1 per market (3 total) |
+
+The three new cases are **additions**, not replacements yet: the eight existing
+descriptors/topologies remain intact until the user validates new cases with real
+runs. At most one V4 market per quote is permitted; Abyss may reuse a quote.
 
 ERC20 supply is `1_000_000e18`; ERC404 supply is `10_000e18`, NFT unit `100e18`.
-Positions retain `1000e18` liquidity and the case's exact ranges. Each ordered buy
-spends up to `0.001 ETH` through native-wrap funding. The unified SDK invocation sets
+`deriveLaunchPoolRecipe` prices against **the entire actual minted supply**, even
+in mixed-market cases. Per-market budgets divide that supply, with integer remainder
+assigned to the last market. One position uses the recipe's full one-sided range
+and budget-funded liquidity; multi-position markets use `deriveLaunchPositionRanges`
+with the exact requested count, `positionGaps: "adjacent"` and an explicitly
+extended final tail. Staircase remains the existing multi-position default; the
+new four-position Depth case uses **Early Scarcity**, increasing inventory from
+low-price scarcity to more inventory at higher prices. This is the requested Depth
+shape in the current SDK vocabulary, not a literal reproduction of the separate
+eight-position design catalogue. Spacing is 60 and LP fee is 3000 pips for both
+venues. Predicted address order sets orientation independently per quote; multi-quote
+markets aim at the same USD valuation, not the same raw sqrt price. Per-position
+maxima exactly cover each budget, except documented integer mint-rounding dust.
+Each buy defaults to `0.00001 ETH` through its quote's Kyber funding conversion.
+The unified SDK invocation sets
 every ordered buy's minimum from its actual stateful diagnostic output with **50 bps
 (0.5%) slippage**, then proves and saves only the final protected commitment. The draft's
 one-wei minima are diagnostic inputs, never the submitted protection.
@@ -180,11 +310,17 @@ Hook salts/random identities are finalized and saved before execution. The share
 runner uses the combined preparation/admission result without an immediate second
 planning pass. Staged cases simulate only staged work, never an unused atomic launch.
 
-These are deliberately simple fixed-geometry consumer cases, not an FDV recipe:
-equal position maxima partition each market budget exactly, while fixed liquidity
-can spend less than those maxima. Consequently actual unused inventory can be
-substantial, not merely one rounding unit. It burns; it is not creator inventory.
-Use SDK pool/position recipe helpers when you need valuation-driven allocation.
+USD 5000 is a **target before tick alignment**, not a promise of exactly USD 5000
+after alignment or buys. The economic review shows aligned unit price in USD/quote,
+minted-supply valuation, expected rounding burn, retained supply and its aligned
+opening valuation. It also decodes every ordered output/input from the final admitted
+simulation receipt, showing all-in average execution price and the premium against
+opening price. That premium includes fees and price impact; it is **not** the
+post-buy marginal spot price. Opening buys move the pool, so the actual post-buy
+valuation must use observed post-activation pool price and retained total supply.
+The old 1:1/fixed-liquidity examples could burn almost the entire intended supply
+and produce a radically different retained-supply valuation. They are not a pricing
+recipe or a valid precedent for a new launch.
 
 ### Optional execution restrictions
 
@@ -201,37 +337,56 @@ Poster allocation is already inside Nitro gas/affordability and is not charged t
 
 Each run automatically creates `launch-results/<timestamp-case-random>/`; there is
 no user output option. Inspect `result.json`, `events.jsonl`, finalized `plan.json`,
-`receipts.json` and `published-token.json`. Exact admitted wallet envelopes are signed
+`receipts.json`, `publication-progress.json`, `published-token.json` and, when an image
+is configured, `published-image.json`. Exact admitted wallet envelopes are signed
 locally; computed hashes and unsigned envelopes are durably retained as
 `broadcast-attempt` **before the one raw broadcast**. Real receipts are saved before
 status/canonical-state assertions. No unlocked-account signing or sending is used.
-Public evidence redacts known keys, signatures, signed raw bytes, API capabilities,
-authorization values and RPC endpoint credentials. Only `private-recovery.json`
-(mode `0600`) retains raw signed transactions and one-time API recovery material;
-never share or commit it. `launch-results/` is ignored.
+Public evidence preserves structured field names but redacts sensitive values:
+known keys, signatures, signed raw bytes, API capabilities, authorization values
+and endpoint credentials. Public `plan.json` may therefore differ from the exact
+commitment and is **not recovery authority**. Before the first attribution or chain
+signature, `private-recovery.json` durably retains the complete unredacted finalized
+`plan`, original `mode`, `confirmations`, `economicReview` and exact
+`economicAdmission`. This owner-only file (mode `0600` inside the mode `0700` run
+directory) also retains raw signed transactions and one-time API recovery material
+across session updates. Original plan and economic review/admission are immutable.
+Never share or commit it.
+`launch-results/` is ignored.
 
-Every case requires actual API metadata staging, publication using the activation
-hash, and an indexed DTO matching token/creator/hash/metadata. Genuine pending-indexer
-HTTP `202` responses are polled for up to 90 seconds respecting `Retry-After`;
-other API failures are not retried or converted to partial success. Broadcast/API
-failures retain logs/hashes and exit nonzero. The runner never retries a raw send,
-relaunches, cancels or rolls back the source chain. **Do not blindly rerun after an
-ambiguous broadcast**: inspect the durable transaction hash on chain first.
+Every case requires actual API metadata staging (and verified image completion
+when configured), publication using the activation hash, and an indexed DTO
+matching token/creator/hash/metadata/image. Genuine pending-indexer HTTP `202`
+responses are polled for up to 90 seconds respecting `Retry-After`. Before **each
+publication attempt** and before final success, fresh RPC progress must be
+confirmation-safe canonical Active with all retained receipts confirmed and the
+original activation still in its saved block number/hash. Reorg, moved inclusion,
+missing/unconfirmed receipt or changed phase stops, retains `publication-progress.json`
+and private recovery evidence, and exits nonzero—even if the API reports success.
+Other API failures are not retried or converted to partial success. The runner
+never retries a raw send, relaunches, cancels or rolls back the source chain.
+**Do not blindly rerun after an ambiguous broadcast**: inspect the durable hash first.
 See [chain/API invariants](../docs/launch-lifecycle.md#individual-token-creation-examples).
 
 After interruption, timeout, replacement or reorg, preserve the original identity,
-final `plan.json`, selected mode, confirmation policy and every signed hash. Do not
-deserialize diagnostic `planning.json` as a trusted `PlannedLaunch`, remine salts,
-recalibrate buys or restart a wrapper. Reconstruct the exact saved commitment with
-`planLaunch`, then use `readLaunchProgress` and fresh `buildNextTransaction` on the
-intended source RPC. Supply receipt references including observed block number/hash;
+`private-recovery.json` and every signed hash. Select its exact `plan`, `mode` and
+`confirmations`, not redacted public `plan.json` or diagnostic `planning.json`.
+Parse the private structured plan using
+`parseLaunchPlan(JSON.stringify(recovery.plan))`, reconstruct that exact commitment
+with `planLaunch({ client, account, plan, mode: recovery.mode, confirmations: recovery.confirmations, receipts })`,
+then use `readLaunchProgress` and fresh `buildNextTransaction` with the same policy
+on the intended source RPC. Never remine salts, recalibrate buys or restart a wrapper.
+Supply receipt references including observed block number/hash;
 when a replacement is known retain both `transactionHash` (original) and
 `replacementHash` (effective). A same-nonce cancellation is not successful activation;
 a missing receipt alone does not prove a reorg. No replacement is adopted or retried
 automatically by these local-signing cases: a timed-out original hash requires manual
-reconciliation. `launch.mjs` provides the unsigned reload/review path. Recovery of API
-publication uses the original private session/capability and canonical activation
-hash, never another launch.
+reconciliation. `launch.mjs` provides unsigned reload/review for a privately extracted
+exact plan: keep that file owner-only and supply the original `--mode`,
+`--confirmations` and reconciled `--receipts`. Do not publish the extracted plan or
+CLI output, which may contain sensitive committed values. Recovery of API publication
+uses the original private session/capability and canonical activation hash, never
+another launch.
 
 ### Owned-local wallet verification helpers
 
@@ -246,9 +401,9 @@ returning `{wire,rawTransaction,transactionHash}`. Retain the result privately.
 Use `RunArtifacts(output,caseId,redactor)` with `Redactor` and a fresh directory for
 durable evidence; call `initialize()` before work and `finish(status,error)` afterward.
 The shared `runLaunchExample(caseObject)` in `launch-example.mjs` takes the same fixed
-case objects as the eight files, loads environment and auto-creates its output.
-Offline diagnostic tests are in `test/launch-example.test.mjs`; they do not claim
-real launch or API-indexer proof.
+case objects as the eleven files, loads environment and auto-creates its output.
+Offline diagnostics are in `test/launch-example.test.mjs` and
+`test/launch-example-matrix.test.mjs`; they do not claim real launch/indexer proof.
 
 ## Relationship to the application flows
 
@@ -256,8 +411,9 @@ The examples have been reviewed against `abyss-app`'s `scripts/launch-node.mjs`,
 `launch-node-deploy.mjs`, `launch-browser-wallet.mjs`, `launch-staged-smoke.mjs`,
 `launch-review-smoke.mjs`, and `src/lib/creation` / `src/lib/lifecycle` authoring,
 funding, execution and recovery modules. These are behavioral references, not SDK
-dependencies. That application's `black-market-sdk-0.7.0-local-20261007.tgz` pin and
-October5 address literals are **not** current deployment authority. The mined graph
+dependencies. The application pins the published **`@black-market/sdk` 0.7.1** and
+derives current deployment defaults through **`getAddresses`**, as do these examples.
+The package pin alone is not live deployment authority. The mined graph
 is recorded in the contracts repository at
 `contracts/deployments/launch/pool-launch-v1/20261008T000141Z-e174ce6/manifest.json`;
 examples resolve its SDK presets and certify live bindings, rather than copying
@@ -265,12 +421,12 @@ addresses from an application script.
 
 | Flow | Shared contract / intentional difference |
 | --- | --- |
-| Eight fixed launch wrappers | Unified preparation/admission, explicit mode, exact allocations, immutable config6 max/min/sensitivity, protected ordered buys, reviewed next envelopes and canonical Active/custody verification. All eight remain independent no-argument cases. |
-| App Node launch/deploy | Uses valuation-driven recipe positions and native-to-ERC20 conversion quotes. Fixed cases intentionally use one registered wrapped-native quote and `NativeWrap`; there is no conversion API, router calldata or quote-expiry dependency. |
+| Eleven launch wrappers | Unified preparation/admission, explicit mode, exact allocations, immutable config6 fees, protected ordered buys, reviewed next envelopes and canonical Active/custody verification. Eight original descriptors remain; three new matrix additions await user live validation. |
+| App Node launch/deploy | Both use valuation-driven recipes with actual supply, per-quote orientation/budgets and native ETH-to-quote Kyber funding. Examples retain an indicative validated API WETH USD seed and the reviewed USDG peg; exact economic-hash admission is separate from RPC execution proof. |
 | Browser wallet | Browser account/provider authority and explicit UI review are application-owned. The examples instead derive an EOA locally, hold one source/submission RPC, recheck chain before signing/sending, and preserve computed signed hashes before one raw send. A browser integration must bind the active account/provider/chain again after review and pass that provider's RPC adapter as `submissionClient`; read proof alone does not authorize wallet submission. |
-| App creation funding | Native wrapping needs ETH value, not an ERC20 approval. Direct ERC20 funding needs balance/allowance to the **actual core-owned funding escrow**, not an arbitrary router/core. ERC20-input conversions additionally need registry-admitted inputs, a registered target/spender/runtime, exact receiver/calldata/minimum/precision, and a fresh unexpired quote. Use SDK prerequisites and fresh `approve-reset` / `approve` next steps; do not extend the fixed runner's native-only signing allowlist blindly. |
-| App metadata/image | Fixed cases sign the same chain/core/wallet-bound attribution and stage metadata only: `image: null`, session `ready_to_launch`, no image upload claim. For a real image, hash the actual bytes, sign its descriptor, use `putImage` with the issued upload URL/headers, and `completeUpload` before launch. App legal consent, API catalogs and keystore handling are not generic SDK implementations to copy. |
-| App publication/recovery | Pending HTTP 202 is not success. Fixed cases honor `LaunchPublishPending`/`Retry-After` within a bounded deadline and require ready metadata plus the indexed token/creator/activation DTO. The app's Query polling/UI, two-confirmation policy and replacement tracking are intentionally different from the fixed examples' one-confirmation, stop-and-reconcile local signer. |
+| App creation funding | All fixed examples use integrated native-input `Swap` funding. Current registry target/spender/code hash, native/quote precision and decoded exact receiver/input/minimum/calldata are checked. No separate swap, native-wrap fallback or ERC20 approval is submitted on refusal. Other app payment paths are not this example runner's signing allowlist. |
+| App metadata/image | Both sign chain/core/wallet-bound attribution. Optional `EXAMPLE_IMAGE_PATH` signs actual SHA-256/type/length, uses the exact issued `putImage` URL/headers and requires `completeUpload` verification before launch. Publication/indexed association and one bounded public image GET are also required before example success; transformed served bytes are recorded separately. Unset keeps metadata-only behavior. Signer may be a local key or authenticated V3 keystore; app legal/UI consent remains application-owned. |
+| App publication/recovery | Pending HTTP 202 is not success. Examples honor `LaunchPublishPending`/`Retry-After` and require indexed provenance plus fresh confirmation-safe RPC Active and the original activation inclusion before every attempt/final pass. The app's polling UI/two-confirmation/replacement policy differs intentionally from these one-confirmation stop-and-reconcile examples. |
 | App review/staged smoke | These app scripts exercise read-only browser review and large matrices, not permission to deploy. SDK `quickstart.mjs` and `launch.mjs` remain read-only on the source chain. SDK `launch-lifecycle-smoke.mjs` is a different, explicitly authorized owned-loopback execution proof, including real ERC20 approval prerequisites when supplied by fixture plans. |
 | Historical commitment generator | Retains original independent config4 bytes/hashes for codec regression evidence; no addresses or allocations in that vector should be used to construct the current graph. |
 

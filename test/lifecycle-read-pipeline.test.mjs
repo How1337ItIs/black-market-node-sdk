@@ -687,7 +687,7 @@ async function boundPlanningClient(supportsReadBatching = true, configVersion = 
     feeMode: 0, protocolFeeDenominator: source.envelope.protocolFeeDenominator, treasury: source.envelope.protocolTreasury,
     externalLiquidityDisabled: true, oracleConfigId, hookSalt: zeroHash, profileId: source.id,
     termsDigest: source.envelope.termsDigest, developerBeneficiary: source.envelope.beneficiary, developerFeeBps: 0,
-    positions: [0, 1].map((index) => ({ tickLower: index * 60, tickUpper: (index + 1) * 60, liquidity: 1000n,
+    positions: [0, 1].map((index) => ({ tickLower: index * 60, tickUpper: index === 1 ? 887220 : 60, liquidity: 1000n,
       salt: hash(index + 1), maxTokenAmount: 1000n })) };
   const plan = { ...original, chainId: 4663n, orchestrator: CORE, token: { ...original.token, kind: 0, rewardMode: 0, supply: 4000n },
     funding: [], buys: [], deadline: 1000n,

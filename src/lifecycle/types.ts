@@ -152,11 +152,17 @@ export type PlannedLaunch = {
   hookDeployments: readonly LifecyclePoolBoundHookDeployment[];
   progress: CanonicalLaunchProgress;
   preparationBatchSize: number; limits?: LifecycleLimitSource;
+  /** Unstarted-launch admission choices only; never part of the committed plan or calldata. */
+  allowTopologyGaps?: boolean; allowMissingPermanentTail?: boolean;
 };
 export type PlanLaunchOptions = {
   client: LifecycleRpcClient; account: Address; plan: LaunchPlanV1; mode: LaunchExecutionMode;
   limits?: LifecycleLimitSource; fork?: ControlledLifecycleFork; receipts?: readonly LifecycleReceiptReference[];
   confirmations?: number; signal?: AbortSignal;
+  /** Unstarted only: permit interior gaps; opening containment, aligned ticks and the tail remain required. */
+  allowTopologyGaps?: boolean;
+  /** Unstarted only: waive the funded boundary tail; all other topology checks remain required. */
+  allowMissingPermanentTail?: boolean;
 };
 export type PrepareAndPlanLifecycleLaunchOptions = PlanLaunchOptions & {
   onProgress?: (progress: PoolBoundLifecyclePreparationProgress) => void;

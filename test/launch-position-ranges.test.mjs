@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../src/index.ts" : "../dist/index.js";
-const { deriveLaunchPoolRecipe, deriveLaunchPositionRanges, getSqrtRatioAtTick } = await import(sdkPath);
+const { assertLaunchTopologyCoverage, deriveLaunchPoolRecipe, deriveLaunchPositionRanges, getSqrtRatioAtTick, getTickAtSqrtRatio } = await import(sdkPath);
 
 const Q96 = 1n << 96n;
 const MAX_UINT128 = (1n << 128n) - 1n;
@@ -49,8 +49,9 @@ function opening(launchedTokenIsQuote, tickSpacing = 60, overrides = {}) {
 }
 
 function ranges(launchedTokenIsQuote, venue, distributionPreset, tokenBudget = SUPPLY / 2n + 3n, overrides = {}) {
+  // Literal source-geometry tests intentionally disable the new default tail.
   return deriveLaunchPositionRanges({ launchSqrtPriceX96: Q96, launchedTokenIsQuote,
-    tokenBudget, tickSpacing: 60, venue, distributionPreset, ...overrides });
+    tokenBudget, tickSpacing: 60, venue, distributionPreset, extendFinalRangeToBoundary: false, ...overrides });
 }
 
 // A single exact rational ceiling is independently equivalent to the Solidity
@@ -77,7 +78,7 @@ function endpointGross(positions) {
 for (const token0 of [true, false]) {
   for (const venue of ["abyss", "uniswap-v4"]) {
     test(`${venue} token${token0 ? 0 : 1} adjacent Staircase preserves shelves without empty tick intervals`, () => {
-      const options = { staircaseBoundaries: "adjacent" };
+      const options = { positionGaps: "adjacent" };
       const result = ranges(token0, venue, "staircase", 1_000_003n, options);
       const expected = token0
         ? [[0, 360], [360, 720], [720, 1380], [1380, 2460], [2460, 3840]]
@@ -97,11 +98,15 @@ for (const token0 of [true, false]) {
   }
 }
 
-test("invalid or misplaced Staircase boundary choices cannot silently select a different topology", () => {
-  for (const staircaseBoundaries of [null, "overlap", "", 0, true]) {
-    assert.throws(() => ranges(true, "uniswap-v4", "staircase", SUPPLY / 2n, { staircaseBoundaries }));
+test("invalid position gap choices cannot silently select a different topology", () => {
+  for (const positionGaps of [null, "overlap", "", 0, true]) {
+    for (const preset of Object.keys(TOPOLOGIES)) {
+      assert.throws(() => ranges(true, "uniswap-v4", preset, SUPPLY / 2n, { positionGaps }));
+    }
   }
-  assert.throws(() => ranges(true, "abyss", "smooth-ramp", SUPPLY / 2n, { staircaseBoundaries: "adjacent" }));
+  assert.throws(() => ranges(true, "abyss", "smooth-ramp", SUPPLY / 2n, { positionGaps: "source-gaps" }), /always adjacent/);
+  assert.deepEqual(ranges(true, "abyss", "smooth-ramp"),
+    ranges(true, "abyss", "smooth-ramp", SUPPLY / 2n + 3n, { positionGaps: "adjacent" }));
 });
 
 for (const [preset, topology] of Object.entries(TOPOLOGIES)) {
@@ -155,15 +160,18 @@ for (const [preset, topology] of Object.entries(TOPOLOGIES)) {
         assert.equal(result.boundaryTick, boundary);
         assert.equal(result.boundarySqrtPriceX96, getSqrtRatioAtTick(boundary));
         assert.notEqual(token0 ? result.positions.at(-1).tickUpper : result.positions.at(-1).tickLower, boundary,
-          "Canonical presets do not silently extrapolate to infinity");
+          "Explicitly disabled tails retain finite source geometry");
         assert.equal(result.maxLiquidityPerTick, MAX_UINT128 / (venue === "abyss" ? 29_575n : 29_576n));
         assert([...endpointGross(result.positions).values()].every((gross) => gross <= result.maxLiquidityPerTick));
         assert.deepEqual(ranges(token0, venue, preset, budget, { extendFinalRangeToBoundary: false }), result);
       });
 
-      test(`${venue} token${token0 ? 0 : 1} ${preset} tail opt-in extends only the fifth far endpoint`, () => {
+      test(`${venue} token${token0 ? 0 : 1} ${preset} default tail extends only the fifth far endpoint`, () => {
         const canonical = ranges(token0, venue, preset);
-        const extended = ranges(token0, venue, preset, SUPPLY / 2n + 3n, { extendFinalRangeToBoundary: true });
+        const input = { launchSqrtPriceX96: Q96, launchedTokenIsQuote: token0,
+          tokenBudget: SUPPLY / 2n + 3n, tickSpacing: 60, venue, distributionPreset: preset };
+        const extended = deriveLaunchPositionRanges(input);
+        assert.deepEqual(extended, deriveLaunchPositionRanges({ ...input, extendFinalRangeToBoundary: true }));
         assert.deepEqual(extended.positions.slice(0, 4), canonical.positions.slice(0, 4));
         const before = canonical.positions.at(-1);
         const after = extended.positions.at(-1);
@@ -396,3 +404,106 @@ test("invalid prices, presets, counts, flags and budgets cannot produce launch m
     { extendFinalRangeToBoundary: "true" }, { extendFinalRangeToBoundary: 1 },
   ]) assert.throws(() => deriveLaunchPositionRanges({ ...input, ...changes }));
 });
+
+test("topology validation is exported from the root and browser-safe lifecycle subpath", async () => {
+  const lifecycle = await import(sdkPath.replace(/index\.(ts|js)$/, "lifecycle/index.$1"));
+  assert.equal(lifecycle.assertLaunchTopologyCoverage, assertLaunchTopologyCoverage);
+  assert.equal(lifecycle.getTickAtSqrtRatio, getTickAtSqrtRatio);
+});
+
+for (const venue of ["abyss", "uniswap-v4"]) {
+  for (const token0 of [true, false]) {
+    const tickSpacing = venue === "abyss" ? 200 : 60;
+    const recipe = opening(token0, tickSpacing);
+    const input = { launchSqrtPriceX96: recipe.launchSqrtPriceX96, launchedTokenIsQuote: token0,
+      tokenBudget: SUPPLY / 2n, tickSpacing, venue, distributionPreset: "staircase", positionGaps: "adjacent" };
+    const result = deriveLaunchPositionRanges(input);
+    const coverage = { positions: result.positions, openingTick: result.launchTick, tickSpacing, launchedTokenIsQuote: token0 };
+    const mutate = (index, changes) => result.positions.map((position, offset) => offset === index ? { ...position, ...changes } : position);
+    const nearTick = token0 ? "tickLower" : "tickUpper";
+    const farTick = token0 ? "tickUpper" : "tickLower";
+    const direction = token0 ? 1 : -1;
+
+    test(`${venue} token${token0 ? 0 : 1} contiguous coverage with a default permanent tail passes without mutation`, () => {
+      assert.equal(getTickAtSqrtRatio(input.launchSqrtPriceX96), coverage.openingTick);
+      assert.equal(result.positions.at(-1)[farTick], result.boundaryTick);
+      const unsorted = Object.freeze(result.positions.toReversed().map((position) => Object.freeze({ ...position })));
+      const before = [...unsorted];
+      assert.doesNotThrow(() => assertLaunchTopologyCoverage({ ...coverage, positions: unsorted }));
+      assert.deepEqual(unsorted, before);
+    });
+
+    test(`${venue} token${token0 ? 0 : 1} missing or unfunded tails cannot be waived by allowInteriorGaps`, () => {
+      const finite = deriveLaunchPositionRanges({ ...input, extendFinalRangeToBoundary: false });
+      for (const allowInteriorGaps of [false, true]) {
+        assert.throws(() => assertLaunchTopologyCoverage({ ...coverage, positions: finite.positions, allowInteriorGaps }), /MISSING_PERMANENT_TAIL:/);
+        assert.throws(() => assertLaunchTopologyCoverage({ ...coverage,
+          positions: mutate(4, { maxTokenAmount: 0n }), allowInteriorGaps }), /MISSING_PERMANENT_TAIL:/);
+      }
+    });
+
+    test(`${venue} token${token0 ? 0 : 1} terminal and interior gaps fail by default and permit explicit gap opt-out`, () => {
+      for (const index of [1, 4]) {
+        const positions = mutate(index, { [nearTick]: result.positions[index][nearTick] + direction * tickSpacing });
+        assert.throws(() => assertLaunchTopologyCoverage({ ...coverage, positions }), /TOPOLOGY_INTERIOR_GAP:/);
+        assert.doesNotThrow(() => assertLaunchTopologyCoverage({ ...coverage, positions, allowInteriorGaps: true }));
+      }
+    });
+
+    test(`${venue} token${token0 ? 0 : 1} off-grid endpoints remain hard errors with gap opt-out`, () => {
+      for (const endpoint of ["tickLower", "tickUpper"]) {
+        const positions = mutate(2, { [endpoint]: result.positions[2][endpoint] + 1 });
+        assert.throws(() => assertLaunchTopologyCoverage({ ...coverage, positions, allowInteriorGaps: true }), /TOPOLOGY_OFF_GRID_TICK:/);
+      }
+    });
+
+    test(`${venue} token${token0 ? 0 : 1} overlapping Orbit-style horizons bridge later bands`, () => {
+      const tick = result.launchTick;
+      const horizon = (start, end) => ({ tickLower: Math.min(tick + direction * start * tickSpacing, tick + direction * end * tickSpacing),
+        tickUpper: Math.max(tick + direction * start * tickSpacing, tick + direction * end * tickSpacing), maxTokenAmount: 10n });
+      const tail = token0 ? { tickLower: tick + 12 * tickSpacing, tickUpper: result.boundaryTick, maxTokenAmount: 5n }
+        : { tickLower: result.boundaryTick, tickUpper: tick - 12 * tickSpacing, maxTokenAmount: 5n };
+      const positions = [horizon(8, 10), tail, horizon(0, 2), horizon(0, 14), horizon(4, 6)];
+      assert.doesNotThrow(() => assertLaunchTopologyCoverage({ ...coverage, positions }));
+      // A launch-spanning anchor remains a tail even if finite bands sort after it.
+      assert.doesNotThrow(() => assertLaunchTopologyCoverage({ ...coverage,
+        positions: [{ ...tail, [nearTick]: tick }, horizon(20, 22)] }));
+    });
+
+    test(`${venue} token${token0 ? 0 : 1} opening containment is mandatory and orientation-aware`, () => {
+      for (const allowInteriorGaps of [false, true]) {
+        assert.throws(() => assertLaunchTopologyCoverage({ ...coverage,
+          positions: mutate(0, { [nearTick]: result.launchTick + direction * tickSpacing }), allowInteriorGaps }), /TOPOLOGY_OPENING_GAP:/);
+        const wrongSide = token0
+          ? { tickLower: result.launchTick - tickSpacing, tickUpper: result.launchTick, maxTokenAmount: 10n }
+          : { tickLower: result.launchTick, tickUpper: result.launchTick + tickSpacing, maxTokenAmount: 10n };
+        assert.throws(() => assertLaunchTopologyCoverage({ ...coverage,
+          positions: [wrongSide, ...result.positions.slice(1)], allowInteriorGaps }), /TOPOLOGY_OPENING_GAP:/);
+      }
+      // The opening tick need not be on-grid; only band endpoints do.
+      assert.doesNotThrow(() => assertLaunchTopologyCoverage({ ...coverage, openingTick: result.launchTick + direction }));
+    });
+  }
+}
+
+for (const venue of ["abyss", "uniswap-v4"]) {
+  for (const token0 of [true, false]) {
+    test(`${venue} token${token0 ? 0 : 1} adjacent Early Scarcity preserves source weights and widths with a default tail`, () => {
+      const finite = ranges(token0, venue, "early-scarcity", 1_000_003n, { positionGaps: "adjacent" });
+      const expected = token0
+        ? [[0, 300], [300, 840], [840, 1620], [1620, 2640], [2640, 3840]]
+        : [[-300, 0], [-840, -300], [-1620, -840], [-2640, -1620], [-3840, -2640]];
+      assert.deepEqual(finite.positions.map(({ tickLower, tickUpper }) => [tickLower, tickUpper]), expected);
+      assert.deepEqual(finite.positions.map(({ inventoryBps }) => inventoryBps), TOPOLOGIES["early-scarcity"].weights);
+      assert.deepEqual(finite.positions.map(({ allocatedTokenAmount }) => allocatedTokenAmount), TOPOLOGIES["early-scarcity"].allocated);
+      const extended = deriveLaunchPositionRanges({ launchSqrtPriceX96: Q96, launchedTokenIsQuote: token0,
+        tokenBudget: 1_000_003n, tickSpacing: 60, venue, distributionPreset: "early-scarcity", positionGaps: "adjacent" });
+      assert.deepEqual(extended.positions.slice(0, 4), finite.positions.slice(0, 4));
+      assert.equal(token0 ? extended.positions[4].tickUpper : extended.positions[4].tickLower, extended.boundaryTick);
+      assert.doesNotThrow(() => assertLaunchTopologyCoverage({ positions: extended.positions,
+        openingTick: 0, tickSpacing: 60, launchedTokenIsQuote: token0 }));
+      assert.equal(sum(extended.positions, "maxTokenAmount"), 1_000_003n);
+      for (const gross of endpointGross(extended.positions).values()) assert(gross <= extended.maxLiquidityPerTick);
+    });
+  }
+}

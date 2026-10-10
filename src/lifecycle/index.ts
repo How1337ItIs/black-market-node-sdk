@@ -9,3 +9,4 @@ export * from "./authors.js";
 export * from "./presets.js";
 export * from "./transactions.js";
 export { planLaunch, simulateLaunchPlan, buildNextTransaction, prepareAndPlanLifecycleLaunch } from "./planner.js";
+export { assertLaunchTopologyCoverage, getTickAtSqrtRatio, type LaunchTopologyCoverageInput, type LaunchTopologyPosition } from "../launch.js";

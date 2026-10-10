@@ -1,8 +1,10 @@
 import { encodeFunctionData, keccak256, toHex, zeroAddress, type Address, type Hex } from "viem";
+import { ABYSS_FEE_TIERS } from "../abyss.js";
+import { assertLaunchTopologyCoverage, getTickAtSqrtRatio } from "../launch.js";
 import { launchLifecycleAbi, lifecycleAdapterAbi, lifecycleErc20Abi } from "./abi.js";
 import { hashLaunchIdentity, hashLaunchPlan, LifecycleFundingKind, LifecyclePhase, LifecycleRewardMode, LifecycleTokenKind, LIFECYCLE_MAX_REWARD_ERC20_SUPPLY, LIFECYCLE_MAX_ERC404_SUPPLY, parseLaunchPlan, serializeLaunchPlan, type LaunchPlanV1 } from "./schema.js";
 import { readLaunchProgress, readLifecycleProfiles, readLifecycleTokenAtBlock, readPoolBoundHookDeployment } from "./progress.js";
-import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, isPoolBoundV4ConfigVersion, minePoolBoundHookSalt, type V4LifecycleMarketConfig, type V4PoolBoundLifecycleMarketConfig } from "./markets.js";
+import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, isPoolBoundV4ConfigVersion, minePoolBoundHookSalt, type AbyssLifecycleMarketConfig, type V4LifecycleMarketConfig, type V4PoolBoundLifecycleMarketConfig } from "./markets.js";
 import { assertLifecycleBlock, assertLifecycleReadClientOpen, lifecycleFailureReason, lifecyclePinnedRpc, lifecycleRpc, lifecycleStage, readLifecycleBlock, readLifecycleChainId, readLifecycleContract, resolveLifecycleLimits, rpcHex, rpcQuantity, withLifecycleReadClient } from "./rpc.js";
 import { prepareLaunchSimulation, simulateLaunchTransactions, type NextTransactionEnvelope } from "./simulation.js";
 import { LifecyclePlanningError, type BuildNextTransactionOptions, type CanonicalLaunchProgress, type LifecycleBlock, type LifecycleConstructionProfile, type LifecycleFundingPrerequisite, type LifecyclePoolBoundHookDeployment, type LifecycleProfile, type LifecycleRpcClient, type LifecycleSimulation, type LifecycleTransaction, type PlannedLaunch, type PlanLaunchOptions, type PrepareAndPlanLifecycleLaunchOptions, type SimulateLaunchPlanOptions } from "./types.js";
@@ -11,7 +13,12 @@ import { getKnownLifecycleDeployment, getKnownLifecycleProfile } from "./presets
 import { buildLaunchTransactions } from "./transactions.js";
 import { assertLifecycleMarketAllocation, assertLifecycleSupplyAllocation } from "./allocations.js";
 
-function validatePlanShape(plan: LaunchPlanV1): Hex {
+type ValidatedPlanShape = {
+  commitment: Hex;
+  marketConfigs: (AbyssLifecycleMarketConfig | V4LifecycleMarketConfig | V4PoolBoundLifecycleMarketConfig)[];
+};
+
+function validatePlanShape(plan: LaunchPlanV1): ValidatedPlanShape {
   // Encoding checks all exact integer widths, addresses, byte strings and tuple fields.
   const commitment = hashLaunchPlan(plan);
   if (plan.markets.length === 0 || plan.markets.length > 16 || plan.buys.length > 64 || plan.funding.length > 8 || plan.feeAssets.length === 0 || plan.feeAssets.length > 8 || plan.token.supply <= 0n || plan.token.inventoryRecipient === zeroAddress || plan.token.inventoryRecipient.toLowerCase() === plan.orchestrator.toLowerCase() || plan.executorFeeBps > 1000) throw new LifecyclePlanningError("INVALID_PLAN", "Plan exceeds lifecycle bounds or lacks positive token economics");
@@ -36,6 +43,7 @@ function validatePlanShape(plan: LaunchPlanV1): Hex {
   }
   const v4Quotes = new Set<string>();
   let positionCount = 0;
+  const marketConfigs: ValidatedPlanShape["marketConfigs"] = [];
   for (const market of plan.markets) {
     if (market.tokenBudget <= 0n || market.config === "0x" || (market.config.length - 2) / 2 > 16384) throw new LifecyclePlanningError("INVALID_MARKET", "Each market needs a positive token budget and bounded versioned config");
     let config: V4LifecycleMarketConfig | V4PoolBoundLifecycleMarketConfig | undefined;
@@ -49,8 +57,13 @@ function validatePlanShape(plan: LaunchPlanV1): Hex {
       v4Quotes.add(quote);
       if (config.lpFeePips >= 1000000 || (config.version === 6 ? config.hookFeePips > 1000000 : config.hookFeePips >= 1000000) || config.feeMode > 1 || config.tickSpacing < 1 || config.tickSpacing > 32767 || config.sqrtPriceX96 < 4295128739n || config.sqrtPriceX96 >= 1461446703485210103287273052203988822378723970342n || (config.protocolFeeDenominator !== 0 && (config.protocolFeeDenominator < 4 || config.protocolFeeDenominator > 10 || config.treasury === zeroAddress))) throw new LifecyclePlanningError("INVALID_MARKET", "V4 market violates lifecycle fee, price, treasury or position bounds");
       positionCount += assertLifecycleMarketAllocation(market, config.positions);
+      marketConfigs.push(config);
     }
-    else positionCount += assertLifecycleMarketAllocation(market, decodeAbyssLifecycleMarketConfig(market.config).positions);
+    else {
+      const abyss = decodeAbyssLifecycleMarketConfig(market.config);
+      positionCount += assertLifecycleMarketAllocation(market, abyss.positions);
+      marketConfigs.push(abyss);
+    }
     if (positionCount > 32) throw new LifecyclePlanningError("INVALID_POSITION_COUNT", "A launch commits at most 32 total positions across every venue");
   }
   assertLifecycleSupplyAllocation(plan);
@@ -59,7 +72,7 @@ function validatePlanShape(plan: LaunchPlanV1): Hex {
     const funding = plan.funding.find((item) => item.asset.toLowerCase() === market.quoteAsset.toLowerCase());
     if (required > (funding?.amount ?? 0n)) throw new LifecyclePlanningError("INVALID_FUNDING", "Quote funding does not cover all ordered buys for its asset");
   }
-  return commitment;
+  return { commitment, marketConfigs };
 }
 
 async function readFunding(client: LifecycleRpcClient, plan: LaunchPlanV1, block: LifecycleBlock): Promise<{ prerequisites: LifecycleFundingPrerequisite[]; approvals: LifecycleTransaction[] }> {
@@ -202,7 +215,7 @@ function assertPlanningActive(signal?: AbortSignal): void {
   if (signal?.aborted) throw Object.assign(new Error("Lifecycle launch planning cancelled"), { name: "AbortError" });
 }
 
-function validatePlanningIntent(options: PlanLaunchOptions): Hex {
+function validatePlanningIntent(options: PlanLaunchOptions): ValidatedPlanShape {
   const { plan, account, mode } = options;
   assertPlanningActive(options.signal);
   if (mode !== "atomic" && mode !== "staged") throw new LifecyclePlanningError("EXPLICIT_MODE_REQUIRED", "Choose atomic or staged explicitly; staged is never silently substituted");
@@ -211,15 +224,45 @@ function validatePlanningIntent(options: PlanLaunchOptions): Hex {
   return validatePlanShape(plan);
 }
 
+function validatePlanTopology(options: PlanLaunchOptions, marketConfigs: ValidatedPlanShape["marketConfigs"], token: Address): void {
+  for (const [marketIndex, config] of marketConfigs.entries()) {
+    try {
+      let tickSpacing: number;
+      let openingSqrtPriceX96: bigint;
+      if ("version" in config) {
+        tickSpacing = config.tickSpacing;
+        openingSqrtPriceX96 = config.sqrtPriceX96;
+      } else {
+        const tier = ABYSS_FEE_TIERS.find(({ feePips }) => feePips === config.fee);
+        if (tier === undefined) throw new LifecyclePlanningError("INVALID_MARKET", "Abyss market fee must select a canonical tick-spacing tier");
+        tickSpacing = tier.tickSpacing;
+        openingSqrtPriceX96 = config.openingSqrtPriceX96;
+      }
+      assertLaunchTopologyCoverage({ positions: config.positions, openingTick: getTickAtSqrtRatio(openingSqrtPriceX96), tickSpacing,
+        launchedTokenIsQuote: BigInt(token) < BigInt(options.plan.markets[marketIndex]!.quoteAsset),
+        allowInteriorGaps: options.allowTopologyGaps === true });
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      const code = error.message.slice(0, error.message.indexOf(":"));
+      if (code === "MISSING_PERMANENT_TAIL" && options.allowMissingPermanentTail === true) continue;
+      if (code === "TOPOLOGY_OPENING_GAP" || code === "TOPOLOGY_INTERIOR_GAP" ||
+        code === "MISSING_PERMANENT_TAIL" || code === "TOPOLOGY_OFF_GRID_TICK") {
+        throw new LifecyclePlanningError(code, `Market ${marketIndex}: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+}
+
 function assertFinalPlan(planned: PlannedLaunch, signal?: AbortSignal): void {
   assertPlanningActive(signal);
   if (hashLaunchPlan(planned.plan).toLowerCase() !== planned.planHash.toLowerCase() || hashLaunchIdentity(planned.plan).toLowerCase() !== planned.launchId.toLowerCase()) throw new LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed during asynchronous planning; previous reads and simulation are invalid");
 }
 
 /** One owner constructs and mines, optionally measures actual ordered buy outputs,
- * then proves only the final protected commitment. No certificates or skip flags. */
+ * then proves only the final protected commitment. No cached execution certificates. */
 export async function prepareAndPlanLifecycleLaunch(options: PrepareAndPlanLifecycleLaunchOptions): Promise<PlannedLaunch> {
-  const commitment = validatePlanningIntent(options);
+  const { commitment } = validatePlanningIntent(options);
   if (options.buySlippageBps !== undefined) validateBuySlippageBps(options.buySlippageBps);
   const needsMining = options.plan.markets.some((market) => isPoolBoundV4ConfigVersion(market.configVersion));
   const needsProtection = options.buySlippageBps !== undefined && options.plan.buys.length !== 0;
@@ -293,7 +336,7 @@ export async function planLaunch(options: PlanLaunchOptions): Promise<PlannedLau
 
 async function planLaunchWithReads(options: PlanLaunchOptions, client: LifecycleRpcClient, pinnedBlock?: LifecycleBlock, ownedProgress?: CanonicalLaunchProgress, diagnostic = false, reviewed?: ReviewedNextTransaction): Promise<PlannedLaunch> {
   const { plan, account, mode } = options;
-  const planHash = validatePlanningIntent(options);
+  const { commitment: planHash, marketConfigs } = validatePlanningIntent(options);
   const launchId = hashLaunchIdentity(plan);
   const [block, chainId] = await lifecycleStage(client, "plan.context", () => Promise.all([
     pinnedBlock ?? readLifecycleBlock(client), readLifecycleChainId(client),
@@ -322,7 +365,8 @@ async function planLaunchWithReads(options: PlanLaunchOptions, client: Lifecycle
   ]));
   assertPlanningActive(options.signal);
   const placeholder: LifecycleSimulation = { backend: "unavailable", confidence: "provisional", admitted: false, executionProof: "unavailable", protocolFit: "unknown", transportPreflight: "not-requested", blockNumber: block.number, blockHash: block.hash, account, chainId: plan.chainId, limits, steps: [] };
-  let planned: PlannedLaunch = { ...identity, tokenFactory, tokenFactoryCodeHash, chainId: plan.chainId, transactions: [], totalCalldataBytes: 0, prerequisites: [], profiles: [], hookDeployments: [], progress, simulation: placeholder, preparationBatchSize: plan.markets.length, limits: options.limits };
+  let planned: PlannedLaunch = { ...identity, tokenFactory, tokenFactoryCodeHash, chainId: plan.chainId, transactions: [], totalCalldataBytes: 0, prerequisites: [], profiles: [], hookDeployments: [], progress, simulation: placeholder, preparationBatchSize: plan.markets.length, limits: options.limits,
+    allowTopologyGaps: options.allowTopologyGaps === true, allowMissingPermanentTail: options.allowMissingPermanentTail === true };
   const receiptsPending = progress.receipts.some((receipt) => receipt.status === "pending" || receipt.status === "unconfirmed");
   if (!progress.confirmationSafe || receiptsPending) {
     const hookDeployments: LifecyclePoolBoundHookDeployment[] = [];
@@ -340,6 +384,9 @@ async function planLaunchWithReads(options: PlanLaunchOptions, client: Lifecycle
     await assertLifecycleBlock(client, block, plan.chainId);
     return { ...planned, simulation: { ...placeholder, confidence: "stateful", executionProof: "proved", protocolFit: "proved", admitted: true, reason: "Canonical launch is terminal; no transaction remains" } };
   }
+  // Topology is a creation policy, not a retroactive obstacle to recovery of
+  // immutable onchain commitments. Waiting and terminal launches returned above.
+  if (progress.canonical.phase === LifecyclePhase.None && progress.head.phase === LifecyclePhase.None) validatePlanTopology(options, marketConfigs, identity.predictedToken);
   const [funding, metadata] = await lifecycleStage(client, "plan.inputs", () => Promise.all([
     progress.canonical.phase === LifecyclePhase.None ? readFunding(client, plan, block) : { prerequisites: [], approvals: [] },
     readPlanMetadata(client, plan, identity.predictedToken, block),
@@ -459,7 +506,8 @@ export async function buildNextTransaction(options: BuildNextTransactionOptions)
       if (next === undefined) throw new LifecyclePlanningError("MISSING_GAS_PROOF", "Cancellation omitted its exact simulation admission", simulation);
       return preflightNextTransaction(options, next, simulation, reviewed);
     }
-    const refreshed = await lifecycleStage(client, "plan", () => planLaunchWithReads({ client, plan: options.planned.plan, account: options.planned.account, mode: options.planned.mode, limits: options.limits === undefined ? options.planned.limits : options.limits, fork: options.fork, receipts: options.receipts, confirmations: options.confirmations ?? options.planned.confirmations, signal: options.signal }, client, block, progress, false, reviewed));
+    const refreshed = await lifecycleStage(client, "plan", () => planLaunchWithReads({ client, plan: options.planned.plan, account: options.planned.account, mode: options.planned.mode, limits: options.limits === undefined ? options.planned.limits : options.limits, fork: options.fork, receipts: options.receipts, confirmations: options.confirmations ?? options.planned.confirmations, signal: options.signal,
+      allowTopologyGaps: options.planned.allowTopologyGaps, allowMissingPermanentTail: options.planned.allowMissingPermanentTail }, client, block, progress, false, reviewed));
     assertFinalPlan(refreshed, options.signal);
     if (!refreshed.simulation.admitted) throw new LifecyclePlanningError("PLAN_NOT_ADMITTED", refreshed.simulation.reason ?? "Remaining exact launch sequence is not admitted", refreshed.simulation);
     assertPlannedDeploymentBindings(options.planned, refreshed);
@@ -478,6 +526,7 @@ export async function simulateLaunchPlan(options: SimulateLaunchPlanOptions): Pr
     client, plan: planned.plan, account: planned.account, mode: planned.mode,
     limits: options.limits === undefined ? planned.limits : options.limits, fork: options.fork,
     receipts: options.receipts, confirmations: options.confirmations ?? planned.confirmations, signal: options.signal,
+    allowTopologyGaps: planned.allowTopologyGaps, allowMissingPermanentTail: planned.allowMissingPermanentTail,
   });
   assertPlannedDeploymentBindings(planned, current);
   return current.simulation;

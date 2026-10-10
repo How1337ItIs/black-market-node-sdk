@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { decodeFunctionData, encodeAbiParameters, encodeFunctionResult, keccak256, parseAbiParameters, stringToHex, toHex, zeroAddress, zeroHash } from "viem";
 const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
-const { decodeV4LifecycleMarketConfig, encodeV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, decodeLaunchBounds, encodeLaunchBounds, hashLifecycleProfile, hashLaunchBounds, validateV4LifecycleMarket, validateV4LifecycleOracle, lifecycleOracleFactoryAbi, planLaunch, parseLaunchPlan, poolBoundV4LifecycleConfigSchema, V4_LIFECYCLE_CONFIG_SCHEMA } = await import(sdkPath);
+const { decodeV4LifecycleMarketConfig, encodeV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, decodeLaunchBounds, encodeLaunchBounds, hashLifecycleProfile, hashLaunchBounds, launchLifecycleAbi, lifecycleAdapterAbi, validateV4LifecycleMarket, validateV4LifecycleOracle, lifecycleOracleFactoryAbi, planLaunch, prepareAndPlanLifecycleLaunch, parseLaunchPlan, poolBoundV4LifecycleConfigSchema, V4_LIFECYCLE_CONFIG_SCHEMA } = await import(sdkPath);
 const fixture = JSON.parse(await readFile(new URL("./fixtures/launch-lifecycle-v1.json", import.meta.url), "utf8"));
 const original = decodeV4LifecycleMarketConfig(fixture.plan.markets[0].config);
 const address = (n) => toHex(BigInt(n), { size: 20 });
@@ -157,3 +157,51 @@ test("planner refuses unsupported V4 config versions before any RPC or simulatio
     await assert.rejects(planLaunch({ client: rpc, plan, account: plan.creator, mode: "atomic" }), { code: "UNSUPPORTED_CONFIG_VERSION" });
   }
 });
+
+for (const version of [4, 5, 6]) {
+  for (const token0 of [true, false]) {
+    test(`V4 config${version} token${token0 ? 0 : 1} planner topology uses its committed spacing and pinned token ordering`, async () => {
+      const originalPlan = parseLaunchPlan(JSON.stringify(fixture.plan));
+      const token = address(token0 ? 0x10 : 0x30);
+      const encode = version === 4 ? encodeV4LifecycleMarketConfig : encodePoolBoundV4LifecycleMarketConfig;
+      const plan = { ...originalPlan, funding: [], buys: [],
+        token: { ...originalPlan.token, kind: 0, rewardMode: 0, nftUnit: 0n, supply: 100n },
+        feeAssets: [{ asset: market.quoteAsset, ownerBps: 10000, rewardsBps: 0, burnBps: 0 }],
+        markets: [{ ...market, configVersion: version, tokenBudget: 100n }] };
+      // Only real ABI-complete pinned reads are supplied before the topology refusal.
+      // No network, profile mirror, simulation or signer is involved.
+      const readAbi = [...launchLifecycleAbi, ...lifecycleAdapterAbi];
+      const client = { async request({ method, params = [] }) {
+        if (method === "eth_chainId") return toHex(plan.chainId);
+        if (method === "eth_getBlockByNumber") return { number: "0x2a", hash: toHex(42n, { size: 32 }),
+          timestamp: "0x64", gasLimit: toHex(30000000n), baseFeePerGas: "0x1" };
+        if (method === "eth_getCode") return "0x6000";
+        if (method === "eth_getTransactionCount") return "0x0";
+        assert.equal(method, "eth_call", "Invalid topology must precede funding and simulation");
+        assert.equal(params[1], "0x2a");
+        const call = decodeFunctionData({ abi: readAbi, data: params[0].data });
+        assert.ok(["tokenFactory", "core", "predictToken", "readLaunchProgress"].includes(call.functionName), "Invalid unstarted topology must precede profile reads");
+        const emptyProgress = { launchId: zeroHash, planHash: zeroHash, creator: zeroAddress, nonce: 0n, mode: 0, phase: 0,
+          token: zeroAddress, feeHub: zeroAddress, rewards: zeroAddress, preparedMarkets: 0, marketCount: 0, buyCount: 0, positionCount: 0, deadline: 0n };
+        return encodeFunctionResult({ abi: readAbi, functionName: call.functionName,
+          result: call.functionName === "predictToken" ? token : call.functionName === "readLaunchProgress" ? emptyProgress
+            : call.functionName === "core" ? plan.orchestrator : address(0xf3) });
+      } };
+      const selected = { ...config, version, tickSpacing: 200, sqrtPriceX96: 1n << 96n,
+        ...(version !== 4 ? { hookSalt: zeroHash } : {}),
+        ...(version === 6 ? { minimumHookFeePips: 0, feeSensitivityPipsSecondsPerTick: 0 } : {}) };
+      for (const [code, ticks, options] of [
+        ["MISSING_PERMANENT_TAIL", token0 ? [0, 600] : [-600, 0], { allowTopologyGaps: true }],
+        ["TOPOLOGY_OFF_GRID_TICK", token0 ? [0, 887220] : [-887220, 0], { allowTopologyGaps: true, allowMissingPermanentTail: true }],
+        ["TOPOLOGY_OPENING_GAP", token0 ? [200, 887200] : [-887200, -200], { allowTopologyGaps: true, allowMissingPermanentTail: true }],
+      ]) {
+        const [tickLower, tickUpper] = ticks;
+        plan.markets[0].config = encode({ ...selected, positions: [{ tickLower, tickUpper, liquidity: 1n, salt: zeroHash, maxTokenAmount: 100n }] });
+        await assert.rejects(planLaunch({ client, plan, account: plan.creator, mode: "atomic", ...options }), { code });
+        if (version === 4) {
+          await assert.rejects(prepareAndPlanLifecycleLaunch({ client, plan, account: plan.creator, mode: "atomic", ...options }), { code });
+        }
+      }
+    });
+  }
+}

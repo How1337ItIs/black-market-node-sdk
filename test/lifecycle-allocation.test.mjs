@@ -79,7 +79,9 @@ test("planner and pure compiler reject both underallocation and overallocation f
   for (const plan of invalid) {
     for (const mode of ["atomic", "staged"]) {
       assert.throws(() => sdk.buildLaunchTransactions({ plan, mode }), { code: "INVALID_TOKEN_BUDGET" });
-      await assert.rejects(sdk.planLaunch({ client, plan, account: plan.creator, mode }), { code: "INVALID_TOKEN_BUDGET" });
+      for (const options of [{}, { allowTopologyGaps: true, allowMissingPermanentTail: true }]) {
+        await assert.rejects(sdk.planLaunch({ client, plan, account: plan.creator, mode, ...options }), { code: "INVALID_TOKEN_BUDGET" });
+      }
     }
   }
 });

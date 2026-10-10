@@ -4,14 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
+import { runInNewContext } from "node:vm";
 import { keccak256, parseTransaction, recoverTransactionAddress, recoverTypedDataAddress, zeroAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   createLocalLaunchWallet, errorEvidence, executionRpcUrl, launchApiUrl,
   publishUntilIndexed, readExampleConfiguration, Redactor, registerEndpointSecrets,
   rpcRequestSignal, RunArtifacts, exampleError, submitSignedRecorded,
+  targetMarketCapUsdX18, validateApiWethUsdSeed, readApiWethUsdSeed, assertUnchangedEconomicQuote, allocateMarketBudgets,
+  guardEconomicReviewWallet,
+  deriveExampleMarketEconomics, openingEconomics, economicReviewHash, assertEconomicReviewAdmission,
 } from "../examples/launch-example-support.mjs";
-import { verifyLaunchInventory } from "../examples/launch-example.mjs";
+import { validateCase, verifyLaunchInventory } from "../examples/launch-example.mjs";
+const pricingSdk = await import(process.env.SDK_SOURCE_TEST === "1" ? "../src/index.ts" : "../dist/index.js");
 
 const hash = `0x${"ab".repeat(32)}`;
 const revertData = "0xdeadbeef0000000000000000000000000000000000000000000000000000000000000001";
@@ -60,6 +65,68 @@ test("one-time recovery secrets exist only in a mode0600 file", (t) => {
     const text = readFileSync(join(artifacts.directory, name), "utf8");
     assert.ok(!text.includes(capability)); assert.ok(!text.includes(signature));
   }
+});
+
+test("endpoint secrets redact values without corrupting structured field names", () => {
+  const redactor = new Redactor();
+  const uri = "https://example.invalid/nft/";
+  registerEndpointSecrets(redactor, uri);
+  registerEndpointSecrets(redactor, "https://user:pass@rpc.example/nftUnit?api_key=credential-query");
+  const input = { token: { nftUnit: 100n * 10n ** 18n, metadataURI: uri }, nftSignature: "unregistered-signature", nested: { credential: "unregistered-credential", message: "nft nftUnit user pass credential-query" } };
+  const evidence = redactor.value(input);
+  assert.deepEqual(Object.keys(evidence.token), ["nftUnit", "metadataURI"]);
+  assert.equal(evidence.token.nftUnit, "100000000000000000000");
+  assert.equal(evidence.nftSignature, "[REDACTED]");
+  assert.equal(evidence.nested.credential, "[REDACTED]");
+  assert.notEqual(evidence.token.metadataURI, uri);
+  for (const secret of ["nft", "nftUnit", "user", "pass", "credential-query"]) assert.ok(!evidence.nested.message.includes(secret));
+  const serialized = JSON.parse(redactor.text(JSON.stringify({ token: { nftUnit: "100000000000000000000", metadataURI: uri } })));
+  assert.deepEqual(serialized.token, evidence.token);
+});
+
+test("private recovery retains the exact complete plan and original policy across session updates", async (t) => {
+  const artifacts = run(t);
+  const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../src/index.ts" : "../dist/index.js";
+  const { hashLaunchPlan, parseLaunchPlan, serializeLaunchPlan } = await import(sdkPath);
+  // Reuse the complete offline wire vector, not a claimed live/admitted launch.
+  const vector = JSON.parse(readFileSync(new URL("./fixtures/launch-lifecycle-v1.json", import.meta.url), "utf8"));
+  const plan = parseLaunchPlan(JSON.stringify(vector.plan));
+  const uri = "https://user:pass@example.invalid/nft/?api_key=credential-query";
+  plan.token.metadataURI = uri;
+  registerEndpointSecrets(artifacts.redactor, uri);
+  const exactPlan = JSON.parse(serializeLaunchPlan(plan));
+  const expectedHash = hashLaunchPlan(plan);
+  artifacts.privateRecovery({ plan: exactPlan, mode: "staged", confirmations: 2 });
+  const initial = json(artifacts, "private-recovery.json");
+  assert.deepEqual(initial, { plan: exactPlan, mode: "staged", confirmations: 2 });
+  assert.equal(statSync(join(artifacts.directory, "private-recovery.json")).mode & 0o777, 0o600);
+  assert.equal(statSync(artifacts.directory).mode & 0o777, 0o700);
+  artifacts.save("plan.json", exactPlan);
+  assert.equal(json(artifacts, "plan.json").token.nftUnit, exactPlan.token.nftUnit);
+  assert.notEqual(json(artifacts, "plan.json").token.metadataURI, uri);
+  const capability = "lus_owned_recovery_update";
+  const signature = `0x${"12".repeat(65)}`;
+  artifacts.redactor.addSecret(capability); artifacts.redactor.addSecret(signature);
+  // Metadata/signature and capability updates may be partial or carry stale intent.
+  artifacts.privateRecovery({ request: { authorization: { signature } } });
+  artifacts.privateRecovery({ plan: { token: { metadataURI: "[REDACTED]" } }, mode: "atomic", confirmations: 1, session: { capability }, capability });
+  exactPlan.token.metadataURI = "mutated-caller-input";
+  artifacts.privateRecovery({ signedTransactions: [{ transactionHash: hash, rawTransaction: "0x1234" }] });
+  const recovered = json(artifacts, "private-recovery.json");
+  assert.deepEqual(recovered.plan, initial.plan);
+  assert.equal(recovered.mode, "staged"); assert.equal(recovered.confirmations, 2);
+  assert.equal(recovered.capability, capability);
+  assert.equal(recovered.request.authorization.signature, signature);
+  assert.equal(recovered.signedTransactions[0].transactionHash, hash);
+  assert.equal(hashLaunchPlan(parseLaunchPlan(JSON.stringify(recovered.plan))), expectedHash);
+  assert.equal(statSync(join(artifacts.directory, "private-recovery.json")).mode & 0o777, 0o600);
+  artifacts.event("session", { session: { capability }, request: recovered.request, metadataURI: uri });
+  artifacts.finish("failed", exampleError("API_NOT_READY", "Recovery boundary test"));
+  for (const name of ["plan.json", "events.jsonl", "result.json", "receipts.json"]) {
+    const text = readFileSync(join(artifacts.directory, name), "utf8");
+    for (const secret of [uri, "credential-query", capability, signature]) assert.ok(!text.includes(secret));
+  }
+  assert.ok(!readdirSync(artifacts.directory).some((name) => name.endsWith(".tmp")));
 });
 
 test("exclusive output refuses reuse without overwriting recovery evidence", (t) => {
@@ -264,7 +331,8 @@ test("example fails missing key or API upfront and retains redacted configuratio
     const cwd = mkdtempSync(join(parent, `case-${index}-`));
     const child = spawnSync(process.execPath, [script], {
       cwd, encoding: "utf8", timeout: 10_000,
-      env: { ...process.env, PRIVATE_KEY: privateKey, LAUNCH_API_URL: apiUrl, RPC_URL: "https://rpc.invalid/private-path?key=private-query" },
+      env: { ...process.env, PRIVATE_KEY: privateKey, EXAMPLE_KEYSTORE_PATH: "", EXAMPLE_KEYSTORE_PASSWORD: "",
+        LAUNCH_API_URL: apiUrl, RPC_URL: "https://rpc.invalid/private-path?key=private-query" },
     });
     assert.equal(child.status, 1, child.stderr);
     const results = join(cwd, "launch-results");
@@ -315,21 +383,22 @@ test("signed broadcast interruption and reverted receipts retain durable evidenc
   assert.equal(json(next, "result.json").chain.transactions[0].receipt.status, "0x0");
 });
 
-test("fixed example configuration never invents optional execution caps and defaults to fifteen percent headroom", () => {
+test("fixed example configuration never invents optional execution caps and defaults to fifteen percent headroom", async () => {
   const sdk = {
     getAddresses(chainId) { assert.equal(chainId, 4663); return { launchOrchestrator: transaction.wire.to, launchImplementationRegistry: transaction.wire.to, weth: transaction.wire.to, abyssFactory: transaction.wire.to }; },
     robinhoodMainnet: { rpcUrls: { default: { http: ["https://rpc.example.invalid/"] } } },
   };
   const env = { PRIVATE_KEY: signingKey, LAUNCH_API_URL: "https://api.example.invalid/" };
-  const configuration = readExampleConfiguration(sdk, new Redactor(), env);
+  const { fixture: configuration } = await readExampleConfiguration(sdk, new Redactor(), env);
   assert.equal(configuration.implementationRegistry, transaction.wire.to);
   const policy = configuration.executionLimits;
   assert.equal(policy.headroomBps, 1500);
   for (const field of ["chainTransactionGasLimit", "rpcTransactionGasLimit", "accountTransactionGasLimit", "maxCalldataBytes"]) assert.equal(policy[field], undefined);
   assert.equal("forkRpcUrl" in configuration, false);
-  const restricted = readExampleConfiguration(sdk, new Redactor(), { ...env, EXAMPLE_RPC_GAS_CAP: "12000000", EXAMPLE_MAX_CALLDATA_BYTES: "120000", EXAMPLE_HEADROOM_BPS: "0" }).executionLimits;
+  const { fixture: restrictedConfiguration } = await readExampleConfiguration(sdk, new Redactor(), { ...env, EXAMPLE_RPC_GAS_CAP: "12000000", EXAMPLE_MAX_CALLDATA_BYTES: "120000", EXAMPLE_HEADROOM_BPS: "0" });
+  const restricted = restrictedConfiguration.executionLimits;
   assert.equal(restricted.rpcTransactionGasLimit, "12000000"); assert.equal(restricted.maxCalldataBytes, 120000); assert.equal(restricted.headroomBps, 0);
-  for (const value of ["-1", "0", "1.5", "unknown"]) assert.throws(() => readExampleConfiguration(sdk, new Redactor(), { ...env, EXAMPLE_RPC_GAS_CAP: value }), { code: "INVALID_CONFIGURATION" });
+  for (const value of ["-1", "0", "1.5", "unknown"]) await assert.rejects(readExampleConfiguration(sdk, new Redactor(), { ...env, EXAMPLE_RPC_GAS_CAP: value }), { code: "INVALID_CONFIGURATION" });
 });
 
 test("launch receipt accounting accepts burned mint residuals without a creator reserve", () => {
@@ -351,4 +420,339 @@ test("launch receipt accounting accepts burned mint residuals without a creator 
     { transfers: [{ from: zeroAddress, to: signingCreator, value: 1000n }, evidence.transfers[1]] },
     { transfers: [evidence.transfers[0], { from: signingCreator, to: zeroAddress, value: 50n }] },
   ]) assert.throws(() => verifyLaunchInventory({ ...evidence, ...change }), { code: "ERR_ASSERTION" });
+});
+
+const apiSeedOrigin = "https://api.abyss.trading";
+const seedWeth = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73";
+const seedAggregator = "0x78F3556b67E17Df817D51Ef5a990cDaF09E8d3A9";
+function apiPriceSnapshot(sourceTimestamp = "1791552898") {
+  return {
+    chainId: 4663, indexedBlock: "84269486", blockNumber: "84269370",
+    items: [{
+      chainId: 4663, address: seedWeth.toLowerCase(), decimals: 18, metadataStatus: "ready",
+      priced: true, source: "anchor", priceUsdX18: "2486280000000000000000",
+      provenance: { anchorToken: seedWeth, anchor: { kind: "chainlink", aggregator: seedAggregator },
+        path: [], hopCount: 0, sourceTimestamp, graphBlockNumber: "84195615" },
+    }],
+    nextCursor: seedWeth.toLowerCase(),
+  };
+}
+const validateSeed = (snapshot = apiPriceSnapshot(), nowSeconds = 1791560098n) =>
+  validateApiWethUsdSeed({ snapshot, apiUrl: apiSeedOrigin, nowSeconds });
+const seedReaderFixture = { chainId: "4663", apiUrl: apiSeedOrigin, quoteAsset: seedWeth, quoteDecimals: 18 };
+const seedReaderSdk = { getAddresses: (chainId) => { assert.equal(chainId, 4663); return { weth: seedWeth }; } };
+
+test("published API WETH seed preserves exact price and two-hour upstream age, not retrieval freshness", () => {
+  const quote = validateSeed();
+  assert.equal(quote.priceUsdX18, 2486280000000000000000n);
+  assert.equal(quote.source, "abyss-api"); assert.equal(quote.apiOrigin, apiSeedOrigin);
+  assert.equal(quote.tokenAddress, seedWeth); assert.equal(quote.tokenDecimals, 18);
+  assert.equal(quote.anchorKind, "chainlink"); assert.equal(quote.anchorAggregator, seedAggregator);
+  assert.equal(quote.indexedBlock, 84269486n); assert.equal(quote.blockNumber, 84269370n);
+  assert.equal(quote.graphBlockNumber, 84195615n);
+  assert.equal(quote.sourceTimestamp, 1791552898n);
+  assert.equal(quote.retrievedAt, 1791560098n); assert.equal(quote.upstreamAgeSeconds, 7200n);
+  const older = validateSeed(apiPriceSnapshot(), 1791563698n);
+  assert.equal(older.sourceTimestamp, quote.sourceTimestamp); assert.equal(older.upstreamAgeSeconds, 10800n);
+  assert.doesNotThrow(() => assertUnchangedEconomicQuote(quote, older));
+  const maximal = apiPriceSnapshot();
+  maximal.items[0].priceUsdX18 = ((1n << 256n) - 1n).toString();
+  assert.equal(validateSeed(maximal).priceUsdX18, (1n << 256n) - 1n);
+});
+
+test("API seed rejects malformed, absent, unpriced, wrong-chain/asset/decimals and inexact uint256 data", () => {
+  for (const snapshot of [null, {}, { ...apiPriceSnapshot(), chainId: 1 }, { ...apiPriceSnapshot(), chainId: "4663" },
+    { ...apiPriceSnapshot(), items: {} }, { ...apiPriceSnapshot(), items: [] },
+    { ...apiPriceSnapshot(), items: Array(101).fill(apiPriceSnapshot().items[0]) },
+    { ...apiPriceSnapshot(), items: [...apiPriceSnapshot().items, ...apiPriceSnapshot().items] }]) {
+    assert.throws(() => validateSeed(snapshot), { code: "INVALID_PRICE_QUOTE" });
+  }
+  for (const change of [{ chainId: 1 }, { address: zeroAddress }, { address: undefined }, { address: 123 },
+    { decimals: 6 }, { decimals: "18" }, { metadataStatus: "pending" }, { priced: false }, { priced: "true" }]) {
+    const snapshot = apiPriceSnapshot(); Object.assign(snapshot.items[0], change);
+    assert.throws(() => validateSeed(snapshot), { code: "INVALID_PRICE_QUOTE" });
+  }
+  for (const price of [undefined, null, 2486.28, 2486280000000000000000n, "0", "-1", "+1", "01", "1.0", "1e18", " 1", "0x1", (1n << 256n).toString()]) {
+    const snapshot = apiPriceSnapshot(); snapshot.items[0].priceUsdX18 = price;
+    assert.throws(() => validateSeed(snapshot), { code: "INVALID_PRICE_QUOTE" });
+  }
+  for (const field of ["indexedBlock", "blockNumber"]) {
+    const snapshot = apiPriceSnapshot(); snapshot[field] = "8e7";
+    assert.throws(() => validateSeed(snapshot), { code: "INVALID_PRICE_QUOTE" });
+  }
+  for (const change of [{ sourceTimestamp: undefined }, { sourceTimestamp: "0" }, { sourceTimestamp: "1791560099" }, { graphBlockNumber: "01" }]) {
+    const snapshot = apiPriceSnapshot(); Object.assign(snapshot.items[0].provenance, change);
+    assert.throws(() => validateSeed(snapshot), { code: "INVALID_PRICE_QUOTE" });
+  }
+});
+
+test("API seed requires the reviewed direct WETH Chainlink anchor, never routed or alternate provenance", () => {
+  for (const change of [
+    { provenance: undefined }, { source: "pool-route" },
+    { provenance: { ...apiPriceSnapshot().items[0].provenance, anchorToken: zeroAddress } },
+    { provenance: { ...apiPriceSnapshot().items[0].provenance, anchorToken: 123 } },
+    { provenance: { ...apiPriceSnapshot().items[0].provenance, anchor: { kind: "dexscreener", aggregator: seedAggregator } } },
+    { provenance: { ...apiPriceSnapshot().items[0].provenance, anchor: { kind: "chainlink", aggregator: zeroAddress } } },
+    { provenance: { ...apiPriceSnapshot().items[0].provenance, anchor: { kind: "chainlink", aggregator: 123 } } },
+    { provenance: { ...apiPriceSnapshot().items[0].provenance, hopCount: 1 } },
+    { provenance: { ...apiPriceSnapshot().items[0].provenance, path: [zeroAddress] } },
+    { provenance: { ...apiPriceSnapshot().items[0].provenance, path: undefined } },
+  ]) {
+    const snapshot = apiPriceSnapshot(); Object.assign(snapshot.items[0], change);
+    assert.throws(() => validateSeed(snapshot), { code: "PRICE_SOURCE_CHANGED" });
+  }
+});
+
+test("API reader performs one bounded no-redirect GET at the configured origin, without RPC or pagination", async () => {
+  const requests = [];
+  const quote = await readApiWethUsdSeed({ sdk: seedReaderSdk, fixture: seedReaderFixture,
+    fetchImpl: async (url, init) => {
+      requests.push({ url: String(url), init });
+      return new Response(JSON.stringify(apiPriceSnapshot("1000")), { headers: { "Content-Type": "application/json" } });
+    },
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, `${apiSeedOrigin}/api/v1/token-prices?chainId=4663&limit=100`);
+  assert.equal(requests[0].init.method, "GET"); assert.equal(requests[0].init.redirect, "error");
+  assert.equal(requests[0].init.cache, "no-store"); assert.ok(requests[0].init.signal instanceof AbortSignal);
+  assert.equal(quote.priceUsdX18, 2486280000000000000000n);
+  assert.equal(quote.sourceTimestamp, 1000n); assert.equal(quote.upstreamAgeSeconds, quote.retrievedAt - 1000n);
+});
+
+test("API reader fails closed on source configuration, HTTP, JSON, endpoint, timeout and body-limit failures", async () => {
+  const read = (fetchImpl, fixture = seedReaderFixture, signal) => readApiWethUsdSeed({ sdk: seedReaderSdk, fixture, fetchImpl, signal });
+  let calls = 0;
+  const counted = async () => { calls++; return new Response(JSON.stringify(apiPriceSnapshot("1000"))); };
+  for (const change of [{ chainId: "1" }, { quoteAsset: zeroAddress }, { quoteDecimals: 6 }]) {
+    await assert.rejects(read(counted, { ...seedReaderFixture, ...change }), { code: "PRICE_SOURCE_CHANGED" });
+  }
+  assert.equal(calls, 0);
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(read(counted, seedReaderFixture, controller.signal), { code: "PRICE_API_UNAVAILABLE" });
+  assert.equal(calls, 0);
+  for (const [fetchImpl, code] of [
+    [async () => { calls++; throw new TypeError("fetch failed"); }, "PRICE_API_UNAVAILABLE"],
+    [async () => new Response("unavailable", { status: 503 }), "PRICE_API_UNAVAILABLE"],
+    [async () => new Response("not JSON"), "INVALID_PRICE_QUOTE"],
+    [async () => new Response(null), "INVALID_PRICE_QUOTE"],
+    [async () => new Response("{}", { headers: { "Content-Length": "1048577" } }), "INVALID_PRICE_QUOTE"],
+    [async () => new Response("x".repeat(1048577)), "INVALID_PRICE_QUOTE"],
+    [async () => { const response = new Response("{}"); Object.defineProperty(response, "url", { value: "https://other.example/api/v1/token-prices" }); return response; }, "PRICE_API_UNAVAILABLE"],
+    [async () => { const response = new Response("{}"); Object.defineProperty(response, "redirected", { value: true }); return response; }, "PRICE_API_UNAVAILABLE"],
+    [async () => { throw new DOMException("timed out", "TimeoutError"); }, "PRICE_API_UNAVAILABLE"],
+  ]) await assert.rejects(read(fetchImpl), { code });
+  assert.equal(calls, 1, "Network failure has no retry or fallback");
+});
+
+test("target input and explicit admission never authorize changed economics", () => {
+  assert.equal(targetMarketCapUsdX18(), 5000n * 10n ** 18n);
+  assert.equal(targetMarketCapUsdX18("5000.000000000000000001"), 5000n * 10n ** 18n + 1n);
+  for (const value of ["0", "-5", "5e3", "5000.0000000000000000001", " 5000", "05000"]) assert.throws(() => targetMarketCapUsdX18(value), { code: "INVALID_CONFIGURATION" });
+  const quote = validateSeed();
+  const advanced = { ...quote, indexedBlock: quote.indexedBlock + 1n, blockNumber: quote.blockNumber + 1n,
+    graphBlockNumber: quote.graphBlockNumber + 1n, sourceTimestamp: quote.sourceTimestamp + 1n,
+    retrievedAt: quote.retrievedAt + 1n };
+  assert.doesNotThrow(() => assertUnchangedEconomicQuote(quote, advanced));
+  for (const changed of [{ source: "other-api" }, { apiOrigin: "https://other.example" }, { chainId: 1 },
+    { tokenAddress: zeroAddress }, { tokenDecimals: 6 }, { anchorToken: zeroAddress },
+    { anchorKind: "dexscreener" }, { anchorAggregator: zeroAddress }, { priceSource: "pool-route" },
+    { priceUsdX18: quote.priceUsdX18 + 1n }, { priceUsdX18: undefined }]) {
+    assert.throws(() => assertUnchangedEconomicQuote(quote, { ...quote, ...changed }), { code: "ECONOMIC_REVIEW_CHANGED" });
+  }
+  const hash = economicReviewHash({ quote, target: 5000n });
+  assert.doesNotThrow(() => assertEconomicReviewAdmission(hash, hash));
+  assert.throws(() => assertEconomicReviewAdmission(hash, undefined), { code: "ECONOMIC_REVIEW_REQUIRED" });
+  assert.throws(() => assertEconomicReviewAdmission(economicReviewHash({ quote, target: 6000n }), hash), { code: "ECONOMIC_REVIEW_REQUIRED" });
+});
+
+test("production economic guard refuses both signature paths on changed source/price and preserves original review", async (t) => {
+  const artifacts = run(t);
+  const quote = validateSeed();
+  const review = { quote, target: 5000n * 10n ** 18n };
+  const hash = economicReviewHash(review);
+  artifacts.privateRecovery({ economicReview: review, economicAdmission: { reviewHash: hash } });
+  let current = { ...quote };
+  let signerChecks = 0;
+  const { wallet: localWallet } = localSigner(artifacts, async ({ method }) => {
+    signerChecks++; assert.equal(method, "eth_chainId"); return "0x1237";
+  });
+  const wallet = guardEconomicReviewWallet(localWallet, async () => {
+    assert.equal(economicReviewHash(review), hash);
+    assertUnchangedEconomicQuote(quote, current);
+  });
+  const typedData = { domain: { name: "test", version: "1", chainId: 4663, verifyingContract: transaction.wire.to },
+    types: { Attribution: [{ name: "wallet", type: "address" }, { name: "chainId", type: "uint256" }] },
+    primaryType: "Attribution", message: { wallet: signingCreator, chainId: 4663n } };
+  for (const change of [{ priceUsdX18: quote.priceUsdX18 + 1n }, { apiOrigin: "https://other.example" },
+    { anchorAggregator: zeroAddress }, { tokenAddress: zeroAddress }, { tokenDecimals: 6 }]) {
+    current = { ...quote, ...change };
+    await assert.rejects(wallet.signTypedData(typedData), { code: "ECONOMIC_REVIEW_CHANGED" });
+    await assert.rejects(wallet.signTransaction(signingTransaction.wire), { code: "ECONOMIC_REVIEW_CHANGED" });
+  }
+  assert.equal(signerChecks, 0, "Changed economics never reach the local signer");
+  current = { ...quote, retrievedAt: quote.retrievedAt + 60n, upstreamAgeSeconds: quote.upstreamAgeSeconds + 60n };
+  const signature = await wallet.signTypedData(typedData);
+  assert.equal((await recoverTypedDataAddress({ ...typedData, signature })).toLowerCase(), signingCreator.toLowerCase());
+  const signed = await wallet.signTransaction(signingTransaction.wire);
+  assert.equal((await recoverTransactionAddress({ serializedTransaction: signed.rawTransaction })).toLowerCase(), signingCreator.toLowerCase());
+  assert.equal(signerChecks, 2);
+  assert.equal(economicReviewHash(review), hash);
+  assert.equal(json(artifacts, "private-recovery.json").economicReview.quote.sourceTimestamp, quote.sourceTimestamp.toString());
+  assert.equal(json(artifacts, "private-recovery.json").economicReview.quote.priceUsdX18, quote.priceUsdX18.toString());
+});
+
+test("public economic review preserves exact safe API origin and hash without exposing endpoint secrets", (t) => {
+  const artifacts = run(t);
+  const review = { quote: validateSeed(), targetMarketCapUsdX18: 5000n * 10n ** 18n };
+  const reviewHash = economicReviewHash(review);
+  artifacts.save("economic-review.json", { ...review, reviewHash });
+  const saved = json(artifacts, "economic-review.json");
+  assert.equal(saved.quote.apiOrigin, apiSeedOrigin, "Do not append a slash to the hash-bound origin");
+  const { reviewHash: savedHash, ...savedReview } = saved;
+  assert.equal(savedHash, reviewHash); assert.equal(economicReviewHash(savedReview), reviewHash);
+  const redactor = new Redactor();
+  assert.deepEqual(redactor.value({ apiOrigin: "http://127.0.0.1:18763" }), { apiOrigin: "http://127.0.0.1:18763" });
+  for (const value of ["https://user:secret@api.example", "https://api.example/?key=secret",
+    "https://api.example/private", "https://api.example/#secret", "not-a-url", undefined]) {
+    assert.equal(redactor.value({ apiOrigin: value }).apiOrigin, "[REDACTED_URL]");
+  }
+});
+
+test("all eleven wrappers preserve their exact workloads and per-quote economics in every token order", async () => {
+  const directory = new URL("../examples/", import.meta.url);
+  const wrappers = readdirSync(directory).filter((name) => /^launch-erc(?:20|404)-.*\.mjs$/.test(name));
+  const expected = {
+    "erc20-v4": [0, 0, "atomic", [["v4", "WETH", 1]], 1],
+    "erc20-abyss": [0, 0, "atomic", [["abyss", "WETH", 1]], 1],
+    "erc404-v4": [1, 0, "staged", [["v4", "WETH", 1]], 1],
+    "erc404-abyss": [1, 0, "atomic", [["abyss", "WETH", 1]], 1],
+    "erc20-staking-v4": [0, 1, "staged", [["v4", "WETH", 2]], 2],
+    "erc20-dividends-abyss": [0, 2, "staged", [["abyss", "WETH", 3]], 1],
+    "erc20-burn-mixed": [0, 0, "staged", [["v4", "WETH", 2], ["abyss", "WETH", 1]], 1],
+    "erc404-dividends-mixed": [1, 2, "staged", [["v4", "WETH", 2], ["abyss", "WETH", 3]], 1],
+    "erc20-multi-quote": [0, 0, "staged", [["v4", "WETH", 1], ["v4", "USDG", 1], ["abyss", "WETH", 1]], 1],
+    "erc20-depth-v4": [0, 0, "staged", [["v4", "WETH", 4]], 1],
+    "erc20-dividends-multiquote-mixed": [0, 2, "staged", [["v4", "WETH", 2], ["v4", "USDG", 2], ["abyss", "WETH", 3]], 1],
+  };
+  assert.deepEqual(wrappers.sort(), Object.keys(expected).map((suffix) => `launch-${suffix}.mjs`).sort());
+  const quote = validateSeed();
+  const unit = 10n ** 18n;
+  for (const file of wrappers) {
+    const source = readFileSync(new URL(file, directory), "utf8");
+    const sharedImport = 'import { runLaunchExample } from "./launch-example.mjs";';
+    assert.ok(source.startsWith(sharedImport), file);
+    let scenario;
+    // Capture only the fixed case, never invoke the signing/broadcast runner.
+    await runInNewContext(`(async () => { ${source.slice(sharedImport.length)} })()`, {
+      runLaunchExample(value) { assert.equal(scenario, undefined); scenario = JSON.parse(JSON.stringify(value)); },
+    });
+    assert.ok(scenario, file);
+    validateCase(scenario);
+    const suffix = file.slice("launch-".length, -".mjs".length);
+    assert.deepEqual([scenario.tokenKind, scenario.rewardMode, scenario.mode,
+      scenario.markets.map((spec) => [spec.venue, spec.quote ?? "WETH", spec.positions]), scenario.buysPerMarket], expected[suffix], file);
+    if (suffix === "erc20-burn-mixed") { assert.equal(scenario.burnBps, 3000); assert.equal(scenario.markets[0].feeMode, 1); }
+    if (suffix === "erc20-depth-v4") assert.equal(scenario.markets[0].distributionPreset, "early-scarcity");
+    const v4Quotes = scenario.markets.filter((spec) => spec.venue === "v4").map((spec) => spec.quote ?? "WETH");
+    assert.equal(new Set(v4Quotes).size, v4Quotes.length, "No repeated V4 quote");
+    const supply = (scenario.tokenKind === 1 ? 10_000n : 1_000_000n) * unit;
+    const budgets = allocateMarketBudgets(supply, scenario.markets.length);
+    // Below both quotes, between them, above both: order is independent per market.
+    for (const tokenAddress of ["0x0000000000000000000000000000000000000001",
+      "0x2000000000000000000000000000000000000000", "0xffffffffffffffffffffffffffffffffffffffff"]) {
+      const markets = scenario.markets.map((spec, index) => {
+        const usdg = spec.quote === "USDG";
+        const quoteAsset = usdg ? pricingSdk.ROBINHOOD_USDG : seedWeth;
+        return deriveExampleMarketEconomics({
+          sdk: pricingSdk, supply, tokenBudget: budgets[index], tokenIsCurrency0: BigInt(tokenAddress) < BigInt(quoteAsset),
+          positions: spec.positions, venue: spec.venue, quoteUsdX18: usdg ? unit : quote.priceUsdX18,
+          targetUsdX18: targetMarketCapUsdX18(), quoteDecimals: usdg ? 6 : quote.tokenDecimals,
+          distributionPreset: spec.distributionPreset,
+        });
+      });
+      assert.equal(markets.flatMap((market) => market.positions).reduce((sum, position) => sum + position.maxTokenAmount, 0n), supply, file);
+      for (const [index, market] of markets.entries()) {
+        assert.equal(market.positions.length, scenario.markets[index].positions, file);
+        assert.equal(market.tokenBudget, budgets[index], file);
+        assert.ok(market.openingValuationUsdX18 >= 4950n * unit && market.openingValuationUsdX18 <= 5050n * unit, file);
+        assert.equal(market.positionGaps, "adjacent"); assert.equal(market.extendFinalRangeToBoundary, true);
+        for (let position = 1; position < market.positions.length; position++) {
+          const previous = market.positions[position - 1]; const current = market.positions[position];
+          assert.equal(market.tokenIsCurrency0 ? previous.tickUpper : previous.tickLower,
+            market.tokenIsCurrency0 ? current.tickLower : current.tickUpper, "All buy-side bands are contiguous");
+          if (suffix === "erc20-depth-v4") assert.ok(current.maxTokenAmount > previous.maxTokenAmount, "Depth increases later inventory");
+        }
+        const final = market.positions.at(-1);
+        assert.equal(market.tokenIsCurrency0 ? final.tickUpper : final.tickLower, market.tokenIsCurrency0 ? 887220 : -887220);
+        for (let other = 0; other < index; other++) {
+          if ((scenario.markets[other].quote ?? "WETH") === (scenario.markets[index].quote ?? "WETH")) {
+            assert.equal(market.sqrtPriceX96, markets[other].sqrtPriceX96, "Repeated quote retains whole-supply opening value");
+          } else assert.notEqual(market.sqrtPriceX96, markets[other].sqrtPriceX96, "Different quote precision/pricing has distinct raw sqrt price");
+        }
+      }
+    }
+    assert.equal(scenario.markets.length * scenario.buysPerMarket, expected[suffix][3].length * expected[suffix][4], file);
+  }
+});
+
+test("both token orders and actual 1m/10k supplies imply a $5000 aligned valuation across decimal scales", () => {
+  const unit = 10n ** 18n;
+  for (const tokens of [1_000_000n, 10_000n]) for (const tokenIsCurrency0 of [true, false]) for (const quoteDecimals of [0, 6, 18]) {
+    const supply = tokens * unit;
+    const market = deriveExampleMarketEconomics({ sdk: pricingSdk, supply, tokenBudget: supply, tokenIsCurrency0,
+      positions: 1, venue: "abyss", quoteUsdX18: 2400n * unit, targetUsdX18: 5000n * unit, quoteDecimals });
+    // Independent economic bounds: spacing60 costs <1% in either orientation,
+    // and changing total minted supply changes token price, not target valuation.
+    assert.ok(market.openingValuationUsdX18 >= 4950n * unit && market.openingValuationUsdX18 <= 5050n * unit);
+    assert.ok(market.unitPriceUsdX18 >= 4950n * unit / tokens && market.unitPriceUsdX18 <= 5050n * unit / tokens);
+    assert.equal(market.positions[0].maxTokenAmount, supply);
+    assert.ok(market.positions[0].expectedMintDebit <= supply);
+    assert.ok(market.roundingBurn < supply / 1_000_000n, "Rounding cannot burn meaningful launch inventory");
+    assert.ok(market.positions[0].tickLower % 60 === 0);
+    assert.ok(market.positions[0].tickUpper % 60 === 0);
+    assert.notEqual(market.sqrtPriceX96, 1n << 96n);
+  }
+});
+
+test("mixed-market recipe consumes exact remainder budgets and preserves one coherent opening value", () => {
+  const unit = 10n ** 18n;
+  const supply = 10_000n * unit + 1n;
+  assert.deepEqual(allocateMarketBudgets(101n, 3), [33n, 33n, 35n]);
+  for (const tokenIsCurrency0 of [true, false]) {
+    const budgets = allocateMarketBudgets(supply, 2);
+    const markets = budgets.map((tokenBudget, index) => deriveExampleMarketEconomics({ sdk: pricingSdk, supply, tokenBudget,
+      tokenIsCurrency0, positions: index === 0 ? 2 : 3, venue: index === 0 ? "v4" : "abyss",
+      quoteUsdX18: 2400n * unit, targetUsdX18: 5000n * unit, quoteDecimals: 18 }));
+    assert.equal(markets[0].sqrtPriceX96, markets[1].sqrtPriceX96);
+    assert.equal(markets[0].openingValuationUsdX18, markets[1].openingValuationUsdX18);
+    assert.equal(markets.flatMap((market) => market.positions).reduce((sum, position) => sum + position.maxTokenAmount, 0n), supply);
+    for (const market of markets) {
+      assert.ok(market.roundingBurn < 1_000_000n);
+      for (const position of market.positions) {
+        const lower = position.sqrtPriceLowerX96, upper = position.sqrtPriceUpperX96, q96 = 1n << 96n;
+        // Independent rational maximum: funded L fits, L+1 must exceed its cap.
+        const n = tokenIsCurrency0 ? q96 * (upper - lower) : upper - lower;
+        const d = tokenIsCurrency0 ? lower * upper : q96;
+        assert.ok(position.liquidity * n <= position.maxTokenAmount * d);
+        assert.ok((position.liquidity + 1n) * n > position.maxTokenAmount * d);
+      }
+    }
+    const retained = supply - markets.reduce((sum, market) => sum + market.roundingBurn, 0n);
+    const valuation = openingEconomics({ sqrtPriceX96: markets[0].sqrtPriceX96, tokenIsCurrency0, quoteDecimals: 18, quoteUsdX18: 2400n * unit, supply: retained });
+    assert.ok(valuation.openingValuationUsdX18 >= 4950n * unit && valuation.openingValuationUsdX18 <= 5050n * unit);
+  }
+});
+
+test("economic review and admission remain exact and immutable across recovery updates", (t) => {
+  const artifacts = run(t);
+  const review = { targetMarketCapUsdX18: 5000n * 10n ** 18n, actualMintedSupply: 10_000n * 10n ** 18n,
+    quote: validateSeed(), markets: [{ tokenBudget: 10_000n * 10n ** 18n }] };
+  const admission = { reviewHash: economicReviewHash(review) };
+  artifacts.privateRecovery({ economicReview: review, economicAdmission: admission });
+  artifacts.privateRecovery({ economicReview: { targetMarketCapUsdX18: 6000n }, economicAdmission: { reviewHash: "changed" }, session: { sessionId: "later" } });
+  const recovery = json(artifacts, "private-recovery.json");
+  assert.equal(recovery.economicReview.targetMarketCapUsdX18, "5000000000000000000000");
+  assert.equal(recovery.economicAdmission.reviewHash, admission.reviewHash);
+  assert.equal(recovery.session.sessionId, "later");
+  assert.equal(statSync(join(artifacts.directory, "private-recovery.json")).mode & 0o777, 0o600);
 });

@@ -1,6 +1,6 @@
-// Running a fixed launch example deliberately signs, broadcasts and publishes.
+// A launch case signs, broadcasts and publishes only after exact economic review admission.
 import assert from "node:assert/strict";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -10,16 +10,23 @@ import {
 import {
   createLocalLaunchWallet, errorEvidence, findRevertData, launchApiUrl,
   loadExampleEnvironment, readExampleConfiguration, pause, publishUntilIndexed,
-  Redactor, rpcRequestSignal, RunArtifacts, exampleError,
-  submitSignedRecorded, transactionEnvelope,
+  Redactor, rpcRequestSignal, RunArtifacts, exampleError, registerEndpointSecrets,
+  submitSignedRecorded, transactionEnvelope, readExampleQuoteUsdSeed, assertUnchangedEconomicQuote,
+  resolveExampleQuotes, buildExampleBuysAndFunding, assertFutureLaunchDeadline, resolveExampleIdentity, readExampleImage,
+  exampleImageUrl, readExamplePublishedImage,
+  allocateMarketBudgets, deriveExampleMarketEconomics, economicReviewHash, admitEconomicReview, guardEconomicReviewWallet,
 } from "./launch-example-support.mjs";
+import { buildExampleKyberConversions, assertExampleConversionAdmission, assertExampleConversionBindings } from "./launch-example-kyber.mjs";
 const UNIT = 10n ** 18n;
-const OPENING_PRICE = 2n ** 96n;
-const MIN_SQRT_RATIO = 4295128739n;
-const MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342n;
 const BUY_SLIPPAGE_BPS = 50;
 const same = (left, right) => typeof left === "string" && typeof right === "string" && left.toLowerCase() === right.toLowerCase();
 const addressEqual = (actual, expected, label) => assert.ok(same(actual, expected), `${label}: expected ${expected}, got ${actual}`);
+// Canonical AbyssFactory event; the SDK exposes its mapping getter, not enumeration.
+export const exampleOracleRegistrationAbi = [{
+  type: "event", name: "OracleConfigRegistered", anonymous: false,
+  inputs: [{ name: "oracleConfigId", type: "bytes32", indexed: true },
+    { name: "maxAbsTickMove", type: "uint24", indexed: false }, { name: "cardinality", type: "uint16", indexed: false }],
+}];
 
 // Receipt accounting, not a creator reserve or an unchanged-total-supply assumption.
 export function verifyLaunchInventory({ supply, totalSupply, orchestrator, creator, transfers, buys, orchestratorBalance, creatorBalance }) {
@@ -38,7 +45,7 @@ export function verifyLaunchInventory({ supply, totalSupply, orchestrator, creat
 }
 
 
-function validateCase(scenario) {
+export function validateCase(scenario) {
   if (![0, 1].includes(scenario.tokenKind) || ![0, 1, 2].includes(scenario.rewardMode) || !["atomic", "staged"].includes(scenario.mode)) throw exampleError("UNSUPPORTED_CASE", "Case token kind, reward mode and execution mode must be explicit supported values");
   const allowed = new Set(["id", "description", "tokenKind", "rewardMode", "mode", "markets", "buysPerMarket", "burnBps"]);
   for (const key of Object.keys(scenario)) if (!allowed.has(key)) throw exampleError("UNSUPPORTED_CASE", `Unsupported case economic field ${key}; it cannot be silently ignored`);
@@ -46,9 +53,11 @@ function validateCase(scenario) {
   if (scenario.burnBps !== undefined && (!Number.isSafeInteger(scenario.burnBps) || scenario.burnBps < 0 || scenario.burnBps > 10000 || scenario.rewardMode !== 0)) throw exampleError("UNSUPPORTED_CASE", "Token-only burn policy requires an explicit reward-free 0..10000 share");
   let positions = 0;
   for (const market of scenario.markets) {
-    if (!["v4", "abyss"].includes(market.venue) || !Number.isSafeInteger(market.positions) || market.positions < 1 || market.positions > 32) throw exampleError("UNSUPPORTED_CASE", "Case requires a supported venue and 1..32 exact positions per market");
-    for (const key of Object.keys(market)) if (!["venue", "positions", "feeMode"].includes(key)) throw exampleError("UNSUPPORTED_CASE", `Unsupported market economic field ${key}`);
+    if (!["v4", "abyss"].includes(market.venue) || !Number.isSafeInteger(market.positions) || market.positions < 1 || market.positions > 16) throw exampleError("UNSUPPORTED_CASE", "Case requires a supported venue and 1..16 exact recipe positions per market");
+    for (const key of Object.keys(market)) if (!["venue", "positions", "feeMode", "quote", "distributionPreset"].includes(key)) throw exampleError("UNSUPPORTED_CASE", `Unsupported market economic field ${key}`);
     if (market.feeMode !== undefined && (market.venue !== "v4" || ![0, 1].includes(market.feeMode))) throw exampleError("UNSUPPORTED_CASE", "Only V4 markets support explicit feeMode 0/1");
+    if (market.quote !== undefined && !["WETH", "USDG"].includes(market.quote)) throw exampleError("UNSUPPORTED_CASE", "Market quote must be WETH or USDG");
+    if (market.distributionPreset !== undefined && (market.positions < 2 || !["staircase", "early-scarcity", "smooth-ramp"].includes(market.distributionPreset))) throw exampleError("UNSUPPORTED_CASE", "Distribution preset requires supported multi-position source economics");
     positions += market.positions;
   }
   if (positions > 32) throw exampleError("UNSUPPORTED_CASE", "Case exceeds 32 permanent positions");
@@ -102,7 +111,59 @@ function receiptEvents(receipt, address, abi, eventName) {
   });
 }
 
-async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal, limits }) {
+export async function discoverExampleQuoteOracles({ client, fixture, scenario, quotes, selected, sdk, block, artifacts }) {
+  const read = (name, args) => contractReader(client)(fixture.oracleFactory, sdk.abyssFactoryAbi, name, args, block.number);
+  let discovered;
+  if (quotes.some((quote) => quote.symbol === "USDG")) {
+    const topic = keccak256(toHex("OracleConfigRegistered(bytes32,uint24,uint16)"));
+    const logs = await client.request({ method: "eth_getLogs", params: [{
+      address: fixture.oracleFactory, topics: [topic], fromBlock: "0x0", toBlock: block.number,
+    }] });
+    if (!Array.isArray(logs)) throw exampleError("INVALID_RPC_RESPONSE", "Oracle factory registration logs must be an array");
+    const registrations = new Map();
+    for (const log of logs) {
+      if (log.removed || !same(log.address, fixture.oracleFactory) || BigInt(log.blockNumber) > BigInt(block.number)) {
+        throw exampleError("INVALID_ORACLE_CONFIG", "Oracle registration must belong to the pinned canonical factory history");
+      }
+      const { args } = decodeEventLog({ abi: exampleOracleRegistrationAbi, topics: log.topics, data: log.data, strict: true });
+      const id = keccak256(encodeAbiParameters([{ type: "uint24" }, { type: "uint16" }], [args.maxAbsTickMove, args.cardinality]));
+      addressEqual(id, args.oracleConfigId, "Registered oracle config digest");
+      registrations.set(id.toLowerCase(), { oracleConfigId: id, maxAbsTickMove: Number(args.maxAbsTickMove), cardinality: Number(args.cardinality) });
+    }
+    discovered = [];
+    for (const registration of registrations.values()) {
+      const actual = await read("oracleConfigs", [registration.oracleConfigId]);
+      assert.equal(Number(actual[0]), registration.maxAbsTickMove, "Pinned registered oracle move");
+      assert.equal(Number(actual[1]), registration.cardinality, "Pinned registered oracle cardinality");
+      discovered.push(registration);
+    }
+    discovered.sort((left, right) => left.maxAbsTickMove - right.maxAbsTickMove || right.cardinality - left.cardinality ||
+      left.oracleConfigId.localeCompare(right.oracleConfigId));
+  }
+  for (const quote of quotes) {
+    let oracle;
+    if (quote.symbol === "WETH") {
+      const oracleConfigId = keccak256(encodeAbiParameters([{ type: "uint24" }, { type: "uint16" }], [1, 4096]));
+      const actual = await read("oracleConfigs", [oracleConfigId]);
+      assert.equal(Number(actual[0]), 1, "Canonical WETH P1 oracle must be registered");
+      assert.equal(Number(actual[1]), 4096, "Canonical WETH P1 oracle cardinality");
+      oracle = { oracleConfigId, maxAbsTickMove: 1, cardinality: 4096 };
+    } else {
+      const needsV4 = scenario.markets.some((market) => market.venue === "v4" && (market.quote ?? "WETH") === quote.symbol);
+      const maximumCardinality = needsV4 ? Math.min(4096, selected.v4.envelope.bounds.maximumOracleCardinality) : 4096;
+      oracle = discovered.find((row) => row.maxAbsTickMove > 0 && row.maxAbsTickMove <= 887272 && row.cardinality >= 2 && row.cardinality <= maximumCardinality);
+      if (!oracle) throw exampleError("QUOTE_ORACLE_NOT_REGISTERED", `No registered compatible oracle configuration for ${quote.symbol} at the pinned block`,
+        { quoteAsset: quote.tokenAddress, oracleFactory: fixture.oracleFactory, blockNumber: block.number, blockHash: block.hash });
+    }
+    quote.oracle = { ...oracle, factory: fixture.oracleFactory, observedBlockNumber: BigInt(block.number), observedBlockHash: block.hash };
+    artifacts.event("quote-oracle-discovered", { quote });
+  }
+  const canonical = await client.request({ method: "eth_getBlockByNumber", params: [block.number, false] });
+  addressEqual(canonical?.hash, block.hash, "Pinned quote/oracle block remains canonical");
+}
+
+
+async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal, limits, metadata, image }) {
   const read = contractReader(client);
   artifacts.stage("profile-discovery");
   const profiles = await sdk.readLifecycleProfiles({ client, orchestrator: fixture.orchestrator });
@@ -127,22 +188,20 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
     if (canonical.length !== 1 || !canonical[0].admitted || canonical[0].topology.configVersion !== 1 || !same(canonical[0].registration.configSchema, sdk.ABYSS_LIFECYCLE_CONFIG_SCHEMA)) throw exampleError("PROFILE_NOT_ADMITTED", "The registry-discovered canonical Abyss profile3 QUOTE_ORACLE/schema1 is required", { data: canonical });
     selected.abyss = canonical[0];
   }
-  const escrow = await read(fixture.orchestrator, sdk.launchLifecycleAbi, "fundingEscrow");
-  addressEqual(await read(escrow, sdk.lifecycleFundingEscrowAbi, "core"), fixture.orchestrator, "Funding escrow core");
-  addressEqual(await read(escrow, sdk.lifecycleFundingEscrowAbi, "wrappedNative"), fixture.quoteAsset, "Actual native-wrap funding binding");
-  assert.equal(await read(fixture.quoteAsset, sdk.erc20Abi, "decimals"), fixture.quoteDecimals, "Actual quote decimals");
-  if (selected.v4) addressEqual(await read(selected.v4.adapter.implementation, sdk.poolMarketAdapterV1Abi, "oracleFactory"), fixture.oracleFactory, "V4 registered oracle factory");
-  if (selected.abyss) addressEqual(await read(selected.abyss.adapter.implementation, sdk.abyssLifecycleAdapterAbi, "factory"), fixture.oracleFactory, "Abyss registered factory");
-  fixture.oracleConfigId = keccak256(encodeAbiParameters([{ type: "uint24" }, { type: "uint16" }], [1, 4096]));
-  const oracle = await read(fixture.oracleFactory, sdk.abyssFactoryAbi, "oracleConfigs", [fixture.oracleConfigId]);
-  assert.equal(Number(oracle[0]), 1, "Canonical P1 oracle must be registered");
-  assert.equal(Number(oracle[1]), 4096, "Canonical P1 oracle cardinality");
-  artifacts.event("quote-oracle-discovered", { quoteAsset: fixture.quoteAsset, oracleFactory: fixture.oracleFactory, oracleConfigId: fixture.oracleConfigId, oracle });
   const block = await client.request({ method: "eth_getBlockByNumber", params: ["latest", false] });
+  const pinnedRead = (to, abi, name, args = []) => read(to, abi, name, args, block.number);
+  const escrow = await pinnedRead(fixture.orchestrator, sdk.launchLifecycleAbi, "fundingEscrow");
+  addressEqual(await pinnedRead(escrow, sdk.lifecycleFundingEscrowAbi, "core"), fixture.orchestrator, "Funding escrow core");
+  addressEqual(await pinnedRead(escrow, sdk.lifecycleFundingEscrowAbi, "wrappedNative"), fixture.quoteAsset, "Actual native-wrap funding binding");
+  const quotes = resolveExampleQuotes({ sdk, fixture, scenario });
+  for (const quote of quotes) assert.equal(await pinnedRead(quote.tokenAddress, sdk.erc20Abi, "decimals"), quote.tokenDecimals, `Actual ${quote.symbol} quote decimals`);
+  if (selected.v4) addressEqual(await pinnedRead(selected.v4.adapter.implementation, sdk.poolMarketAdapterV1Abi, "oracleFactory"), fixture.oracleFactory, "V4 registered oracle factory");
+  if (selected.abyss) addressEqual(await pinnedRead(selected.abyss.adapter.implementation, sdk.abyssLifecycleAdapterAbi, "factory"), fixture.oracleFactory, "Abyss registered factory");
+  await discoverExampleQuoteOracles({ client, fixture, scenario, quotes, selected, sdk, block, artifacts });
   const identity = { nonce: BigInt(`0x${randomBytes(32).toString("hex")}`), tokenSalt: `0x${randomBytes(32).toString("hex")}` };
   artifacts.save("identity.json", { ...identity, caseId: scenario.id, creator: fixture.creator });
   const token = {
-    kind: scenario.tokenKind, rewardMode: scenario.rewardMode, name: `Example ${scenario.id}`, symbol: "EXAMPLE",
+    kind: scenario.tokenKind, rewardMode: scenario.rewardMode, name: metadata.name, symbol: metadata.symbol,
     supply: (scenario.tokenKind === 1 ? 10_000n : 1_000_000n) * UNIT,
     nftUnit: scenario.tokenKind === 1 ? 100n * UNIT : 0n,
     metadataURI: scenario.tokenKind === 1 ? fixture.nftBaseUri : "", salt: identity.tokenSalt,
@@ -150,24 +209,27 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
   };
   const draft = {
     chainId: BigInt(fixture.chainId), orchestrator: fixture.orchestrator, creator: fixture.creator, nonce: identity.nonce,
-    token, funding: [], feeAssets: [], markets: [], buys: [], deadline: BigInt(block.timestamp) + 3600n, executorFeeBps: 275,
+    token, funding: [], feeAssets: [], markets: [], buys: [], deadline: BigInt(Math.floor(Date.now() / 1000)) + 300n, executorFeeBps: 275,
   };
   // CREATE2 token identity is independent of finalized market config/hook salts.
   const predictedToken = await sdk.predictLifecycleToken({ client, plan: draft });
-  const token0 = BigInt(predictedToken) < BigInt(fixture.quoteAsset);
+  for (const quote of quotes) {
+    quote.usdSeed = await readExampleQuoteUsdSeed({ sdk, fixture, quote, signal });
+    artifacts.event("quote-usd-seed", { quote });
+  }
+  const budgets = allocateMarketBudgets(token.supply, scenario.markets.length);
+  const marketEconomics = [];
   const markets = scenario.markets.map((spec, marketIndex) => {
     const profile = selected[spec.venue];
-    const baseBudget = token.supply / BigInt(scenario.markets.length);
-    const tokenBudget = marketIndex === scenario.markets.length - 1
-      ? token.supply - baseBudget * BigInt(marketIndex) : baseBudget;
-    const baseMaximum = tokenBudget / BigInt(spec.positions);
-    const maximum = (index) => index === spec.positions - 1
-      ? tokenBudget - baseMaximum * BigInt(index) : baseMaximum;
-    const positions = Array.from({ length: spec.positions }, (_unused, index) => ({
-      tickLower: token0 ? index * 120 : index === spec.positions - 1 ? -887220 : -(index + 1) * 120,
-      tickUpper: token0 ? index === spec.positions - 1 ? 887220 : (index + 1) * 120 : -index * 120,
-      liquidity: 1000n * UNIT,
-    }));
+    const tokenBudget = budgets[marketIndex];
+    const quote = quotes.find((row) => row.symbol === (spec.quote ?? "WETH"));
+    const token0 = BigInt(predictedToken) < BigInt(quote.tokenAddress);
+    const economics = deriveExampleMarketEconomics({ sdk, supply: token.supply, tokenBudget, tokenIsCurrency0: token0,
+      positions: spec.positions, venue: spec.venue, quoteUsdX18: quote.usdSeed.priceUsdX18,
+      targetUsdX18: fixture.targetMarketCapUsdX18, quoteDecimals: quote.tokenDecimals, distributionPreset: spec.distributionPreset });
+    marketEconomics.push({ marketIndex, quoteSymbol: quote.symbol, quoteAsset: quote.tokenAddress,
+      quoteDecimals: quote.tokenDecimals, quoteUsdX18: quote.usdSeed.priceUsdX18, oracleConfigId: quote.oracle.oracleConfigId, ...economics });
+    const positions = economics.positions.map(({ tickLower, tickUpper, liquidity }) => ({ tickLower, tickUpper, liquidity }));
     let config;
     if (spec.venue === "v4") {
       const envelope = profile.envelope;
@@ -176,55 +238,121 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
       config = sdk.encodePoolBoundV4LifecycleMarketConfig({
         version: 6, lpFeePips: 3000, hookFeePips: 10000,
         minimumHookFeePips: 1000, feeSensitivityPipsSecondsPerTick: 7654321,
-        tickSpacing: 60, sqrtPriceX96: OPENING_PRICE,
+        tickSpacing: economics.tickSpacing, sqrtPriceX96: economics.sqrtPriceX96,
         feeMode, protocolFeeDenominator: envelope.protocolFeeDenominator, treasury: envelope.protocolTreasury,
-        externalLiquidityDisabled: true, oracleConfigId: fixture.oracleConfigId, profileId: profile.id,
+        externalLiquidityDisabled: true, oracleConfigId: quote.oracle.oracleConfigId, profileId: profile.id,
         termsDigest: envelope.termsDigest, developerBeneficiary: envelope.beneficiary, developerFeeBps: 0, hookSalt: zeroHash,
-        positions: positions.map((position, index) => ({ ...position, salt: toHex(BigInt(marketIndex * 32 + index + 1), { size: 32 }), maxTokenAmount: maximum(index) })),
+        positions: positions.map((position, index) => ({ ...position, salt: toHex(BigInt(marketIndex * 32 + index + 1), { size: 32 }), maxTokenAmount: economics.positions[index].maxTokenAmount })),
       });
     } else config = sdk.encodeAbyssLifecycleMarketConfig({
-      profile: 3, fee: 3000, oracleConfigId: fixture.oracleConfigId, openingSqrtPriceX96: OPENING_PRICE,
-      positions: positions.map((position, index) => ({ ...position, tokenAmountMaximum: maximum(index) })),
+      profile: 3, fee: 3000, oracleConfigId: quote.oracle.oracleConfigId, openingSqrtPriceX96: economics.sqrtPriceX96,
+      positions: positions.map((position, index) => ({ ...position, tokenAmountMaximum: economics.positions[index].maxTokenAmount })),
     });
-    return { adapterId: profile.registration.adapterId, profileId: profile.id, quoteAsset: fixture.quoteAsset, tokenBudget, configVersion: spec.venue === "v4" ? profile.topology.configVersion : 1, config };
+    return { adapterId: profile.registration.adapterId, profileId: profile.id, quoteAsset: quote.tokenAddress, tokenBudget, configVersion: spec.venue === "v4" ? profile.topology.configVersion : 1, config };
   });
-  const buys = markets.flatMap((_market, marketIndex) => Array.from({ length: scenario.buysPerMarket }, () => ({
-    marketIndex, quoteAmountIn: 10n ** 15n, minTokenOut: 1n, recipient: fixture.creator,
-    sqrtPriceLimitX96: token0 ? MAX_SQRT_RATIO - 1n : MIN_SQRT_RATIO + 1n,
-  })));
-  const amount = buys.reduce((sum, buy) => sum + buy.quoteAmountIn, 0n);
-  const feeAssets = [predictedToken, fixture.quoteAsset].sort((left, right) => BigInt(left) < BigInt(right) ? -1 : 1).map((asset) => {
+  await buildExampleKyberConversions({ client, fixture, scenario, markets, quotes, escrow, deadline: draft.deadline, sdk, block, artifacts, signal });
+  const { buys, funding } = buildExampleBuysAndFunding({ sdk, fixture, scenario, markets, quotes, predictedToken });
+  const feeAssets = [predictedToken, ...quotes.map((quote) => quote.tokenAddress)].sort((left, right) => BigInt(left) < BigInt(right) ? -1 : 1).map((asset) => {
     const rewardsBps = scenario.rewardMode === 0 ? 0 : 4000;
     const burnBps = same(asset, predictedToken) ? scenario.burnBps ?? 0 : 0;
     return { asset, ownerBps: 10000 - rewardsBps - burnBps, rewardsBps, burnBps };
   });
-  const plan = { ...draft, markets, buys, feeAssets, funding: [{ asset: fixture.quoteAsset, amount, kind: sdk.LifecycleFundingKind.NativeWrap, inputAsset: fixture.quoteAsset, inputAmount: amount, target: zeroAddress, data: "0x" }] };
+  const plan = { ...draft, markets, buys, feeAssets, funding };
+  assertExampleConversionBindings({ plan, quotes });
   artifacts.save("draft-plan.json", plan);
   artifacts.result.chain.predictedToken = predictedToken;
   artifacts.stage("preparation-and-planning", { predictedToken, selectedProfiles: Object.fromEntries(Object.entries(selected).map(([key, profile]) => [key, profile.id])) });
-  const planned = await sdk.prepareAndPlanLifecycleLaunch({ client, account: fixture.creator, plan, mode: scenario.mode, limits, confirmations: 1, buySlippageBps: BUY_SLIPPAGE_BPS, signal,
+  const confirmations = artifacts.result.chain.confirmations;
+  const planned = await sdk.prepareAndPlanLifecycleLaunch({ client, account: fixture.creator, plan, mode: scenario.mode, limits, confirmations, buySlippageBps: BUY_SLIPPAGE_BPS, signal,
     onProgress: (progress) => artifacts.event("salt-mining", progress),
   });
-  artifacts.save("plan.json", JSON.parse(sdk.serializeLaunchPlan(planned.plan)));
+  const finalizedPlan = JSON.parse(sdk.serializeLaunchPlan(planned.plan));
+  const roundingBurn = marketEconomics.reduce((sum, market) => sum + market.roundingBurn, 0n);
+  const retainedSupply = token.supply - roundingBurn;
+  for (const market of marketEconomics) {
+    const ratio = market.rawQuotePerRawToken;
+    market.retainedSupplyOpeningValuationUsdX18 = ratio.numerator * retainedSupply * market.quoteUsdX18 /
+      (ratio.denominator * 10n ** BigInt(market.quoteDecimals));
+  }
+  const activationTransaction = planned.transactions.find((transaction) => ["atomic", "activate"].includes(transaction.kind));
+  const activationStep = planned.simulation.steps.find((step) => step.transactionId === activationTransaction?.id);
+  if (!activationStep?.success || !activationStep.returnData) throw exampleError("MISSING_ECONOMIC_OUTPUTS", "Economic review requires the admitted activation receipt and every ordered buy output");
+  const simulatedReceipt = decodeFunctionResult({ abi: sdk.launchLifecycleAbi,
+    functionName: activationTransaction.kind === "atomic" ? "launchAtomic" : "activateLaunch", data: activationStep.returnData });
+  assert.equal(simulatedReceipt.planHash.toLowerCase(), planned.planHash.toLowerCase(), "Economic receipt exact plan");
+  assert.equal(simulatedReceipt.tokenOut.length, planned.plan.buys.length, "Economic receipt ordered outputs");
+  const simulatedBuys = planned.plan.buys.map((buy, index) => {
+    const tokenOut = simulatedReceipt.tokenOut[index];
+    const quoteSpent = simulatedReceipt.quoteSpent[index];
+    assert.ok(tokenOut >= buy.minTokenOut && tokenOut > 0n && quoteSpent <= buy.quoteAmountIn, "Exact protected simulated buy");
+    const market = marketEconomics[buy.marketIndex];
+    const ratio = market.rawQuotePerRawToken;
+    return { buyIndex: index, marketIndex: buy.marketIndex, quoteAsset: market.quoteAsset, quoteSymbol: market.quoteSymbol, quoteSpent, tokenOut,
+      allInUnitPriceUsdX18: quoteSpent * UNIT * market.quoteUsdX18 / (tokenOut * 10n ** BigInt(market.quoteDecimals)),
+      feeAndPriceImpactPremiumBps: (quoteSpent * ratio.denominator - tokenOut * ratio.numerator) * 10000n /
+        (tokenOut * ratio.numerator),
+      // Effective execution price includes fees and path impact, not post-buy marginal spot.
+      priceBasis: "admitted-simulation-all-in-average-including-fees-and-price-impact" };
+  });
+  const economicReview = {
+    schema: "black-market.launch-economic-review.v1", caseId: scenario.id, chainId: fixture.chainId,
+    targetMarketCapUsdX18: fixture.targetMarketCapUsdX18, quotes, metadata, image: image?.descriptor ?? null,
+    actualMintedSupply: token.supply, nftUnit: token.nftUnit, tokenDecimals: 18,
+    predictedToken, markets: marketEconomics,
+    expectedUnusedBurn: roundingBurn, expectedSupplyAfterMintRounding: token.supply - roundingBurn,
+    fees: { lpFeePips: 3000, v4HookMaximumPips: 10000, v4HookMinimumPips: 1000, v4HookSensitivityPipsSecondsPerTick: 7654321,
+      executorFeeBps: plan.executorFeeBps, feeAssets, v4Markets: scenario.markets.flatMap((spec, marketIndex) => spec.venue === "v4" ?
+        [{ marketIndex, feeMode: spec.feeMode ?? 0, protocolFeeDenominator: selected.v4.envelope.protocolFeeDenominator,
+          treasury: selected.v4.envelope.protocolTreasury, developerBeneficiary: selected.v4.envelope.beneficiary, developerFeeBps: 0 }] : []) },
+    initialBuy: { slippageBps: BUY_SLIPPAGE_BPS, funding: planned.plan.funding, orderedBuys: planned.plan.buys, simulatedBuys,
+      observedBlockNumber: planned.simulation.blockNumber, observedBlockHash: planned.simulation.blockHash },
+    planHash: planned.planHash, finalizedPlan: finalizedPlan,
+  };
+  const reviewHash = economicReviewHash(economicReview);
+  artifacts.save("economic-review.json", { ...economicReview, reviewHash });
+  // Complete exact intent is owner-only and durable before attribution or chain signing.
+  artifacts.privateRecovery({
+    schema: "black-market.launch-example-recovery.v1", sdk: "node", caseId: artifacts.result.caseId,
+    plan: finalizedPlan, mode: scenario.mode, confirmations, economicReview: { ...economicReview, reviewHash },
+  });
+  artifacts.save("plan.json", finalizedPlan);
   artifacts.save("hook-deployments.json", planned.hookDeployments);
   addressEqual(planned.predictedToken, predictedToken, "Finalized token prediction");
   artifacts.result.chain.planHash = planned.planHash;
   artifacts.result.chain.launchId = planned.launchId;
   artifacts.event("plan-finalized", { predictedToken, planHash: planned.planHash, launchId: planned.launchId, mode: planned.mode, markets: markets.length, positions: scenario.markets.reduce((sum, market) => sum + market.positions, 0), buys: buys.length, deployments: planned.hookDeployments });
-  return { planned, predictedToken };
+  return { planned, predictedToken, economicReview, reviewHash };
 }
 
-function apiTransport({ artifacts, signal, apiUrl }) {
+export function apiTransport({ artifacts, signal, apiUrl, fetchImpl = fetch }) {
   let requestTimeoutMs = 30_000;
+  let imageUpload;
   return {
     setTimeoutMs(ms) { requestTimeoutMs = Math.max(1, Math.min(30_000, ms)); },
+    authorizeImageUpload(upload, descriptor) {
+      assert.equal(upload.method, "PUT", "Only the exact issued image PUT is authorized");
+      registerEndpointSecrets(artifacts.redactor, upload.url);
+      imageUpload = { url: exampleImageUrl(upload.url), headers: { ...upload.headers }, descriptor };
+    },
+    fetchPublishedImage(url, descriptor) {
+      return readExamplePublishedImage({ url, descriptor, artifacts, signal, timeoutMs: requestTimeoutMs, fetchImpl });
+    },
     async fetch(url, init = {}) {
-      if (new URL(url).origin !== new URL(apiUrl).origin) throw exampleError("UNSAFE_ENDPOINT", "API request changed the configured origin");
-      launchApiUrl(new URL(url).origin);
+      const endpoint = new URL(url);
+      const isImageUpload = imageUpload && init.method === "PUT" && endpoint.href === imageUpload.url;
+      if (isImageUpload) {
+        assert.deepEqual(init.headers, imageUpload.headers, "Exact API-issued image-upload headers");
+        assert.ok(init.body instanceof Blob && init.body.type === imageUpload.descriptor.contentType &&
+          init.body.size === imageUpload.descriptor.contentLength, "Exact frozen image-upload body");
+        assert.equal(`0x${createHash("sha256").update(Buffer.from(await init.body.arrayBuffer())).digest("hex")}`,
+          imageUpload.descriptor.sha256, "Exact signed image-upload digest");
+      } else if (endpoint.origin !== new URL(apiUrl).origin) throw exampleError("UNSAFE_ENDPOINT", "API request changed the configured origin");
+      launchApiUrl(endpoint.origin);
       const started = Date.now();
-      artifacts.event("api-request", { method: init.method ?? "GET", url: String(url), headers: init.headers, body: init.body ? JSON.parse(init.body) : undefined });
+      artifacts.event("api-request", { method: init.method ?? "GET", url: String(url), headers: init.headers,
+        body: isImageUpload ? { image: imageUpload.descriptor } : init.body ? JSON.parse(init.body) : undefined });
       try {
-        const response = await fetch(url, { ...init, redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(requestTimeoutMs)]) });
+        const response = await fetchImpl(url, { ...init, redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(requestTimeoutMs)].filter(Boolean)) });
         const text = await response.clone().text();
         let body; try { body = JSON.parse(text); } catch { body = text; }
         if (body?.capability) {
@@ -241,11 +369,12 @@ function apiTransport({ artifacts, signal, apiUrl }) {
   };
 }
 
-async function stageMetadata({ fixture, plan, sdk, artifacts, transport, wallet }) {
+export async function stageMetadata({ fixture, plan, sdk, artifacts, transport, wallet, metadata, image }) {
   artifacts.stage("api-metadata");
   artifacts.result.api.status = "staging";
   delete artifacts.result.api.reason;
-  const metadata = { name: plan.token.name, symbol: plan.token.symbol, description: `Actual Node SDK launch example: ${artifacts.result.caseId}` };
+  assertFutureLaunchDeadline(plan.deadline);
+  assert.equal(metadata.name, plan.token.name); assert.equal(metadata.symbol, plan.token.symbol);
   const idempotencyKey = `node-example-${randomUUID()}`;
   const nonce = `0x${randomBytes(32).toString("hex")}`;
   const deadline = BigInt(Math.floor(Date.now() / 1000)) + 600n;
@@ -253,17 +382,21 @@ async function stageMetadata({ fixture, plan, sdk, artifacts, transport, wallet 
     domain: { name: "Abyss Launch Attribution", version: "1", chainId: Number(plan.chainId), verifyingContract: plan.orchestrator },
     types: { EIP712Domain: [{ name: "name", type: "string" }, { name: "version", type: "string" }, { name: "chainId", type: "uint256" }, { name: "verifyingContract", type: "address" }], ...sdk.launchAttributionTypes },
     primaryType: "LaunchAttribution",
-    message: { chainId: plan.chainId.toString(), wallet: plan.creator, metadataHash: sdk.canonicalLaunchMetadataHash(metadata), imageSha256: zeroHash, imageContentType: "", imageContentLength: "0", idempotencyKey, nonce, deadline: deadline.toString() },
+    message: { chainId: plan.chainId.toString(), wallet: plan.creator, metadataHash: sdk.canonicalLaunchMetadataHash(metadata),
+      imageSha256: image?.descriptor.sha256 ?? zeroHash, imageContentType: image?.descriptor.contentType ?? "",
+      imageContentLength: String(image?.descriptor.contentLength ?? 0), idempotencyKey, nonce, deadline: deadline.toString() },
   };
   const signature = await wallet.signTypedData(typedData);
   artifacts.redactor.addSecret(signature);
-  const request = { chainId: Number(plan.chainId), wallet: plan.creator, metadata, authorization: { nonce, deadline: deadline.toString(), signature } };
+  const request = { chainId: Number(plan.chainId), wallet: plan.creator, metadata,
+    ...(image ? { image: image.descriptor } : {}), authorization: { nonce, deadline: deadline.toString(), signature } };
   const recovery = { ...artifacts.recovery, schema: "black-market.launch-example-recovery.v1", sdk: "node", caseId: artifacts.result.caseId, apiUrl: fixture.apiUrl, idempotencyKey, typedData, request };
   artifacts.privateRecovery(recovery);
   const signer = await recoverTypedDataAddress({ ...typedData, signature });
   addressEqual(signer, plan.creator, "Attribution signer");
+  assertFutureLaunchDeadline(plan.deadline);
   const api = new sdk.LaunchApiClient({ baseUrl: fixture.apiUrl, retries: 1, fetch: transport.fetch.bind(transport) });
-  const session = await api.createUploadSession(request, idempotencyKey);
+  let session = await api.createUploadSession(request, idempotencyKey);
   if (session.capability) artifacts.redactor.addSecret(session.capability);
   // Persist the one-time capability before even validating the response.
   artifacts.privateRecovery({ ...recovery, session, capability: session.capability });
@@ -272,11 +405,35 @@ async function stageMetadata({ fixture, plan, sdk, artifacts, transport, wallet 
   artifacts.event("metadata-session-created", { session });
   assert.ok(typeof session.capability === "string" && session.capability.length > 0, "Actual API must issue the one-time session capability");
   assert.equal(session.chainId, Number(plan.chainId)); addressEqual(session.wallet, plan.creator, "Session wallet");
-  assert.equal(session.status, "ready_to_launch"); assert.equal(session.metadata.name, plan.token.name); assert.equal(session.metadata.symbol, plan.token.symbol);
-  assert.equal(session.image, null, "This example stages metadata only");
-  assert.equal(session.metadata.description, metadata.description); assert.ok(session.transactionHash == null, "New metadata session cannot already bind a transaction");
+  assert.equal(session.metadata.name, plan.token.name); assert.equal(session.metadata.symbol, plan.token.symbol);
+  assert.equal(session.metadata.description, metadata.description || null); assert.ok(session.transactionHash == null, "New metadata session cannot already bind a transaction");
+  const sessionId = session.sessionId;
+  const capability = session.capability;
+  if (image) {
+    assert.equal(session.status, "awaiting_upload");
+    for (const field of ["sha256", "contentType", "contentLength"]) assert.equal(session.image?.[field], image.descriptor[field], `Signed image ${field}`);
+    assert.ok(session.upload, "The image session must issue a direct upload URL");
+    assertFutureLaunchDeadline(plan.deadline);
+    transport.authorizeImageUpload(session.upload, image.descriptor);
+    await api.putImage(session.upload, new Blob([image.bytes], { type: image.descriptor.contentType }));
+    assertFutureLaunchDeadline(plan.deadline);
+    session = await api.completeUpload(Number(plan.chainId), sessionId, capability);
+    artifacts.privateRecovery({ session, capability });
+    artifacts.result.api.session = session;
+    artifacts.event("image-upload-completed", { session });
+    assert.equal(session.sessionId, sessionId); assert.equal(session.chainId, Number(plan.chainId));
+    addressEqual(session.wallet, plan.creator, "Completed image session wallet");
+    assert.equal(session.metadata.name, metadata.name); assert.equal(session.metadata.symbol, metadata.symbol);
+    assert.equal(session.metadata.description, metadata.description || null);
+    assert.ok(session.transactionHash == null, "Image completion cannot bind an activation");
+    for (const field of ["sha256", "contentType", "contentLength"]) assert.equal(session.image?.[field], image.descriptor[field], `Verified image ${field}`);
+    assert.equal(session.imageStatus, "ready");
+    for (const field of ["width", "height"]) assert.ok(Number.isSafeInteger(session.image[field]) && session.image[field] > 0 && session.image[field] <= 4096, `Verified image ${field}`);
+  } else assert.equal(session.image, null, "Metadata-only session retains no image");
+  assert.equal(session.status, "ready_to_launch");
+  assertFutureLaunchDeadline(plan.deadline);
   artifacts.result.api.status = "session-ready";
-  return { api, sessionId: session.sessionId, capability: session.capability };
+  return { api, sessionId, capability, metadata, image: image?.descriptor };
 }
 
 function limitSource(fixture, artifacts) {
@@ -308,10 +465,10 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
     assert.equal(next.chainId, Number(planned.chainId));
     assert.equal(BigInt(await client.request({ method: "eth_chainId" })), planned.chainId, "Recheck execution chain before every send");
     addressEqual(next.from, planned.plan.creator, "Exact transaction creator");
-    addressEqual(next.to, planned.plan.orchestrator, "Native-wrap launch transaction destination");
+    addressEqual(next.to, planned.plan.orchestrator, "Native-input conversion launch transaction destination");
     const functions = { atomic: "launchAtomic", begin: "beginLaunch", prepare: "prepareMarkets", activate: "activateLaunch" };
     const functionName = functions[next.kind];
-    assert.ok(functionName, "These native-wrap cases do not permit unrelated approval/cancellation writes");
+    assert.ok(functionName, "Native-input conversion cases do not permit unrelated approval/cancellation writes");
     const args = next.kind === "begin" ? [planned.plan, sdk.LifecycleMode.Staged] : next.kind === "prepare" ? [planned.plan, next.marketStart, next.marketCount] : [planned.plan];
     assert.equal(next.data.toLowerCase(), encodeFunctionData({ abi: sdk.launchLifecycleAbi, functionName, args }).toLowerCase(), "Exact finalized-plan calldata");
     assert.ok(next.gas !== undefined && (next.gasPrice !== undefined || next.maxFeePerGas !== undefined && next.maxPriorityFeePerGas !== undefined) && next.admission?.admitted === true, "Actual next transaction needs stateful gas/envelope admission");
@@ -362,6 +519,7 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
       activation = { transactionHash: row.transactionHash, receipt };
       artifacts.result.chain.activationTransactionHash = row.transactionHash;
     }
+    artifacts.privateRecovery({ receipts: references, activation });
     artifacts.event("transaction-confirmed", { reference, gasUsed: receipt.gasUsed, transactionKind: next.kind });
   }
   throw exampleError("EXECUTION_STEP_LIMIT", "Lifecycle did not terminate within 64 exact SDK transactions; state/hashes are retained");
@@ -463,7 +621,7 @@ async function verifyChain({ client, planned, references, activation, fixture, s
   for (let index = 0; index < buys.length; index += 1) {
     const actual = buys[index]; const expected = planned.plan.buys[index];
     assert.equal(actual.buyIndex, index); assert.equal(actual.marketIndex, expected.marketIndex); addressEqual(actual.launchId, planned.launchId, "Buy launch ID");
-    addressEqual(actual.quoteAsset, fixture.quoteAsset, "Buy quote"); addressEqual(actual.recipient, expected.recipient, "Buy recipient");
+    addressEqual(actual.quoteAsset, planned.plan.markets[expected.marketIndex].quoteAsset, "Market-specific buy quote"); addressEqual(actual.recipient, expected.recipient, "Buy recipient");
     assert.ok(actual.tokenOut >= expected.minTokenOut); assert.ok(actual.quoteSpent > 0n && actual.quoteSpent <= expected.quoteAmountIn);
   }
   const directory = await read(fixture.orchestrator, sdk.launchLifecycleAbi, "directory");
@@ -471,12 +629,18 @@ async function verifyChain({ client, planned, references, activation, fixture, s
   artifacts.result.chain.markets = canonicalMarkets;
   for (const market of progress.markets) {
     const spec = scenario.markets[market.index];
+    const config = spec.venue === "v4" ? sdk.decodePoolBoundV4LifecycleMarketConfig(planned.plan.markets[market.index].config) : sdk.decodeAbyssLifecycleMarketConfig(planned.plan.markets[market.index].config);
     const identity = market.prepared.identity;
+    const quoteAsset = planned.plan.markets[market.index].quoteAsset;
+    const currencies = [token, quoteAsset].sort((left, right) => BigInt(left) < BigInt(right) ? -1 : 1);
+    addressEqual(identity.currency0, currencies[0], "Actual market currency0");
+    addressEqual(identity.currency1, currencies[1], "Actual market currency1");
     const observation = { ...market, positions: [] };
     canonicalMarkets.push(observation);
     artifacts.event("actual-market", { market });
     assert.equal(market.live?.publicTrading, true, market.error ?? "Actual public trading must be open");
-    assert.equal(identity.openingSqrtPriceX96, OPENING_PRICE); assert.equal(identity.fee, 3000); assert.equal(identity.tickSpacing, 60);
+    assert.equal(identity.openingSqrtPriceX96, spec.venue === "v4" ? config.sqrtPriceX96 : config.openingSqrtPriceX96);
+    assert.equal(identity.fee, 3000); assert.equal(identity.tickSpacing, 60);
     assert.equal(identity.venue, spec.venue === "v4" ? sdk.LifecycleVenue.UniswapV4 : sdk.LifecycleVenue.Abyss);
     assert.equal(market.prepared.positionCount, spec.positions); assert.ok(!same(market.prepared.custody, zeroAddress));
     if (spec.venue === "v4") {
@@ -489,7 +653,6 @@ async function verifyChain({ client, planned, references, activation, fixture, s
     assert.equal(positions.length, spec.positions);
     const profile = planned.profiles.find((row) => same(row.id, identity.profileId));
     assert.ok(profile, "Actual market must use the planned registered profile");
-    const config = spec.venue === "v4" ? sdk.decodePoolBoundV4LifecycleMarketConfig(planned.plan.markets[market.index].config) : sdk.decodeAbyssLifecycleMarketConfig(planned.plan.markets[market.index].config);
     for (let index = 0; index < positions.length; index += 1) {
       const position = positions[index]; const expected = config.positions[index];
       const [liquidity, custody] = await read(profile.adapter.implementation, sdk.lifecycleAdapterAbi, "readPosition", [position]);
@@ -513,14 +676,51 @@ async function verifyChain({ client, planned, references, activation, fixture, s
   artifacts.event("chain-verified", { token, activationTransactionHash: activation.transactionHash, marketCount: canonicalMarkets.length, positionCount: expectedPositions, buyCount: buys.length });
 }
 
-async function publishAndVerify({ fixture, planned, activation, session, sdk, artifacts, transport, signal, timeoutSeconds }) {
+export async function assertCanonicalExampleActivation({ client, planned, references, activation, sdk, artifacts, signal }) {
+  try {
+    assert.ok(activation?.receipt, "Retained original activation receipt is required");
+    const original = references.find((reference) => same(reference.transactionHash, activation.transactionHash));
+    assert.ok(original && original.observedBlockNumber === BigInt(activation.receipt.blockNumber) &&
+      same(original.observedBlockHash, activation.receipt.blockHash), "Original typed receipt inclusion must remain retained");
+    const progress = await sdk.readLaunchProgress({ client, planned, receipts: references, confirmations: planned.confirmations, signal });
+    const evidence = { progress, references, originalActivation: {
+      transactionHash: activation.transactionHash, blockNumber: original.observedBlockNumber, blockHash: original.observedBlockHash,
+    } };
+    artifacts.result.chain.progress = progress;
+    artifacts.save("publication-progress.json", evidence);
+    artifacts.event("publication-canonical-progress", evidence);
+    artifacts.privateRecovery({ publicationEvidence: evidence });
+    const receipt = progress.receipts.find((row) => same(row.transactionHash, activation.transactionHash));
+    if (!progress.confirmationSafe || progress.canonical.phase !== sdk.LifecyclePhase.Active ||
+        !same(progress.canonical.token, planned.predictedToken) || progress.receipts.length !== references.length ||
+        !progress.receipts.every((row) => row.status === "confirmed") || receipt?.status !== "confirmed" ||
+        !same(receipt.effectiveHash, activation.transactionHash) || receipt.blockNumber !== original.observedBlockNumber ||
+        !same(receipt.blockHash, original.observedBlockHash)) {
+      throw exampleError("ACTIVATION_CANONICALITY_CHANGED",
+        "Original activation is no longer confirmation-safe canonical Active at its retained block number/hash; stop and reconcile the saved recovery evidence, never republish or relaunch",
+        { data: evidence });
+    }
+    return progress;
+  } catch (error) {
+    artifacts.result.chain.status = "canonicality-failed";
+    artifacts.result.execution = "reconciliation-required";
+    artifacts.event("publication-canonicality-failed", { error: errorEvidence(error) });
+    throw error;
+  }
+}
+
+export async function publishAndVerify({ client, fixture, planned, references, activation, session, sdk, artifacts, transport, signal, timeoutSeconds }) {
   artifacts.stage("api-publication", { transactionHash: activation.transactionHash, timeoutSeconds });
   artifacts.result.api.activationTransactionHash = activation.transactionHash;
   const published = await publishUntilIndexed({
     timeoutMs: timeoutSeconds * 1000, artifacts, signal,
     isPending: (error) => error instanceof sdk.LaunchPublishPending,
     publish: async (remainingMs) => {
-      transport.setTimeoutMs(remainingMs);
+      const started = Date.now();
+      await assertCanonicalExampleActivation({ client, planned, references, activation, sdk, artifacts, signal });
+      const availableMs = remainingMs - (Date.now() - started);
+      if (availableMs <= 0) throw exampleError("PUBLISH_TIMEOUT", "Canonical publication recheck exhausted the indexing deadline");
+      transport.setTimeoutMs(availableMs);
       try { return await session.api.publishUploadSession(Number(planned.chainId), session.sessionId, session.capability, { chainId: Number(planned.chainId), transactionHash: activation.transactionHash }); }
       catch (error) {
         if (error instanceof sdk.LaunchPublishPending) {
@@ -541,6 +741,12 @@ async function publishAndVerify({ fixture, planned, activation, session, sdk, ar
   assert.ok(["optimistic", "final"].includes(published.status)); assert.ok(["optimistic", "final"].includes(published.canonicalStatus));
   assert.equal(published.metadataStatus, "ready", "Publication must actually make owner metadata available");
   assert.equal(published.metadata.name, planned.plan.token.name); assert.equal(published.metadata.symbol, planned.plan.token.symbol);
+  assert.equal(published.metadata.description, session.metadata.description || null);
+  if (session.image) {
+    for (const field of ["sha256", "contentType", "contentLength"]) assert.equal(published.image?.[field], session.image[field], `Published image ${field}`);
+    assert.equal(published.imageStatus, "ready");
+    exampleImageUrl(published.imageUrl);
+  }
   artifacts.stage("api-token-verification");
   transport.setTimeoutMs(30_000);
   const url = new URL(`/api/v1/launches/${planned.predictedToken}`, fixture.apiUrl);
@@ -559,11 +765,51 @@ async function publishAndVerify({ fixture, planned, activation, session, sdk, ar
   assert.ok(["optimistic", "final"].includes(item.canonicalStatus), "Indexed canonical status");
   assert.equal(item.metadata?.document?.name, planned.plan.token.name); assert.equal(item.metadata?.document?.symbol, planned.plan.token.symbol);
   assert.equal(item.launchedToken?.name, planned.plan.token.name); assert.equal(item.launchedToken?.symbol, planned.plan.token.symbol);
+  assert.equal(item.metadata?.document?.description ?? "", session.metadata.description);
+  if (session.image) {
+    const imageKey = item.metadata?.document?.imageKey;
+    assert.ok(imageKey?.startsWith(`launches/${planned.chainId}/${planned.predictedToken.toLowerCase()}/`), "Published token-bound image association");
+    assert.equal(item.metadata.imageContentType, session.image.contentType);
+    assert.equal(item.metadata.imageContentLength, session.image.contentLength);
+    assert.equal(item.imageUrl, published.imageUrl, "Indexed non-null public image must match the published session");
+    assert.ok(new URL(exampleImageUrl(item.imageUrl)).pathname.endsWith(`/${imageKey}`), "Public URL references the actual token-bound upload key");
+    artifacts.stage("api-image-verification", { url: item.imageUrl, image: session.image });
+    artifacts.result.api.image = await transport.fetchPublishedImage(item.imageUrl, session.image);
+  }
+  await assertCanonicalExampleActivation({ client, planned, references, activation, sdk, artifacts, signal });
   artifacts.result.api.status = "passed";
 }
 
-async function executeExample({ fixture, scenario, sdk, artifacts, signal }) {
+export async function assertExampleEconomicAuthority({ client, fixture, planned, economicReview, reviewHash, sdk, artifacts, signal, image, fetchImpl = fetch }) {
+  signal?.throwIfAborted();
+  assertFutureLaunchDeadline(planned.plan.deadline);
+  assert.equal(economicReviewHash(economicReview), reviewHash, "Saved economic review must not change");
+  assert.equal(fixture.targetMarketCapUsdX18, economicReview.targetMarketCapUsdX18, "Reviewed target valuation");
+  assert.equal(planned.plan.token.supply, economicReview.actualMintedSupply, "Actual reviewed total minted supply");
+  assert.deepEqual(JSON.parse(sdk.serializeLaunchPlan(planned.plan)), economicReview.finalizedPlan, "Exact reviewed finalized intent");
+  assert.equal(planned.planHash, economicReview.planHash, "Exact reviewed plan hash");
+  if (image) assert.equal(`0x${createHash("sha256").update(image.bytes).digest("hex")}`, economicReview.image.sha256, "Frozen signed image remains unchanged");
+  assertExampleConversionBindings({ plan: planned.plan, quotes: economicReview.quotes });
+  addressEqual(await sdk.predictLifecycleToken({ client, plan: planned.plan }), economicReview.predictedToken, "Fresh reviewed token orientation");
+  const block = await client.request({ method: "eth_getBlockByNumber", params: ["latest", false] });
+  await assertExampleConversionAdmission({ client, fixture, escrow: economicReview.quotes[0].conversion.escrow, sdk, block, artifacts });
+  const currentQuotes = [];
+  for (const quote of economicReview.quotes) {
+    const current = await readExampleQuoteUsdSeed({ sdk, fixture, quote, signal, fetchImpl });
+    assertUnchangedEconomicQuote(quote.usdSeed, current);
+    currentQuotes.push(current);
+  }
+  // An async API/registry/prediction reread cannot carry authority past the saved deadline.
+  signal?.throwIfAborted();
+  assertFutureLaunchDeadline(planned.plan.deadline);
+  assertExampleConversionBindings({ plan: planned.plan, quotes: economicReview.quotes });
+  artifacts.event("economic-authority-rechecked", { reviewHash, currentQuotes });
+}
+
+async function executeExample({ fixture, privateKey, scenario, sdk, artifacts, signal }) {
   validateCase(scenario);
+  const metadata = resolveExampleIdentity(scenario, fixture.identityOverrides);
+  const image = readExampleImage({ sdk, path: fixture.imagePath });
   artifacts.result.network = "chain-4663";
   artifacts.result.chain.chainId = fixture.chainId; artifacts.result.chain.rpcUrl = fixture.rpcUrl;
   artifacts.result.chain.orchestrator = fixture.orchestrator; artifacts.result.chain.creator = fixture.creator;
@@ -576,20 +822,37 @@ async function executeExample({ fixture, scenario, sdk, artifacts, signal }) {
   assert.equal(await client.request({ method: "eth_getCode", params: [fixture.creator, "latest"] }), "0x", "Creator must be an EOA");
   assert.notEqual(await client.request({ method: "eth_getCode", params: [fixture.orchestrator, "latest"] }), "0x", "Current orchestrator must be deployed");
   addressEqual(await contractReader(client)(fixture.orchestrator, sdk.launchLifecycleAbi, "registry"), fixture.implementationRegistry, "Configured deployment registry");
-  const wallet = createLocalLaunchWallet({ privateKey: process.env.PRIVATE_KEY, creator: fixture.creator, chainId, orchestrator: fixture.orchestrator, client, redactor: artifacts.redactor });
+  // The local wallet is created only after the exact economic review is admitted.
   artifacts.event("deployment-verified", { chainId, creator: fixture.creator, orchestrator: fixture.orchestrator });
   const limits = limitSource(fixture, artifacts);
-  const { planned, predictedToken } = await constructPlan({ client, fixture, scenario, sdk, artifacts, signal, limits });
+  const { planned, predictedToken, economicReview, reviewHash } = await constructPlan({ client, fixture, scenario, sdk, artifacts, signal, limits, metadata, image });
   const { plan } = planned;
   artifacts.save("planning.json", planned);
   artifacts.event("execution-plan", { mode: planned.mode, simulation: planned.simulation, prerequisites: planned.prerequisites, transactions: planned.transactions });
   assert.equal(planned.mode, scenario.mode, "Never silently change requested mode"); addressEqual(planned.predictedToken, predictedToken, "Planner token prediction");
   if (!planned.simulation.admitted) throw exampleError("PLAN_NOT_ADMITTED", planned.simulation.reason ?? "The actual SDK did not admit this exact launch", { simulation: planned.simulation });
+  const usd = (value) => `${value / UNIT}.${(value % UNIT).toString().padStart(18, "0")}`;
+  console.log(`Economic review ${reviewHash}\n${metadata.name} (${metadata.symbol}); target USD ${usd(economicReview.targetMarketCapUsdX18)}; minted supply ${usd(economicReview.actualMintedSupply)}\n` +
+    economicReview.markets.map((market) => `Market ${market.marketIndex} ${market.venue}/${market.quoteSymbol}: retained-supply opening valuation USD ${usd(market.retainedSupplyOpeningValuationUsdX18)} (minted-supply USD ${usd(market.openingValuationUsdX18)}), token USD ${usd(market.unitPriceUsdX18)}, token ${market.quoteSymbol} ${usd(market.unitPriceQuoteX18)}, ${market.positions.length} positions`).join("\n") +
+    `\nExpected rounding burn ${economicReview.expectedUnusedBurn} raw token units; ${planned.plan.buys.length} ordered buys, native input ${fixture.buyAmountWei} wei each via Kyber conversion; 50 bps conversion and ordered-buy protection.\nLP fee 3000 pips; V4 hook max 10000/min 1000 pips (fixed maximum schedule); executor 275 bps.\nImage ${image ? `${image.descriptor.contentType}, ${image.descriptor.contentLength} bytes, ${image.descriptor.sha256}` : "none (metadata only)"}.\nReview allocations, fees and exact protected buys: ${artifacts.directory}/economic-review.json`);
+  console.log(economicReview.initialBuy.simulatedBuys.map((buy) => `Buy ${buy.buyIndex} market ${buy.marketIndex}/${buy.quoteSymbol}: quote spent ${buy.quoteSpent} raw units; simulated all-in USD/token ${usd(buy.allInUnitPriceUsdX18)}; fees + price-impact premium ${buy.feeAndPriceImpactPremiumBps} bps vs opening`).join("\n"));
+  for (const quote of economicReview.quotes) {
+    const seed = quote.usdSeed;
+    console.log(`${quote.symbol}/USD ${usd(seed.priceUsdX18)}; source ${seed.source}; chain ${seed.chainId}; quote ${seed.tokenAddress} (${seed.tokenDecimals} decimals); retrieved ${seed.retrievedAt}.\n` +
+      (seed.source === "abyss-api" ? `API ${seed.apiOrigin}, indexed block ${seed.indexedBlock}; graph block ${seed.blockNumber}; WETH graph block ${seed.graphBlockNumber}; ${seed.anchorKind} anchor ${seed.anchorAggregator}; upstream ${seed.sourceTimestamp} (${seed.upstreamAgeSeconds} seconds old at retrieval). Indicative valuation, not execution proof.\n` : "Reviewed SDK USDG dollar peg; no WETH API-price substitution.\n") +
+      `Kyber ${quote.conversion.apiOrigin}; input ${quote.conversion.response.amountIn} native wei; protected quote output ${quote.conversion.response.amountOutMinimum} raw ${quote.symbol}; conversion price impact ${quote.conversion.response.priceImpactBps ?? "unknown"} bps; expires ${quote.conversion.response.expiresAt}; oracle ${quote.oracle.oracleConfigId}.`);
+  }
+  const economicAdmission = await admitEconomicReview(reviewHash);
+  artifacts.privateRecovery({ economicAdmission });
+  artifacts.save("economic-admission.json", economicAdmission);
+  const assertEconomicAuthority = () => assertExampleEconomicAuthority({ client, fixture, planned, economicReview, reviewHash, sdk, artifacts, signal, image });
+  const localWallet = createLocalLaunchWallet({ privateKey, creator: fixture.creator, chainId, orchestrator: fixture.orchestrator, client, redactor: artifacts.redactor });
+  const wallet = guardEconomicReviewWallet(localWallet, assertEconomicAuthority);
   const transport = apiTransport({ artifacts, signal, apiUrl: fixture.apiUrl });
-  const session = await stageMetadata({ fixture, plan, sdk, artifacts, transport, wallet });
+  const session = await stageMetadata({ fixture, plan, sdk, artifacts, transport, wallet, metadata, image });
   const executed = await executePlan({ client, fixture, planned, sdk, artifacts, signal, limits, wallet });
   await verifyChain({ client, planned, ...executed, fixture, scenario, sdk, artifacts });
-  await publishAndVerify({ fixture, planned, activation: executed.activation, session, sdk, artifacts, transport, signal, timeoutSeconds: 90 });
+  await publishAndVerify({ client, fixture, planned, ...executed, session, sdk, artifacts, transport, signal, timeoutSeconds: 90 });
   artifacts.stage("completed");
 }
 
@@ -610,8 +873,8 @@ export async function runLaunchExample(caseObject) {
     if (typeof process.env.PRIVATE_KEY === "string") redactor.addSecret(process.env.PRIVATE_KEY.slice(2));
     // Import after .env loading: the public SDK resolves address overrides on import.
     const sdk = await import("@black-market/sdk");
-    const fixture = readExampleConfiguration(sdk, redactor);
-    await executeExample({ fixture, scenario: caseObject, sdk, artifacts, signal: controller.signal });
+    const { fixture, privateKey } = await readExampleConfiguration(sdk, redactor);
+    await executeExample({ fixture, privateKey, scenario: caseObject, sdk, artifacts, signal: controller.signal });
     artifacts.finish("passed");
     console.log(`Actual chain launch and API publication/indexing passed\nArtifacts: ${artifacts.directory}\nToken: ${artifacts.result.chain.token}`);
     return artifacts.result;

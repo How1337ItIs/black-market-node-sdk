@@ -19,16 +19,17 @@ const nodeInterfaceAbi = parseAbi(["function gasEstimateL1Component(address to, 
 
 // ABI-complete injected RPC observations exercise public SDK consumers. These are
 // offline behavioral fixtures, not live Nitro execution or deployment evidence.
-function makePlan({ chainId = 31337n, markets = 1, nativeFunding = false } = {}) {
+function makePlan({ chainId = 31337n, markets = 1, nativeFunding = false, token0 = true } = {}) {
   const profileId = keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "uint256" }, { type: "address" }, { type: "uint8" }], [keccak256(stringToHex("BLACK_MARKET_ABYSS_CANONICAL_PROFILE_V1")), chainId, FACTORY, 3]));
-  const quotes = Array.from({ length: markets }, (_, index) => address(0x20 + index));
+  const quotes = Array.from({ length: markets }, (_, index) => address((token0 ? 0x20 : 0x05) + index));
   return {
     chainId, orchestrator: CORE, creator: ACCOUNT, nonce: 7n,
     token: { kind: 0, rewardMode: 0, name: "Admission", symbol: "ADM", supply: 100n * BigInt(markets), nftUnit: 0n, metadataURI: "", salt: toHex(7n, { size: 32 }), inventoryRecipient: ACCOUNT, burnOnCancel: false },
     funding: quotes.map((asset) => ({ asset, amount: 10n, kind: nativeFunding ? 1 : 0, inputAsset: asset, inputAmount: 10n, target: zeroAddress, data: "0x" })),
-    feeAssets: [TOKEN, ...quotes].map((asset) => ({ asset, ownerBps: 10000, rewardsBps: 0, burnBps: 0 })),
+    feeAssets: [TOKEN, ...quotes].sort((left, right) => BigInt(left) < BigInt(right) ? -1 : 1).map((asset) => ({ asset, ownerBps: 10000, rewardsBps: 0, burnBps: 0 })),
     markets: quotes.map((quoteAsset) => ({ adapterId: toHex(1n, { size: 32 }), profileId, quoteAsset, tokenBudget: 100n, configVersion: 1,
-      config: encodeAbyssLifecycleMarketConfig({ profile: 3, fee: 3000, oracleConfigId: toHex(9n, { size: 32 }), openingSqrtPriceX96: 1n << 96n, positions: [{ tickLower: 60, tickUpper: 120, liquidity: 1n, tokenAmountMaximum: 100n }] }) })),
+      config: encodeAbyssLifecycleMarketConfig({ profile: 3, fee: 3000, oracleConfigId: toHex(9n, { size: 32 }), openingSqrtPriceX96: 1n << 96n,
+        positions: [{ tickLower: token0 ? 0 : -887220, tickUpper: token0 ? 887220 : 0, liquidity: 1n, tokenAmountMaximum: 100n }] }) })),
     buys: quotes.map((_, marketIndex) => ({ marketIndex, quoteAmountIn: 10n, minTokenOut: 5n, recipient: ACCOUNT, sqrtPriceLimitX96: (1n << 96n) - 1n })),
     deadline: 1000n, executorFeeBps: 0,
   };
@@ -38,7 +39,9 @@ function progress(plan, phase = LifecyclePhase.None, prepared = 0) {
   return { launchId: hashLaunchIdentity(plan), planHash: hashLaunchPlan(plan), creator: ACCOUNT, nonce: plan.nonce, mode: 1, phase, token: TOKEN, feeHub: address(0xf6), rewards: zeroAddress, preparedMarkets: prepared, marketCount: plan.markets.length, buyCount: plan.buys.length, positionCount: prepared, deadline: plan.deadline };
 }
 function identity(plan, index) {
-  const fields = { venue: 1, manager: zeroAddress, factory: FACTORY, pool: address(0x100 + index), poolId: zeroHash, profileId: plan.markets[index].profileId, currency0: TOKEN, currency1: plan.markets[index].quoteAsset, fee: 3000, tickSpacing: 60, hook: zeroAddress, openingSqrtPriceX96: 1n << 96n };
+  const [currency0, currency1] = BigInt(TOKEN) < BigInt(plan.markets[index].quoteAsset)
+    ? [TOKEN, plan.markets[index].quoteAsset] : [plan.markets[index].quoteAsset, TOKEN];
+  const fields = { venue: 1, manager: zeroAddress, factory: FACTORY, pool: address(0x100 + index), poolId: zeroHash, profileId: plan.markets[index].profileId, currency0, currency1, fee: 3000, tickSpacing: 60, hook: zeroAddress, openingSqrtPriceX96: 1n << 96n };
   const canonicalId = keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "uint8" }, { type: "address" }, { type: "address" }, { type: "address" }, { type: "bytes32" }, { type: "bytes32" }], [plan.chainId, fields.venue, fields.manager, fields.factory, fields.pool, fields.poolId, fields.profileId]));
   return { ...fields, canonicalId };
 }
@@ -2484,5 +2487,134 @@ test("native prerequisite and proof catch branches expose refusal without privat
     assert.equal(diagnosticJson(planned.simulation).includes(sentinel), false, `${stage} cannot echo private provider messages`);
     assert.equal(economic, stage === "capability" || stage === "poster" ? 0 : stage === "measurement" ? 1 : stage === "replay" ? 2 : 3,
       "A provider failure cannot authorize another economic pass");
+  }
+});
+
+for (const token0 of [true, false]) {
+  for (const mode of ["atomic", "staged"]) {
+    test(`token${token0 ? 0 : 1} ${mode} planning requires a permanent tail and preserves explicit tail opt-out through recovery`, async () => {
+      const plan = makePlan({ token0 });
+      const config = decodeAbyssLifecycleMarketConfig(plan.markets[0].config);
+      plan.markets[0].config = encodeAbyssLifecycleMarketConfig({ ...config, positions: config.positions.map((position) => ({
+        ...position, tickLower: token0 ? 0 : -120, tickUpper: token0 ? 120 : 0,
+      })) });
+      const commitment = hashLaunchPlan(plan);
+      for (const operation of [planLaunch, prepareAndPlanLifecycleLaunch]) {
+        for (const allowTopologyGaps of [false, true]) {
+          const client = clientFor(plan);
+          await assert.rejects(operation({ client, plan, account: ACCOUNT, mode, allowTopologyGaps }), { code: "MISSING_PERMANENT_TAIL" });
+          assert.equal(economicRequests(client).length, 0, "Unsafe topology cannot reach economic execution");
+        }
+        const client = clientFor(plan);
+        const planned = await operation({ client, plan, account: ACCOUNT, mode, allowMissingPermanentTail: true });
+        assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+        assert.equal(planned.allowMissingPermanentTail, true);
+        assert.equal(planned.allowTopologyGaps, false);
+        assert.equal(planned.planHash, commitment);
+        assert.equal(hashLaunchPlan(plan), commitment, "Validation options never rewrite committed economics");
+        const compiled = planned.transactions.filter((transaction) => transaction.to.toLowerCase() === CORE);
+        for (const transaction of compiled) {
+          const committed = decodeFunctionData({ abi: launchLifecycleAbi, data: transaction.data }).args[0];
+          assert.equal(hashLaunchPlan(committed), commitment);
+        }
+        assert.equal((await simulateLaunchPlan({ client, planned })).admitted, true);
+        assert.ok(await buildNextTransaction({ client, planned }), "Tail opt-out remains available to fresh unfinished-work admission");
+      }
+    });
+  }
+
+  test(`token${token0 ? 0 : 1} planner gap and permanent-tail opt-outs are independent`, async () => {
+    const plan = makePlan({ token0 });
+    const config = decodeAbyssLifecycleMarketConfig(plan.markets[0].config);
+    const positions = token0
+      ? [{ tickLower: 0, tickUpper: 60, liquidity: 1n, tokenAmountMaximum: 50n },
+        { tickLower: 120, tickUpper: 887220, liquidity: 1n, tokenAmountMaximum: 50n }]
+      : [{ tickLower: -60, tickUpper: 0, liquidity: 1n, tokenAmountMaximum: 50n },
+        { tickLower: -887220, tickUpper: -120, liquidity: 1n, tokenAmountMaximum: 50n }];
+    plan.markets[0].config = encodeAbyssLifecycleMarketConfig({ ...config, positions });
+    for (const operation of [planLaunch, prepareAndPlanLifecycleLaunch]) {
+      await assert.rejects(operation({ client: clientFor(plan), plan, account: ACCOUNT, mode: "atomic" }), { code: "TOPOLOGY_INTERIOR_GAP" });
+      await assert.rejects(operation({ client: clientFor(plan), plan, account: ACCOUNT, mode: "atomic", allowMissingPermanentTail: true }), { code: "TOPOLOGY_INTERIOR_GAP" });
+      const planned = await operation({ client: clientFor(plan), plan, account: ACCOUNT, mode: "atomic", allowTopologyGaps: true });
+      assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+      assert.equal(planned.allowTopologyGaps, true);
+      assert.equal(planned.allowMissingPermanentTail, false);
+      const client = clientFor(plan);
+      assert.equal((await simulateLaunchPlan({ client, planned })).admitted, true);
+      assert.ok(await buildNextTransaction({ client, planned }));
+    }
+    const finite = positions.map((position, index) => index === 1 ? { ...position,
+      tickLower: token0 ? 120 : -180, tickUpper: token0 ? 180 : -120 } : position);
+    plan.markets[0].config = encodeAbyssLifecycleMarketConfig({ ...config, positions: finite });
+    await assert.rejects(review(clientFor(plan), plan, { allowTopologyGaps: true }), { code: "MISSING_PERMANENT_TAIL" });
+    await assert.rejects(review(clientFor(plan), plan, { allowMissingPermanentTail: true }), { code: "TOPOLOGY_INTERIOR_GAP" });
+    assert.equal((await review(clientFor(plan), plan, { allowTopologyGaps: true, allowMissingPermanentTail: true })).simulation.admitted, true);
+  });
+
+  test(`token${token0 ? 0 : 1} neither planner opt-out bypasses opening containment or tick alignment`, async () => {
+    for (const [code, ticks] of [
+      ["TOPOLOGY_OPENING_GAP", token0 ? { tickLower: 60, tickUpper: 887220 } : { tickLower: -887220, tickUpper: -60 }],
+      ["TOPOLOGY_OFF_GRID_TICK", token0 ? { tickLower: 0, tickUpper: 887219 } : { tickLower: -887219, tickUpper: 0 }],
+    ]) {
+      const plan = makePlan({ token0 }), config = decodeAbyssLifecycleMarketConfig(plan.markets[0].config);
+      plan.markets[0].config = encodeAbyssLifecycleMarketConfig({ ...config,
+        positions: config.positions.map((position) => ({ ...position, ...ticks })) });
+      for (const operation of [planLaunch, prepareAndPlanLifecycleLaunch]) {
+        const client = clientFor(plan);
+        await assert.rejects(operation({ client, plan, account: ACCOUNT, mode: "atomic",
+          allowTopologyGaps: true, allowMissingPermanentTail: true }), { code });
+        assert.equal(economicRequests(client).length, 0);
+      }
+    }
+  });
+}
+
+test("a funded tail in one market cannot substitute for another market's missing tail", async () => {
+  const plan = makePlan({ markets: 2 }), market = plan.markets[1];
+  const config = decodeAbyssLifecycleMarketConfig(market.config);
+  market.config = encodeAbyssLifecycleMarketConfig({ ...config, positions: config.positions.map((position) => ({ ...position, tickUpper: 120 })) });
+  await assert.rejects(review(clientFor(plan), plan), (error) => error.code === "MISSING_PERMANENT_TAIL" && /Market 1:/.test(error.message));
+});
+
+test("started and terminal launches recover legacy topology without creation-policy opt-outs", async () => {
+  for (const phase of [LifecyclePhase.Preparing, LifecyclePhase.Ready, LifecyclePhase.Active, LifecyclePhase.Cancelled]) {
+    const plan = makePlan(), config = decodeAbyssLifecycleMarketConfig(plan.markets[0].config);
+    // This immutable historical commitment has all three creation-policy faults:
+    // off-grid endpoints, an opening gap, and no permanent tail.
+    plan.markets[0].config = encodeAbyssLifecycleMarketConfig({ ...config, positions: config.positions.map((position) => ({
+      ...position, tickLower: 61, tickUpper: 119,
+    })) });
+    const prepared = phase === LifecyclePhase.Ready || phase === LifecyclePhase.Active ? 1 : 0;
+    const client = clientFor(plan, { phase, prepared });
+    const planned = await review(client, plan, { mode: "staged" });
+    assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+    assert.equal(planned.allowTopologyGaps, false);
+    assert.equal(planned.allowMissingPermanentTail, false);
+    assert.equal((await simulateLaunchPlan({ client, planned })).admitted, true);
+    const next = await buildNextTransaction({ client, planned });
+    if (phase === LifecyclePhase.Active || phase === LifecyclePhase.Cancelled) assert.equal(next, undefined);
+    else assert.equal(next.kind, phase === LifecyclePhase.Preparing ? "prepare" : "activate");
+    assert.equal(planned.planHash, hashLaunchPlan(plan), "Recovery preserves the existing commitment");
+  }
+});
+
+test("in-flight account state returns waiting before applying unstarted topology policy", async () => {
+  for (const phase of [LifecyclePhase.None, LifecyclePhase.Preparing]) {
+    const plan = makePlan(), config = decodeAbyssLifecycleMarketConfig(plan.markets[0].config);
+    plan.markets[0].config = encodeAbyssLifecycleMarketConfig({ ...config,
+      positions: config.positions.map((position) => ({ ...position, tickLower: 61, tickUpper: 119 })) });
+    const source = clientFor(plan, { phase });
+    const client = { async request(args) {
+      const result = await source.request(args);
+      return args.method === "eth_getTransactionCount" && args.params[1] === "pending" ? "0x1" : result;
+    } };
+    const planned = await review(client, plan, { mode: "staged" });
+    assert.equal(planned.progress.confirmationSafe, false);
+    assert.equal(planned.simulation.admitted, false);
+    assert.match(planned.simulation.reason, /wait/i);
+    assert.deepEqual(planned.transactions, []);
+    assert.equal((await simulateLaunchPlan({ client, planned })).admitted, false);
+    await assert.rejects(buildNextTransaction({ client, planned }), { code: "UNCONFIRMED_STATE" });
+    assert.equal(economicRequests(source).length, 0, "Waiting never authorizes execution or a changed commitment");
   }
 });

@@ -1,25 +1,84 @@
 ---
 name: sdk-usage
-description: Use the Abyss TypeScript SDK to read protocol state, build unsigned launch plans, or integrate swaps and lending in a consumer application.
+description: Integrate the Abyss TypeScript SDK using the correct deployment graph, construction presets, public APIs and live execution authority. Covers protocol reads, unsigned lifecycle planning, swaps and lending.
 ---
 
 # Use the TypeScript SDK
 
-1. Read `README.md` and install `@black-market/sdk` plus `viem` in the consumer.
-2. Import public exports from `@black-market/sdk`; use `@black-market/sdk/lifecycle`
-   when only the deployment-independent launch APIs are needed.
-3. Create a client with `createProtocolPublicClient({ chainId: 4663 })` and resolve
-   contracts with `getAddresses(4663)`. Configure another chain explicitly if intended.
-4. For launch discovery, call `readLifecycleProfiles({ client, orchestrator })`.
-   Inspect returned admission and terms rather than inventing a profile configuration.
-5. Use `bigint` and explicit token decimals. Reuse SDK ABIs and viem types.
-6. Keep wallet submission separate from reads and unsigned planning.
+## Read the right contract
 
-Runnable read-only example: `node examples/quickstart.mjs` after the repository build.
-Swap/lending entrypoints are exported through `src/index.ts`; inspect their existing
-implementations and types before adding a wrapper.
+- Read `README.md`, `docs/launch-lifecycle.md` and the installed package's exports.
+  Use Node 24+, pnpm, TypeScript ESM and integer base units (`bigint`).
+- Consumer imports use `@black-market/sdk`. `@black-market/sdk/lifecycle` is the
+  browser-safe lifecycle subpath; general pricing/AMM helpers use the root package.
+- Use `createProtocolPublicClient({ chainId: 4663 })`, then verify the RPC chain.
+  Resolve infrastructure through `getAddresses(chainId)`, not copied addresses.
+  Explicitly configure local chains; never reuse mainnet defaults on a fork/local chain.
+- Compare the plan's core, registry, funding escrow and selected profiles with the
+  intended release. An old SDK, vendored tarball, environment override or saved plan
+  can target an older immutable stack even when the application itself is current.
+  A package version or a profile name alone does not prove deployment identity.
 
-For launch execution, read the sibling `token-launch/SKILL.md`. For API shapes and
-recovery details, read `docs/launch-lifecycle.md`. Validate repository edits with
-`pnpm test` and `pnpm typecheck`; exercise the changed consumer path without writes
-unless the user has explicitly authorized them.
+## Construct locally; prove against current state
+
+1. Use `getKnownLifecycleDeployment`, `getKnownLifecycleProfile` and
+   `listKnownLifecycleProfiles` for shipped construction metadata. These pure
+   selectors avoid remote enumeration for known profiles; they do not grant admission.
+2. Use `readLifecycleProfiles({ client, orchestrator })` when explicit live discovery
+   or an unlisted offering is needed. Check `admitted` and any refusal `reason`,
+   schema/version, topology, bounds, dependency graph and author terms.
+3. Build the complete `LaunchPlanV1`: explicit creator/core/nonce, token behavior,
+   fee policies, funding, all markets/positions and ordered buys. Read the sibling
+   `token-launch/SKILL.md` and `launch-pricing/SKILL.md` before choosing economics.
+4. `buildLaunchTransactions({ plan, mode })` compiles unsigned calldata only.
+   It does not prove balances, fees, gas capacity, quote freshness or execution.
+5. `prepareAndPlanLifecycleLaunch({ client, account, plan, mode, ... })` combines
+   bound-hook salt preparation and selected-mode proof. `planLaunch` proves an
+   already-finalized plan. Only review the returned final plan/commitment.
+6. `readLaunchProgress`, `simulateLaunchPlan` and `buildNextTransaction` support
+   canonical recovery and fresh proof of remaining work. Persist the original plan,
+   execution mode, confirmation policy and actual included/replacement hashes.
+
+Do not add a second application-owned mining/admission loop around these operations.
+Known presets are construction shortcuts, not permission to remove live continuity,
+receipt, nonce, affordability or simulation checks. Do not resurrect
+`preparePoolBoundLifecyclePlan` or `PlannedLaunch.atomicAttempt`.
+
+Atomic/staged mode is explicit; refusal does not authorize fallback, smaller budgets,
+fewer positions, dropped buys or a different hook. Staging partitions preparation,
+not final activation. Native Nitro compute/poster-gas evidence is distinct from a
+generic local EVM gas measurement. Optional limits tighten policy; never invent a
+chain-wide 16M/32M cap from a historical fixture.
+
+## Representation and integration boundaries
+
+- Preserve `bigint` internally and decimal-string wide values in portable plans.
+  Use `serializeLaunchPlan` / `parseLaunchPlan`, not lossy JSON numbers.
+- A profile selects an implementation and configuration contract, not arbitrary
+  executable hook calldata. Config version and topology are not fee-behavior names.
+- Quotes, fee assets and direct ERC20/native-wrap funding are not a curated-token
+  allowlist. Swap-conversion inputs and target/spender roles have separate registry
+  admission; inspect the pricing skill before integrating Kyber.
+- Keep pure price/buy estimates, execution proof, RPC submission preflight, wallet
+  submission, canonical activation and API publication as separate outcomes.
+- Use existing AMM/lending exports and ABIs before writing wrappers. An indexed
+  routing candidate is not executable calldata. A successful launch/oracle setup
+  is not lending admission: history, liquidity, risk policy and governance remain
+  separate. Do not transplant lending-feed cutoffs into launch USD valuation policy.
+- Address identity is case-insensitive; use library checksum/normalization helpers,
+  not case-sensitive string matching for tokens, pools or deployment bindings.
+
+## Verification and safety
+
+`node examples/quickstart.mjs` is a read-only discovery smoke after building.
+Repository code changes use `pnpm test` and `pnpm typecheck`; HTTP/chain suites need
+their documented disposable services and explicit authorization. For documentation,
+execute the documented pure/read-only consumer path, not a funded launch example.
+
+Reads, pricing, mining, simulation and unsigned compilation do not authorize signing,
+broadcasting, uploads or metadata publication. A controlled fork must be explicitly
+owned/disposable and distinct from the source RPC. Preserve unrelated worktree changes.
+
+The audit's historical decisions and known regressions are in
+`../token-launch/references/audit-history.md`; current exports and deployed evidence
+override superseded conversations.

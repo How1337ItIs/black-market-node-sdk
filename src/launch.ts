@@ -43,9 +43,9 @@ export type LaunchPositionRangesInput = {
   /** Source-defined Black Market inventory weights, widths and gaps. */
   distributionPreset: "early-scarcity" | "staircase" | "smooth-ramp";
   positionCount?: number;
-  /** Defaults to source-gaps; adjacent removes only Staircase's empty shelf gaps. */
-  staircaseBoundaries?: "source-gaps" | "adjacent";
-  /** Defaults to false; extends only the final band's far endpoint. */
+  /** Defaults to source-gaps for Staircase/Early Scarcity; adjacent removes their gaps. */
+  positionGaps?: "source-gaps" | "adjacent";
+  /** Defaults to true; extends only the final band's far endpoint. */
   extendFinalRangeToBoundary?: boolean;
 };
 
@@ -76,6 +76,21 @@ export type LaunchPositionRanges = {
   openingActiveLiquidity: bigint;
   buySideLiquidity: bigint;
   maxLiquidityPerTick: bigint;
+};
+
+export type LaunchTopologyPosition = {
+  tickLower: number; tickUpper: number;
+} & ({ maxTokenAmount: bigint } | { tokenAmountMaximum: bigint });
+
+export type LaunchTopologyCoverageInput = {
+  positions: readonly LaunchTopologyPosition[];
+  /** Canonical tick derived from the market's opening sqrtPriceX96. */
+  openingTick: number;
+  tickSpacing: number;
+  /** Existing launch convention: true means the launched token is token0. */
+  launchedTokenIsQuote: boolean;
+  /** Defaults to false; opening containment and the permanent tail remain required. */
+  allowInteriorGaps?: boolean;
 };
 
 export type LaunchBuySqrtPriceLimitInput = {
@@ -196,7 +211,7 @@ export function getSqrtRatioAtTick(tick: number): bigint {
   return (ratio >> 32n) + (ratio % Q32 === 0n ? 0n : 1n);
 }
 
-function getTickAtSqrtRatio(sqrtPriceX96: bigint): number {
+export function getTickAtSqrtRatio(sqrtPriceX96: bigint): number {
   assertCanonicalSqrtPrice(sqrtPriceX96, "sqrtPriceX96");
 
   let low = MIN_TICK;
@@ -240,6 +255,56 @@ function launchBand(
     throw new Error("launchTick cannot form a valid one-sided launch band");
   }
   return { tickLower, tickUpper };
+}
+
+/**
+ * Requires opening buy-side liquidity, continuous forward coverage and a funded
+ * permanent tail at the usable protocol boundary. Overlaps and adjacency are valid.
+ * Token1 containment includes the upper endpoint crossed by the first downward buy.
+ * Input positions are never reordered or mutated.
+ */
+export function assertLaunchTopologyCoverage(input: LaunchTopologyCoverageInput): void {
+  const { positions, openingTick, tickSpacing, launchedTokenIsQuote } = input;
+  if (!Number.isInteger(tickSpacing) || tickSpacing < 1 || tickSpacing > 32767) throw new Error("tickSpacing must be 1..32767");
+  if (typeof launchedTokenIsQuote !== "boolean") throw new Error("launchedTokenIsQuote must be a boolean");
+  const allowInteriorGaps = input.allowInteriorGaps ?? false;
+  if (typeof allowInteriorGaps !== "boolean") throw new Error("allowInteriorGaps must be a boolean");
+  getSqrtRatioAtTick(openingTick);
+  const band = launchBand(openingTick, tickSpacing, launchedTokenIsQuote);
+  const boundaryTick = launchedTokenIsQuote ? band.tickUpper : band.tickLower;
+  let containsOpening = false;
+  let hasPermanentTail = false;
+  for (const position of positions) {
+    const { tickLower, tickUpper } = position;
+    if (!Number.isInteger(tickLower) || !Number.isInteger(tickUpper) ||
+      tickLower % tickSpacing !== 0 || tickUpper % tickSpacing !== 0) {
+      throw new Error("TOPOLOGY_OFF_GRID_TICK: Every position endpoint must be spacing-aligned");
+    }
+    getSqrtRatioAtTick(tickLower);
+    getSqrtRatioAtTick(tickUpper);
+    if (tickLower >= tickUpper) throw new Error("TOPOLOGY_OPENING_GAP: Every position must have a nonempty tick range");
+    if (launchedTokenIsQuote ? tickLower <= openingTick && openingTick < tickUpper : tickLower < openingTick && openingTick <= tickUpper) {
+      containsOpening = true;
+    }
+    const tokenMaximum = "maxTokenAmount" in position ? position.maxTokenAmount : position.tokenAmountMaximum;
+    if ((launchedTokenIsQuote ? tickUpper : tickLower) === boundaryTick && tokenMaximum > 0n) hasPermanentTail = true;
+  }
+  if (!containsOpening) throw new Error("TOPOLOGY_OPENING_GAP: No opening buy-side band contains the launch tick");
+  const sorted = [...positions].sort(launchedTokenIsQuote
+    ? (left, right) => left.tickLower - right.tickLower
+    : (left, right) => right.tickUpper - left.tickUpper);
+  let coveredTo = openingTick;
+  for (const position of sorted) {
+    const near = launchedTokenIsQuote ? position.tickLower : position.tickUpper;
+    const far = launchedTokenIsQuote ? position.tickUpper : position.tickLower;
+    if (launchedTokenIsQuote ? far <= coveredTo : far >= coveredTo) continue;
+    if (!allowInteriorGaps && (launchedTokenIsQuote ? near > coveredTo : near < coveredTo)) {
+      throw new Error(`TOPOLOGY_INTERIOR_GAP: Uncovered interval between ticks ${coveredTo} and ${near}`);
+    }
+    coveredTo = far;
+    if (coveredTo === boundaryTick) break;
+  }
+  if (!hasPermanentTail) throw new Error(`MISSING_PERMANENT_TAIL: A positive token allocation must reach tick ${boundaryTick}`);
 }
 
 function liquidityForAmount0(amount0: bigint, sqrtLowerX96: bigint, sqrtUpperX96: bigint): bigint {
@@ -333,8 +398,8 @@ function apportionLaunchInventory(total: number, scores: readonly number[]): num
 /**
  * Source-defined one-sided Black Market presets, ordered toward higher launch-token
  * prices. The first position starts at launch; later bands are contiguous or leave
- * the preset's intentional gaps. Only an explicit final-tail adaptation reaches
- * the usable protocol boundary; no equal-tick extrapolation is applied.
+ * the preset's intentional gaps. By default the final band reaches the usable
+ * protocol boundary; no equal-tick extrapolation is applied to earlier bands.
  * Supply allocation across pools belongs to the caller: pass each pool's share.
  * Budget caps floor all but the final allocation, which receives the remainder.
  * Exact rational funding floors guarantee canonical rounded-up mint debits fit
@@ -356,14 +421,16 @@ export function deriveLaunchPositionRanges(input: LaunchPositionRangesInput): La
   }
   const positionCount = input.positionCount ?? 5;
   if (!Number.isInteger(positionCount) || positionCount < 2 || positionCount > 16) throw new Error("positionCount must be 2..16");
-  const extendFinalRangeToBoundary = input.extendFinalRangeToBoundary ?? false;
+  const extendFinalRangeToBoundary = input.extendFinalRangeToBoundary ?? true;
   if (typeof extendFinalRangeToBoundary !== "boolean") throw new Error("extendFinalRangeToBoundary must be a boolean");
-  const staircaseBoundaries = input.staircaseBoundaries === undefined ? "source-gaps" : input.staircaseBoundaries;
-  if (staircaseBoundaries !== "source-gaps" && staircaseBoundaries !== "adjacent") {
-    throw new Error("staircaseBoundaries must be source-gaps or adjacent");
+  const positionGaps = input.positionGaps === undefined
+    ? distributionPreset === "smooth-ramp" ? "adjacent" : "source-gaps"
+    : input.positionGaps;
+  if (positionGaps !== "source-gaps" && positionGaps !== "adjacent") {
+    throw new Error("positionGaps must be source-gaps or adjacent");
   }
-  if (input.staircaseBoundaries !== undefined && distributionPreset !== "staircase") {
-    throw new Error("staircaseBoundaries is only valid for the staircase preset");
+  if (distributionPreset === "smooth-ramp" && positionGaps === "source-gaps") {
+    throw new Error("smooth-ramp positions are always adjacent");
   }
   const launchTick = getTickAtSqrtRatio(input.launchSqrtPriceX96);
   if (launchTick % tickSpacing !== 0 || getSqrtRatioAtTick(launchTick) !== input.launchSqrtPriceX96) {
@@ -403,10 +470,10 @@ export function deriveLaunchPositionRanges(input: LaunchPositionRangesInput): La
       : (input.tokenBudget * BigInt(weight)) / 10_000n;
     if (allocatedTokenAmount <= 0n) throw new Error("Every position must have a positive allocated token cap");
     allocated += allocatedTokenAmount;
-    if (index > 0) {
+    if (index > 0 && positionGaps === "source-gaps") {
       if (distributionPreset === "early-scarcity") {
         distance += 2 + Math.floor((4 * index) / (positionCount - 1));
-      } else if (distributionPreset === "staircase" && staircaseBoundaries === "source-gaps" &&
+      } else if (distributionPreset === "staircase" &&
         Math.floor((index * 4) / positionCount) !== Math.floor(((index - 1) * 4) / positionCount)) {
         distance += 3;
       }
