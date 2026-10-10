@@ -1,9 +1,9 @@
 # Examples
 
-The launch examples use the public `@black-market/sdk` package and viem.
-This working tree builds on 0.7.1 with unreleased topology/example changes: build
-this checkout before using the new cases; an older installed package does not
-acquire the new `positionGaps` API automatically. The current chain-4663 graph is
+The launch examples use the public `@black-market/sdk` 0.8.0 package and viem.
+Build this checkout before running its examples; in a consumer project install
+`@black-market/sdk@0.8.0` or later for the `positionGaps` and recovery APIs.
+The current chain-4663 graph is
 the October8 mined pool-bound V4 config6/V2 and canonical Abyss config1 deployment.
 Historical October5 config5 evidence is not relabeled as the new graph. Discovery
 is read-only; fixed launch examples default to an unsigned dry run. Only
@@ -20,7 +20,7 @@ examples; their relative support imports use explicit `.ts` extensions for Node 
 | `launch.ts` | Reviews/reconstructs an explicit saved plan and selected atomic/staged mode; optional offchain config6/V2 salt mining. Prints simulation, progress, and an admitted unsigned next transaction when evidence permits. |
 | `generate-lifecycle-commitment-fixture.ts` | Frozen independent historical config4/Abyss ABI bytes/hash/identity vector. Its pre-cutover allocations are not an executable 0.7.1 plan. |
 | `launch-lifecycle-smoke.ts` | Actual SDK launch/recovery/custody/fee operations, only on an explicitly authorized owned disposable loopback graph. |
-| `launch-erc20-*.ts`, `launch-erc404-*.ts` | Eleven independent fixed cases: unsigned end-to-end planning by default; `--broadcast` adds guarded local signing, chain verification and mandatory API publication/indexing. The eight existing examples and three candidate additions remain intact. |
+| `launch-erc20-*.ts`, `launch-erc404-*.ts` | Eleven independent fixed cases: unsigned end-to-end planning by default; `--broadcast` adds guarded local signing, chain verification and mandatory API publication/indexing. |
 
 ## Deployed read-only discovery
 
@@ -483,7 +483,7 @@ The examples have been reviewed against `abyss-app`'s `scripts/launch-node.mjs`,
 `launch-node-deploy.mjs`, `launch-browser-wallet.mjs`, `launch-staged-smoke.mjs`,
 `launch-review-smoke.mjs`, and `src/lib/creation` / `src/lib/lifecycle` authoring,
 funding, execution and recovery modules. These are behavioral references, not SDK
-dependencies. The application pins the published **`@black-market/sdk` 0.7.1** and
+dependencies. The application consumes the published **`@black-market/sdk` 0.8.0** and
 derives current deployment defaults through **`getAddresses`**, as do these examples.
 The package pin alone is not live deployment authority. The mined graph
 is recorded in the contracts repository at

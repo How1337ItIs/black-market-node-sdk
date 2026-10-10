@@ -73,8 +73,8 @@ without re-execution. Retain the private session/capability and, for a pending i
 reload the original bytes via `EXAMPLE_IMAGE_PATH`. See the recovery guide above.
 Keep `.env`, keystores and private recovery files out of Git.
 
-The published `0.7.1` package includes the breaking lifecycle cutover.
-The topology, example and recovery changes in this working tree have not been republished.
+The published `0.8.0` package ships launch topology safety, TypeScript examples,
+dry-run/`--broadcast` modes, retained-plan recovery, and the opt-in static session cache.
 `prepareAndPlanLifecycleLaunch` combines bound-hook preparation and complete admission;
 `preparePoolBoundLifecyclePlan` and `PlannedLaunch.atomicAttempt` are removed.
 Only the explicitly requested execution mode is simulated. Independent `planLaunch`,

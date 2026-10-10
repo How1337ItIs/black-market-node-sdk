@@ -7,6 +7,16 @@ The canonical authorities are the registry/certification/adapter/config contract
 in the protocol repository. Plan identity is `LaunchPlanV1`. Pool-bound V4 uses **config 6**,
 canonical Abyss uses **config 1**, and generic current shared-V4 support uses **config 4**.
 
+## 0.8.0 release
+
+This release adds unstarted-launch topology validation, boundary tails enabled by
+default, and the generalized `positionGaps` option replacing `staircaseBoundaries`.
+The TypeScript examples default to an unsigned dry run; `--broadcast` explicitly
+authorizes execution without an interactive hash prompt. `--resume` retains the
+original plan, receipt evidence, and metadata session instead of relaunching.
+The opt-in `LifecycleSessionCache` below reuses only the allowlisted static reads
+at the same canonical chain/block; execution proof and financial state stay live.
+
 ## 0.7.1 transaction-first construction
 
 Known chain/core/profile identities use frozen release construction metadata.
@@ -161,7 +171,7 @@ No cross-review execution cache, caller certificate or execution-proof skip exis
 Recovery and `buildNextTransaction` acquire fresh authority and retain separate
 immediate-submission-provider preflight. Construction/proof is not submission.
 
-## Unreleased reviewed next envelopes
+## Reviewed next envelopes
 
 `BuildNextTransactionOptions.reviewedTransaction` optionally supplies an untrusted
 previously reviewed immediate transaction. Omit it to construct a new envelope
