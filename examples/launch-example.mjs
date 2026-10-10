@@ -768,9 +768,10 @@ export async function publishAndVerify({ client, fixture, planned, references, a
   assert.equal(published.metadata.name, planned.plan.token.name); assert.equal(published.metadata.symbol, planned.plan.token.symbol);
   assert.equal(published.metadata.description, session.metadata.description || null);
   if (session.image) {
+    // The publish response proves the staged image via its descriptor; the public
+    // imageUrl is only carried on the indexed DTO (verified below), not here.
     for (const field of ["sha256", "contentType", "contentLength"]) assert.equal(published.image?.[field], session.image[field], `Published image ${field}`);
     assert.equal(published.imageStatus, "ready");
-    exampleImageUrl(published.imageUrl);
   }
   artifacts.stage("api-token-verification");
   transport.setTimeoutMs(30_000);
@@ -796,7 +797,9 @@ export async function publishAndVerify({ client, fixture, planned, references, a
     assert.ok(imageKey?.startsWith(`launches/${planned.chainId}/${planned.predictedToken.toLowerCase()}/`), "Published token-bound image association");
     assert.equal(item.metadata.imageContentType, session.image.contentType);
     assert.equal(item.metadata.imageContentLength, session.image.contentLength);
-    assert.equal(item.imageUrl, published.imageUrl, "Indexed non-null public image must match the published session");
+    // The public image URL lives on the indexed DTO; assert it directly (the
+    // publish response carries no imageUrl field on LaunchSessionResponse).
+    assert.ok(typeof item.imageUrl === "string" && item.imageUrl.length > 0, "Indexed non-null public image URL");
     assert.ok(new URL(exampleImageUrl(item.imageUrl)).pathname.endsWith(`/${imageKey}`), "Public URL references the actual token-bound upload key");
     artifacts.stage("api-image-verification", { url: item.imageUrl, image: session.image });
     artifacts.result.api.image = await transport.fetchPublishedImage(item.imageUrl, session.image);

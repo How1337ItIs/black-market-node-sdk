@@ -426,7 +426,10 @@ test("published image GET is single, bounded, exact on identical bytes and recor
 });
 
 test("image publication requires matching session/DTO association and a successful public image GET before final canonical pass", async (t) => {
-  for (const failure of [undefined, "session-image", "missing-public-url", "dto-image", "image-http", "image-reorg"]) {
+  // The publish response carries no imageUrl (LaunchSessionResponse omits it);
+  // the public URL is asserted on the indexed DTO. "dto-image" (null DTO URL) and
+  // the GET/reorg failures remain the real negative gates.
+  for (const failure of [undefined, "session-image", "dto-image", "image-http", "image-reorg"]) {
     const context = canonicalContext(t); const metadata = { name: "Example", symbol: "EXAMPLE", description: "Diagnostic" };
     const image = { sha256: `0x${createHash("sha256").update(png).digest("hex")}`, contentType: "image/png", contentLength: png.length };
     const imageKey = `launches/4663/${token.toLowerCase()}/01234567-89ab-4cde-8f01-23456789abcd`;
@@ -434,7 +437,6 @@ test("image publication requires matching session/DTO association and a successf
     const published = { chainId: 4663, wallet: fixture.creator, token, transactionHash: hash, status: "optimistic",
       canonicalStatus: "optimistic", metadataStatus: "ready", metadata, image: { ...image }, imageStatus: "ready", imageUrl };
     if (failure === "session-image") published.image.sha256 = hash;
-    if (failure === "missing-public-url") delete published.imageUrl;
     const session = { sessionId: "image-session", capability: "lus_disposable", metadata, image,
       api: { publishUploadSession: async () => published } };
     const transport = apiTransport({ artifacts: context.artifacts, apiUrl: fixture.apiUrl, signal: new AbortController().signal,
