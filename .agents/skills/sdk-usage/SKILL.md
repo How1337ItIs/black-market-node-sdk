@@ -70,7 +70,7 @@ chain-wide 16M/32M cap from a historical fixture.
 
 ## Verification and safety
 
-`node examples/quickstart.mjs` is a read-only discovery smoke after building.
+`node examples/quickstart.ts` is a read-only discovery smoke after building.
 Repository code changes use `pnpm test` and `pnpm typecheck`; HTTP/chain suites need
 their documented disposable services and explicit authorization. For documentation,
 execute the documented pure/read-only consumer path, not a funded launch example.

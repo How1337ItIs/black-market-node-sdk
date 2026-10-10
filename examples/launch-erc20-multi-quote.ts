@@ -1,4 +1,4 @@
-import { runLaunchExample } from "./launch-example.mjs";
+import { runLaunchExample } from "./launch-example.ts";
 
 await runLaunchExample({
   id: "erc20-multi-quote", description: "ERC20, two quotes, two pool-bound V4 markets and one Abyss market",

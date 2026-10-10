@@ -792,7 +792,7 @@ Lifecycle dividend tokens retain independent current-owner dividend bounty up to
 `test/fixtures/launch-lifecycle-v1.json` is a portable **offline wire vector**, not a deployed launch. Its independent generator owns the literal canonical ABI tuple:
 
 ```sh
-node examples/generate-lifecycle-commitment-fixture.mjs test/fixtures/launch-lifecycle-v1.json
+node examples/generate-lifecycle-commitment-fixture.ts test/fixtures/launch-lifecycle-v1.json
 ```
 
 Build and run the offline unit suite with `pnpm test`, and deployed read-only discovery with
@@ -801,11 +801,11 @@ reviewed terms/rate/bounds, salt normalization/mining, receipt recovery, and aut
 authentication/routing/page outcomes. Wire vectors remain
 offline schema references; they are not a mainnet launch or an admitted deployment graph.
 
-`examples/launch.mjs` reviews a saved plan without signatures or source-chain writes:
+`examples/launch.ts` reviews a saved plan without signatures or source-chain writes:
 
 ```sh
 pnpm build
-node examples/launch.mjs --plan plan.json --rpc https://rpc.mainnet.chain.robinhood.com/ --mode staged --mine
+node examples/launch.ts --plan plan.json --rpc https://rpc.mainnet.chain.robinhood.com/ --mode staged --mine
 ```
 
 The saved plan must use that RPC's chain and current deployment. `--mine` finalizes bound
@@ -814,7 +814,7 @@ supply explicit execution/recovery evidence. The command never invents provider/
 Without a sequential simulation backend and matching execution-limit provenance, its review
 can be provisional and cannot produce an admitted next transaction.
 
-`examples/launch-lifecycle-smoke.mjs manifest.json sdk-plans.json` executes Solidity-exported
+`examples/launch-lifecycle-smoke.ts manifest.json sdk-plans.json` executes Solidity-exported
 plans only on explicitly authorized owned loopback fixtures. It exercises atomic/staged
 modes, typed predeployment, ordered buys, permanent custody, canonical recovery, no-argument
 V3 harvest, and authenticated author claims. `test/lifecycle-chain.test.mjs` exercises
@@ -824,11 +824,11 @@ local-execution opt-in and required files.
 
 ## Individual token creation examples
 
-Eleven independent `examples/launch-erc20-*.mjs` / `launch-erc404-*.mjs` files invoke
+Eleven independent `examples/launch-erc20-*.ts` / `launch-erc404-*.ts` files invoke
 the shared `runLaunchExample(caseObject)` using valuation-driven economics and no CLI
 parameters or fixture files. The eight original cases remain; the three additions
-(`launch-erc20-multi-quote.mjs`, `launch-erc20-depth-v4.mjs`, and
-`launch-erc20-dividends-multiquote-mixed.mjs`) await user live-run validation before
+(`launch-erc20-multi-quote.ts`, `launch-erc20-depth-v4.ts`, and
+`launch-erc20-dividends-multiquote-mixed.ts`) await user live-run validation before
 any replacement decision. See the [example guide](../examples/README.md#individual-token-creation)
 for all one-line commands and setup-once working-directory `.env`.
 Node 24+ loads `.env` once, with existing process environment taking precedence.

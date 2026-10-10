@@ -1,4 +1,4 @@
-import { runLaunchExample } from "./launch-example.mjs";
+import { runLaunchExample } from "./launch-example.ts";
 
 await runLaunchExample({
   id: "erc404-abyss", description: "ERC404 NFT units and metadata, atomic canonical Abyss",

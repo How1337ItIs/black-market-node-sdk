@@ -14,8 +14,8 @@ import {
   targetMarketCapUsdX18, validateApiWethUsdSeed, readApiWethUsdSeed, assertUnchangedEconomicQuote, allocateMarketBudgets,
   guardEconomicReviewWallet,
   deriveExampleMarketEconomics, openingEconomics, economicReviewHash, assertEconomicReviewAdmission,
-} from "../examples/launch-example-support.mjs";
-import { validateCase, verifyLaunchInventory } from "../examples/launch-example.mjs";
+} from "../examples/launch-example-support.ts";
+import { validateCase, verifyLaunchInventory } from "../examples/launch-example.ts";
 const pricingSdk = await import(process.env.SDK_SOURCE_TEST === "1" ? "../src/index.ts" : "../dist/index.js");
 
 const hash = `0x${"ab".repeat(32)}`;
@@ -323,7 +323,7 @@ test("raw returned-hash mismatch keeps attempt hash and refuses polling", async 
 test("example fails missing key or API upfront and retains redacted configuration evidence", (t) => {
   const parent = mkdtempSync(join(tmpdir(), "node-example-config-"));
   t.after(() => rmSync(parent, { recursive: true, force: true }));
-  const script = new URL("../examples/launch-erc20-v4.mjs", import.meta.url).pathname;
+  const script = new URL("../examples/launch-erc20-v4.ts", import.meta.url).pathname;
   for (const [index, privateKey, apiUrl] of [
     [0, "", "https://api.invalid"],
     [1, signingKey, ""],
@@ -350,7 +350,7 @@ test("working-directory .env loads once and existing environment wins", (t) => {
   const cwd = mkdtempSync(join(tmpdir(), "node-example-dotenv-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   writeFileSync(join(cwd, ".env"), 'EXAMPLE_TEST_KEEP="file value"\nEXAMPLE_TEST_LOAD="quoted # value" # comment\n', { mode: 0o600 });
-  const helper = new URL("../examples/launch-example-support.mjs", import.meta.url).href;
+  const helper = new URL("../examples/launch-example-support.ts", import.meta.url).href;
   const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
     import { writeFileSync } from "node:fs";
     import { loadExampleEnvironment } from ${JSON.stringify(helper)};
@@ -620,7 +620,7 @@ test("public economic review preserves exact safe API origin and hash without ex
 
 test("all eleven wrappers preserve their exact workloads and per-quote economics in every token order", async () => {
   const directory = new URL("../examples/", import.meta.url);
-  const wrappers = readdirSync(directory).filter((name) => /^launch-erc(?:20|404)-.*\.mjs$/.test(name));
+  const wrappers = readdirSync(directory).filter((name) => /^launch-erc(?:20|404)-.*\.ts$/.test(name));
   const expected = {
     "erc20-v4": [0, 0, "atomic", [["v4", "WETH", 1]], 1],
     "erc20-abyss": [0, 0, "atomic", [["abyss", "WETH", 1]], 1],
@@ -634,12 +634,12 @@ test("all eleven wrappers preserve their exact workloads and per-quote economics
     "erc20-depth-v4": [0, 0, "staged", [["v4", "WETH", 4]], 1],
     "erc20-dividends-multiquote-mixed": [0, 2, "staged", [["v4", "WETH", 2], ["v4", "USDG", 2], ["abyss", "WETH", 3]], 1],
   };
-  assert.deepEqual(wrappers.sort(), Object.keys(expected).map((suffix) => `launch-${suffix}.mjs`).sort());
+  assert.deepEqual(wrappers.sort(), Object.keys(expected).map((suffix) => `launch-${suffix}.ts`).sort());
   const quote = validateSeed();
   const unit = 10n ** 18n;
   for (const file of wrappers) {
     const source = readFileSync(new URL(file, directory), "utf8");
-    const sharedImport = 'import { runLaunchExample } from "./launch-example.mjs";';
+    const sharedImport = 'import { runLaunchExample } from "./launch-example.ts";';
     assert.ok(source.startsWith(sharedImport), file);
     let scenario;
     // Capture only the fixed case, never invoke the signing/broadcast runner.
@@ -648,7 +648,7 @@ test("all eleven wrappers preserve their exact workloads and per-quote economics
     });
     assert.ok(scenario, file);
     validateCase(scenario);
-    const suffix = file.slice("launch-".length, -".mjs".length);
+    const suffix = file.slice("launch-".length, -".ts".length);
     assert.deepEqual([scenario.tokenKind, scenario.rewardMode, scenario.mode,
       scenario.markets.map((spec) => [spec.venue, spec.quote ?? "WETH", spec.positions]), scenario.buysPerMarket], expected[suffix], file);
     if (suffix === "erc20-burn-mixed") { assert.equal(scenario.burnBps, 3000); assert.equal(scenario.markets[0].feeMode, 1); }

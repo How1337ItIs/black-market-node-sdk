@@ -12,7 +12,7 @@ import {
   simulateLaunchPlan, isPoolBoundV4ConfigVersion,
 } from "@black-market/sdk/lifecycle";
 const [manifestFile, plansFile] = process.argv.slice(2);
-if (!manifestFile || !plansFile) throw new Error("Usage: node examples/launch-lifecycle-smoke.mjs manifest.json sdk-plans.json");
+if (!manifestFile || !plansFile) throw new Error("Usage: node examples/launch-lifecycle-smoke.ts manifest.json sdk-plans.json");
 const manifest = JSON.parse(await readFile(manifestFile, "utf8"));
 const exported = JSON.parse(await readFile(plansFile, "utf8"));
 const rpcUrl = process.env.LAUNCH_LIFECYCLE_RPC_URL;

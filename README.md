@@ -12,11 +12,12 @@ pnpm add @black-market/sdk viem
 
 ## Examples
 
-Clone this repository to run the examples. Requires Node 24+.
+Clone this repository to run the TypeScript examples. Requires Node 24+; Node runs
+the `.ts` files directly without an extra runner or type-stripping flag.
 
 ```sh
 pnpm install && pnpm build
-node examples/quickstart.mjs
+node examples/quickstart.ts
 ```
 
 The quickstart reads available launch profiles without a wallet.
@@ -27,17 +28,17 @@ keystore; `EXAMPLE_KEYSTORE_PASSWORD` defaults to empty). Optional `RPC_URL`
 overrides the default endpoint. Choose one example for the intended launch:
 
 ```sh
-node examples/launch-erc20-v4.mjs
-node examples/launch-erc20-abyss.mjs
-node examples/launch-erc404-v4.mjs
-node examples/launch-erc404-abyss.mjs
-node examples/launch-erc20-staking-v4.mjs
-node examples/launch-erc20-dividends-abyss.mjs
-node examples/launch-erc20-burn-mixed.mjs
-node examples/launch-erc404-dividends-mixed.mjs
-node examples/launch-erc20-multi-quote.mjs
-node examples/launch-erc20-depth-v4.mjs
-node examples/launch-erc20-dividends-multiquote-mixed.mjs
+node examples/launch-erc20-v4.ts
+node examples/launch-erc20-abyss.ts
+node examples/launch-erc404-v4.ts
+node examples/launch-erc404-abyss.ts
+node examples/launch-erc20-staking-v4.ts
+node examples/launch-erc20-dividends-abyss.ts
+node examples/launch-erc20-burn-mixed.ts
+node examples/launch-erc404-dividends-mixed.ts
+node examples/launch-erc20-multi-quote.ts
+node examples/launch-erc20-depth-v4.ts
+node examples/launch-erc20-dividends-multiquote-mixed.ts
 ```
 
 The eight original cases remain alongside three additions awaiting user live-run

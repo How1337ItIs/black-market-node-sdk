@@ -1,4 +1,4 @@
-import { runLaunchExample } from "./launch-example.mjs";
+import { runLaunchExample } from "./launch-example.ts";
 
 await runLaunchExample({
   id: "erc20-v4-basic", description: "ERC20, one pool-bound V4 position, atomic opening",

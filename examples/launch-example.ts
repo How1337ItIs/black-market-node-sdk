@@ -15,8 +15,8 @@ import {
   resolveExampleQuotes, buildExampleBuysAndFunding, assertFutureLaunchDeadline, resolveExampleIdentity, readExampleImage,
   exampleImageUrl, readExamplePublishedImage,
   allocateMarketBudgets, deriveExampleMarketEconomics, economicReviewHash, admitEconomicReview, guardEconomicReviewWallet,
-} from "./launch-example-support.mjs";
-import { buildExampleKyberConversions, assertExampleConversionAdmission, assertExampleConversionBindings } from "./launch-example-kyber.mjs";
+} from "./launch-example-support.ts";
+import { buildExampleKyberConversions, assertExampleConversionAdmission, assertExampleConversionBindings } from "./launch-example-kyber.ts";
 const UNIT = 10n ** 18n;
 const BUY_SLIPPAGE_BPS = 50;
 const same = (left, right) => typeof left === "string" && typeof right === "string" && left.toLowerCase() === right.toLowerCase();

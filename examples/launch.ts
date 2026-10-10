@@ -9,7 +9,7 @@ const args = process.argv.slice(2);
 const option = (name) => { const index = args.indexOf(name); return index === -1 ? undefined : args[index + 1]; };
 const planFile = option("--plan"), rpcUrl = option("--rpc"), mode = option("--mode");
 if (!planFile || !rpcUrl || !["atomic", "staged"].includes(mode)) {
-  throw new Error("Usage: node examples/launch.mjs --plan plan.json --rpc RPC_URL --mode atomic|staged [--limits current-limits.json] [--receipts receipts.json] [--confirmations N] [--fork-rpc LOOPBACK_RPC_URL] [--mine]");
+  throw new Error("Usage: node examples/launch.ts --plan plan.json --rpc RPC_URL --mode atomic|staged [--limits current-limits.json] [--receipts receipts.json] [--confirmations N] [--fork-rpc LOOPBACK_RPC_URL] [--mine]");
 }
 const client = createPublicClient({ transport: http(rpcUrl) });
 const plan = parseLaunchPlan(await readFile(planFile, "utf8"));

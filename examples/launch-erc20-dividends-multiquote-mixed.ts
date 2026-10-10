@@ -1,4 +1,4 @@
-import { runLaunchExample } from "./launch-example.mjs";
+import { runLaunchExample } from "./launch-example.ts";
 
 await runLaunchExample({
   id: "erc20-dividends-multiquote-mixed", description: "ERC20 holder dividends, two quotes, both venues, seven permanent positions and three opening buys",

@@ -9,13 +9,18 @@ Historical October5 config5 evidence is not relabeled as the new graph. Discover
 is read-only; running a fixed launch example with configured signer/API deliberately
 executes real writes.
 
+Use Node 24+ to run these TypeScript files directly, for example
+`pnpm build && node examples/quickstart.ts`. No extra runtime dependency or
+`--experimental-strip-types` flag is needed. The build emits the SDK used by the
+examples; their relative support imports use explicit `.ts` extensions for Node ESM.
+
 | Script | Behavior |
 | --- | --- |
-| `quickstart.mjs` | Reads the current mainnet orchestrator, checks its registry binding, and discovers admitted profiles. No wallet or writes. |
-| `launch.mjs` | Reviews/reconstructs an explicit saved plan and selected atomic/staged mode; optional offchain config6/V2 salt mining. Prints simulation, progress, and an admitted unsigned next transaction when evidence permits. |
-| `generate-lifecycle-commitment-fixture.mjs` | Frozen independent historical config4/Abyss ABI bytes/hash/identity vector. Its pre-cutover allocations are not an executable 0.7.1 plan. |
-| `launch-lifecycle-smoke.mjs` | Actual SDK launch/recovery/custody/fee operations, only on an explicitly authorized owned disposable loopback graph. |
-| `launch-erc20-*.mjs`, `launch-erc404-*.mjs` | Eleven independent zero-parameter cases: the eight existing examples plus three candidate replacements awaiting user live-run validation, with actual SDK admission, local signing, chain verification and mandatory API publication/indexing. |
+| `quickstart.ts` | Reads the current mainnet orchestrator, checks its registry binding, and discovers admitted profiles. No wallet or writes. |
+| `launch.ts` | Reviews/reconstructs an explicit saved plan and selected atomic/staged mode; optional offchain config6/V2 salt mining. Prints simulation, progress, and an admitted unsigned next transaction when evidence permits. |
+| `generate-lifecycle-commitment-fixture.ts` | Frozen independent historical config4/Abyss ABI bytes/hash/identity vector. Its pre-cutover allocations are not an executable 0.7.1 plan. |
+| `launch-lifecycle-smoke.ts` | Actual SDK launch/recovery/custody/fee operations, only on an explicitly authorized owned disposable loopback graph. |
+| `launch-erc20-*.ts`, `launch-erc404-*.ts` | Eleven independent zero-parameter cases: the eight existing examples plus three candidate replacements awaiting user live-run validation, with actual SDK admission, local signing, chain verification and mandatory API publication/indexing. |
 
 ## Deployed read-only discovery
 
@@ -37,7 +42,7 @@ Supply full `LaunchPlanV1` JSON using the selected RPC's current deployment:
 
 ```sh
 pnpm build
-node examples/launch.mjs \
+node examples/launch.ts \
   --plan plan.json --rpc https://rpc.mainnet.chain.robinhood.com/ --mode staged --mine
 ```
 
@@ -62,7 +67,7 @@ RPC to build-next. See the
 
 For a real new graph, create the saved plan using `readLifecycleProfiles` with its
 explicit chain/core and admitted pool-bound config6 profile. Supply that graph's RPC
-to `launch.mjs`; do not substitute the historical known preset. Applications may use
+to `launch.ts`; do not substitute the historical known preset. Applications may use
 the existing `LAUNCH_ORCHESTRATOR`, `LAUNCH_IMPLEMENTATION_REGISTRY`, and
 `LAUNCH_FEE_OWNER_REGISTRY` overrides from the same authentic deployment evidence.
 The SDK certifies actual registry/creation-code/runtime/constructor bindings and
@@ -95,7 +100,7 @@ irreversible and spends real funds.** Choose one command per intended launch.
 Use **Node 24+**. In this repository run `pnpm install`. In a consumer project install
 both public dependencies with `pnpm add @black-market/sdk viem` (or
 `npm install @black-market/sdk viem`) and copy the selected files with
-`launch-example.mjs`, `launch-example-support.mjs`, and `launch-example-kyber.mjs`
+`launch-example.ts`, `launch-example-support.ts`, and `launch-example-kyber.ts`
 into `examples/`, using the matching updated SDK build.
 Copy `examples/.env.example` to `.env` in the directory you will run commands from:
 
@@ -253,17 +258,17 @@ There is no mode fallback, admission override, automatic submission replay or re
 ### Commands and launch matrix
 
 ```sh
-node examples/launch-erc20-v4.mjs
-node examples/launch-erc20-abyss.mjs
-node examples/launch-erc404-v4.mjs
-node examples/launch-erc404-abyss.mjs
-node examples/launch-erc20-staking-v4.mjs
-node examples/launch-erc20-dividends-abyss.mjs
-node examples/launch-erc20-burn-mixed.mjs
-node examples/launch-erc404-dividends-mixed.mjs
-node examples/launch-erc20-multi-quote.mjs
-node examples/launch-erc20-depth-v4.mjs
-node examples/launch-erc20-dividends-multiquote-mixed.mjs
+node examples/launch-erc20-v4.ts
+node examples/launch-erc20-abyss.ts
+node examples/launch-erc404-v4.ts
+node examples/launch-erc404-abyss.ts
+node examples/launch-erc20-staking-v4.ts
+node examples/launch-erc20-dividends-abyss.ts
+node examples/launch-erc20-burn-mixed.ts
+node examples/launch-erc404-dividends-mixed.ts
+node examples/launch-erc20-multi-quote.ts
+node examples/launch-erc20-depth-v4.ts
+node examples/launch-erc20-dividends-multiquote-mixed.ts
 ```
 
 | File suffix | Token / rewards | Markets and permanent positions | Mode / opening buys |
@@ -381,7 +386,7 @@ when a replacement is known retain both `transactionHash` (original) and
 `replacementHash` (effective). A same-nonce cancellation is not successful activation;
 a missing receipt alone does not prove a reorg. No replacement is adopted or retried
 automatically by these local-signing cases: a timed-out original hash requires manual
-reconciliation. `launch.mjs` provides unsigned reload/review for a privately extracted
+reconciliation. `launch.ts` provides unsigned reload/review for a privately extracted
 exact plan: keep that file owner-only and supply the original `--mode`,
 `--confirmations` and reconciled `--receipts`. Do not publish the extracted plan or
 CLI output, which may contain sensitive committed values. Recovery of API publication
@@ -390,7 +395,7 @@ another launch.
 
 ### Owned-local wallet verification helpers
 
-`launch-example-support.mjs` exports
+`launch-example-support.ts` exports
 `createLocalLaunchWallet({privateKey,creator,chainId,orchestrator,client,redactor})`
 and `submitSignedRecorded({transaction,wallet,client,wait,artifacts,signal})`.
 `client.request({method,params})` is an explicit RPC adapter; `transaction` carries
@@ -400,7 +405,7 @@ The signer exposes `address`, `signTypedData(typedData)` and `signTransaction(wi
 returning `{wire,rawTransaction,transactionHash}`. Retain the result privately.
 Use `RunArtifacts(output,caseId,redactor)` with `Redactor` and a fresh directory for
 durable evidence; call `initialize()` before work and `finish(status,error)` afterward.
-The shared `runLaunchExample(caseObject)` in `launch-example.mjs` takes the same fixed
+The shared `runLaunchExample(caseObject)` in `launch-example.ts` takes the same fixed
 case objects as the eleven files, loads environment and auto-creates its output.
 Offline diagnostics are in `test/launch-example.test.mjs` and
 `test/launch-example-matrix.test.mjs`; they do not claim real launch/indexer proof.
@@ -427,7 +432,7 @@ addresses from an application script.
 | App creation funding | All fixed examples use integrated native-input `Swap` funding. Current registry target/spender/code hash, native/quote precision and decoded exact receiver/input/minimum/calldata are checked. No separate swap, native-wrap fallback or ERC20 approval is submitted on refusal. Other app payment paths are not this example runner's signing allowlist. |
 | App metadata/image | Both sign chain/core/wallet-bound attribution. Optional `EXAMPLE_IMAGE_PATH` signs actual SHA-256/type/length, uses the exact issued `putImage` URL/headers and requires `completeUpload` verification before launch. Publication/indexed association and one bounded public image GET are also required before example success; transformed served bytes are recorded separately. Unset keeps metadata-only behavior. Signer may be a local key or authenticated V3 keystore; app legal/UI consent remains application-owned. |
 | App publication/recovery | Pending HTTP 202 is not success. Examples honor `LaunchPublishPending`/`Retry-After` and require indexed provenance plus fresh confirmation-safe RPC Active and the original activation inclusion before every attempt/final pass. The app's polling UI/two-confirmation/replacement policy differs intentionally from these one-confirmation stop-and-reconcile examples. |
-| App review/staged smoke | These app scripts exercise read-only browser review and large matrices, not permission to deploy. SDK `quickstart.mjs` and `launch.mjs` remain read-only on the source chain. SDK `launch-lifecycle-smoke.mjs` is a different, explicitly authorized owned-loopback execution proof, including real ERC20 approval prerequisites when supplied by fixture plans. |
+| App review/staged smoke | These app scripts exercise read-only browser review and large matrices, not permission to deploy. SDK `quickstart.ts` and `launch.ts` remain read-only on the source chain. SDK `launch-lifecycle-smoke.ts` is a different, explicitly authorized owned-loopback execution proof, including real ERC20 approval prerequisites when supplied by fixture plans. |
 | Historical commitment generator | Retains original independent config4 bytes/hashes for codec regression evidence; no addresses or allocations in that vector should be used to construct the current graph. |
 
 ### Safe verification without a funded launch
@@ -438,11 +443,11 @@ chain/account, exact-signing, redaction, pre-broadcast durability, pending-publi
 and no-retry behavior, plus residual-burn/no-creator-reserve accounting; they do not
 claim an actual chain launch or indexer proof.
 
-For CLI proof, run `node examples/launch.mjs` without required arguments (usage refusal,
-no RPC/signing) and `node examples/generate-lifecycle-commitment-fixture.mjs` without
+For CLI proof, run `node examples/launch.ts` without required arguments (usage refusal,
+no RPC/signing) and `node examples/generate-lifecycle-commitment-fixture.ts` without
 output paths (offline historical vector to stdout). Read-only deployed discovery is
-`node examples/quickstart.mjs`. With a reviewed exact saved current plan, use
-`launch.mjs --plan ... --rpc ... --mode ...` and retained receipt-reference JSON;
+`node examples/quickstart.ts`. With a reviewed exact saved current plan, use
+`launch.ts --plan ... --rpc ... --mode ...` and retained receipt-reference JSON;
 `--mine` performs only local mining and read-only native simulation on the source.
 Do **not** run any of the eight configured wallet/API wrappers to verify this review.
 Real metadata-session integration needs an owned disposable HTTP service; full custody,
@@ -461,7 +466,7 @@ pnpm build
 LAUNCH_LIFECYCLE_RPC_URL=http://127.0.0.1:18555 \
 LAUNCH_LIFECYCLE_FORK_RPC_URL=http://127.0.0.1:18556 \
 LAUNCH_LIFECYCLE_ALLOW_LOCAL_EXECUTION=1 \
-node examples/launch-lifecycle-smoke.mjs manifest.json sdk-plans.json
+node examples/launch-lifecycle-smoke.ts manifest.json sdk-plans.json
 ```
 
 This explicitly authorized command executes disposable fixture transactions and

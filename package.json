@@ -39,7 +39,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch",
-    "examples": "pnpm build && node examples/quickstart.mjs",
+    "examples": "pnpm build && node examples/quickstart.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "pnpm build",
     "test": "pnpm test:unit",

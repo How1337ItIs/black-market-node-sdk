@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { decodeFunctionData, decodeFunctionResult, encodeFunctionData, isAddress, keccak256, parseAbi, zeroAddress } from "viem";
-import { assertFutureLaunchDeadline, exampleError, launchApiUrl } from "./launch-example-support.mjs";
+import { assertFutureLaunchDeadline, exampleError, launchApiUrl } from "./launch-example-support.ts";
 
 // Reviewed third-party deployment/entry point from abyss-app's trading/deployments.ts.
 // Current launch registry admission and runtime, not these addresses alone, authorize funding.

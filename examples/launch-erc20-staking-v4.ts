@@ -1,4 +1,4 @@
-import { runLaunchExample } from "./launch-example.mjs";
+import { runLaunchExample } from "./launch-example.ts";
 
 await runLaunchExample({
   id: "erc20-staking-v4", description: "Staking rewards, two V4 positions and two ordered opening buys",

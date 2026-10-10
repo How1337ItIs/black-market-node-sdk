@@ -111,8 +111,8 @@ tick partitions as a source preset. See `references/audit-history.md`.
    burn/supply and ordered buy outputs before claiming chain success. Verify API
    publication separately; a pending-indexing response is not completed publication.
 
-The existing `launch-erc20-*` / `launch-erc404-*` cases use `launch-example.mjs`
-and `launch-example-support.mjs`. Inspect their actual installed/local version:
+The existing `launch-erc20-*` / `launch-erc404-*` cases use `launch-example.ts`
+and `launch-example-support.ts`. Inspect their actual installed/local version:
 uncommitted recovery/pricing corrections are not automatically in a published
 package. A read-only audit must not run a funded example.
 

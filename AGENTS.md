@@ -34,7 +34,7 @@ Read the relevant skill before working on those paths.
 
 - `pnpm test`: build and run the offline unit suite.
 - `pnpm typecheck`: check the public TypeScript surface.
-- `node examples/quickstart.mjs`: read-only live smoke after building.
+- `node examples/quickstart.ts`: read-only live smoke after building.
 - HTTP tests are opt-in: `pnpm test:api` and `pnpm test:api:write` need an actual
   disposable API/database; signed tests also need an explicitly supplied test key.
 

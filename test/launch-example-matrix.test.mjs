@@ -10,11 +10,11 @@ import {
   assertFutureLaunchDeadline, assertUnchangedEconomicQuote, buildExampleBuysAndFunding, economicReviewHash,
   guardEconomicReviewWallet, loadExampleKeystore, readExampleConfiguration, readExampleImage, readExamplePublishedImage,
   readExampleQuoteUsdSeed, Redactor, resolveExampleIdentity, resolveExampleQuotes, RunArtifacts, validateApiWethUsdSeed,
-} from "../examples/launch-example-support.mjs";
+} from "../examples/launch-example-support.ts";
 import { apiTransport, assertCanonicalExampleActivation, assertExampleEconomicAuthority, discoverExampleQuoteOracles,
-  exampleOracleRegistrationAbi, publishAndVerify, stageMetadata } from "../examples/launch-example.mjs";
+  exampleOracleRegistrationAbi, publishAndVerify, stageMetadata } from "../examples/launch-example.ts";
 import { assertExampleConversionAdmission, assertExampleConversionBindings, buildExampleKyberConversions,
-  EXAMPLE_KYBER_EXECUTOR, EXAMPLE_KYBER_NATIVE, EXAMPLE_KYBER_ROUTER, exampleKyberRouterAbi, validateExampleKyberBuild } from "../examples/launch-example-kyber.mjs";
+  EXAMPLE_KYBER_EXECUTOR, EXAMPLE_KYBER_NATIVE, EXAMPLE_KYBER_ROUTER, exampleKyberRouterAbi, validateExampleKyberBuild } from "../examples/launch-example-kyber.ts";
 const sdk = await import(process.env.SDK_SOURCE_TEST === "1" ? "../src/index.ts" : "../dist/index.js");
 
 // Pure/offline diagnostics only. Injected RPC/HTTP observations are NOT launch/indexer proof.

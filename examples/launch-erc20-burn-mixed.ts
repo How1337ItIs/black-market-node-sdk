@@ -1,4 +1,4 @@
-import { runLaunchExample } from "./launch-example.mjs";
+import { runLaunchExample } from "./launch-example.ts";
 
 await runLaunchExample({
   id: "erc20-burn-mixed", description: "Burn policy, dual-fee V4 and Abyss markets for one token",

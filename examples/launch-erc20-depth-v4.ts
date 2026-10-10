@@ -1,4 +1,4 @@
-import { runLaunchExample } from "./launch-example.mjs";
+import { runLaunchExample } from "./launch-example.ts";
 
 await runLaunchExample({
   id: "erc20-depth-v4", description: "ERC20 Depth shape: four adjacent Early Scarcity positions with increasing inventory and a permanent final tail",
