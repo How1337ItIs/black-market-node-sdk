@@ -130,9 +130,14 @@ async function requestKyber({ fixture, path, body, signal, fetchImpl }) {
   } finally { reader.releaseLock(); }
 }
 
-/** One fresh build per quote; the API owns route preview, native inputs belong to the escrow. */
+/** One fresh build per non-native quote; the API owns route preview, native inputs belong to the escrow.
+ *  WETH-quote buys are funded through the payable native-wrap escrow path, not Kyber:
+ *  Kyber's aggregator has no ETH->WETH swap route (it is a wrap), so a WETH quote marks its own
+ *  conversion `{ nativeWrap: true }` and is consumed by buildExampleBuysAndFunding. */
 export async function buildExampleKyberConversions({ client, fixture, scenario, markets, quotes, escrow, deadline, sdk, block, artifacts, signal, fetchImpl = fetch }) {
-  await assertExampleConversionAdmission({ client, fixture, escrow, sdk, block, artifacts });
+  const nativeQuoteAsset = fixture.quoteAsset;
+  const kyberQuotes = quotes.filter((quote) => !same(quote.tokenAddress, nativeQuoteAsset));
+  if (kyberQuotes.length > 0) await assertExampleConversionAdmission({ client, fixture, escrow, sdk, block, artifacts });
   const requiredNative = BigInt(fixture.buyAmountWei) * BigInt(markets.length * scenario.buysPerMarket);
   const balance = BigInt(await client.request({ method: "eth_getBalance", params: [fixture.creator, block.number] }));
   artifacts.event("native-funding-balance", { balance, requiredNative, blockNumber: block.number, blockHash: block.hash });
@@ -141,6 +146,12 @@ export async function buildExampleKyberConversions({ client, fixture, scenario, 
     const buyCount = markets.filter((market) => same(market.quoteAsset, quote.tokenAddress)).length * scenario.buysPerMarket;
     const amountIn = BigInt(fixture.buyAmountWei) * BigInt(buyCount);
     assertFutureLaunchDeadline(deadline);
+    if (same(quote.tokenAddress, nativeQuoteAsset)) {
+      // Native-wrap funding carries the ETH as msg.value; the escrow wraps it during activation.
+      quote.conversion = { nativeWrap: true, nativeInputPerBuy: BigInt(fixture.buyAmountWei), buyCount };
+      artifacts.event("native-wrap-funding", { quoteAsset: quote.tokenAddress, buyCount, amountIn: amountIn.toString() });
+      continue;
+    }
     const response = await requestKyber({ fixture, path: `/api/v1/quote/kyber/build?chainId=${fixture.chainId}`, signal, fetchImpl,
       body: { tokenIn: zeroAddress, tokenOut: quote.tokenAddress, amountIn: amountIn.toString(), sender: escrow, recipient: escrow,
         slippageBps: EXAMPLE_CONVERSION_SLIPPAGE_BPS, deadline: deadline.toString() } });
@@ -155,11 +166,25 @@ export async function buildExampleKyberConversions({ client, fixture, scenario, 
 }
 
 export function assertExampleConversionBindings({ plan, quotes }) {
-  assert.equal(plan.funding.length, quotes.length, "Every native conversion output is reviewed once");
+  assert.equal(plan.funding.length, quotes.length, "Every funding output is reviewed once");
   for (const quote of quotes) {
     const funding = plan.funding.find((row) => same(row.asset, quote.tokenAddress));
     const conversion = quote.conversion;
-    assert.ok(funding && conversion, "Every quote requires the original admitted conversion");
+    assert.ok(funding && conversion, "Every quote requires the original reviewed funding evidence");
+    if (conversion.nativeWrap === true) {
+      // Payable native-wrap funding: no Kyber calldata to bind; the payable
+      // escrow path is validated by the planner's admission, not router bytes.
+      assert.equal(funding.kind, 1, "WETH funding remains NativeWrap, never swap or direct ERC20");
+      assert.ok(same(funding.inputAsset, quote.tokenAddress) && funding.target === zeroAddress && funding.data === "0x",
+        "Native-wrap funding requires inputAsset == asset and empty target/data (escrow deposit path)");
+      assert.equal(funding.inputAmount, conversion.nativeInputPerBuy * BigInt(conversion.buyCount));
+      assert.equal(funding.amount, funding.inputAmount, "Native-wrap funding is exact, no slippage conversion");
+      const buys = plan.buys.filter((buy) => same(plan.markets[buy.marketIndex].quoteAsset, quote.tokenAddress));
+      assert.equal(buys.length, conversion.buyCount);
+      assert.ok(buys.every((buy) => same(buy.recipient, plan.creator) && buy.quoteAmountIn > 0n), "Every reviewed buy remains creator-bound and funded");
+      assert.equal(buys.reduce((sum, buy) => sum + buy.quoteAmountIn, 0n), funding.inputAmount, "Ordered native inputs exactly consume the wrap budget");
+      continue;
+    }
     const minimum = validateExampleKyberBuild({ response: conversion.response, quoteAsset: quote.tokenAddress,
       amountIn: uint(conversion.response.amountIn, "Reviewed native conversion input"), escrow: conversion.escrow, deadline: plan.deadline });
     assert.equal(funding.kind, 2, "Funding remains Swap, never native-wrap or direct ERC20");

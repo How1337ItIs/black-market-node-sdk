@@ -137,14 +137,19 @@ export async function readExampleQuoteUsdSeed({ sdk, fixture, quote, signal, fet
 /** Each quote's protected conversion output is split across its ordered buys exactly. */
 export function buildExampleBuysAndFunding({ sdk, fixture, scenario, markets, quotes, predictedToken }) {
   const allocations = new Map(quotes.map((quote) => {
-    if (!quote.conversion) throw exampleError("MISSING_CONVERSION", "Every quote requires actual reviewed Kyber calldata; no funding fallback");
+    if (!quote.conversion) throw exampleError("MISSING_CONVERSION", "Every quote requires actual reviewed funding evidence; no funding fallback");
     const count = markets.filter((market) => market.quoteAsset.toLowerCase() === quote.tokenAddress.toLowerCase()).length * scenario.buysPerMarket;
-    const amounts = allocateMarketBudgets(BigInt(quote.conversion.response.amountOutMinimum), count);
+    // Native-wrap (WETH) buys consume the exact per-buy ETH input; Kyber-funded
+    // quotes consume the API's protected minimum output, split exactly.
+    const total = quote.conversion.nativeWrap === true
+      ? quote.conversion.nativeInputPerBuy * BigInt(count)
+      : BigInt(quote.conversion.response.amountOutMinimum);
+    const amounts = allocateMarketBudgets(total, count);
     return [quote.tokenAddress.toLowerCase(), { amounts, next: 0 }];
   }));
   const buys = markets.flatMap((market, marketIndex) => {
     const allocation = allocations.get(market.quoteAsset.toLowerCase());
-    if (!allocation) throw exampleError("UNSUPPORTED_QUOTE", "Every market must have a reviewed conversion output");
+    if (!allocation) throw exampleError("UNSUPPORTED_QUOTE", "Every market must have a reviewed funding output");
     const token0 = BigInt(predictedToken) < BigInt(market.quoteAsset);
     return Array.from({ length: scenario.buysPerMarket }, () => ({
       marketIndex, quoteAmountIn: allocation.amounts[allocation.next++], minTokenOut: 1n, recipient: fixture.creator,
@@ -152,6 +157,13 @@ export function buildExampleBuysAndFunding({ sdk, fixture, scenario, markets, qu
     }));
   });
   const funding = quotes.map((quote) => {
+    if (quote.conversion.nativeWrap === true) {
+      // Payable native-wrap escrow funding: the launch transaction carries this
+      // ETH as msg.value and the escrow wraps it to WETH during activation.
+      const amount = quote.conversion.nativeInputPerBuy * BigInt(quote.conversion.buyCount);
+      return { asset: quote.tokenAddress, amount, kind: sdk.LifecycleFundingKind.NativeWrap,
+        inputAsset: quote.tokenAddress, inputAmount: amount, target: "0x0000000000000000000000000000000000000000", data: "0x" };
+    }
     const response = quote.conversion.response;
     return { asset: quote.tokenAddress, amount: BigInt(response.amountOutMinimum), kind: sdk.LifecycleFundingKind.Swap,
       inputAsset: "0x0000000000000000000000000000000000000000", inputAmount: BigInt(response.amountIn),
@@ -310,7 +322,11 @@ export function launchApiUrl(value) {
 export function exampleImageUrl(value) {
   let url;
   try { url = new URL(value); } catch { throw exampleError("UNSAFE_ENDPOINT", "Image URL must be HTTPS or an owned loopback HTTP URL"); }
-  launchApiUrl(url.origin);
+  // The published image is served from the launch API's public CDN (e.g. the R2
+  // bucket host), which is a different origin than the API service root. Accept
+  // any credential-free HTTPS image URL, plus owned loopback HTTP for local runs.
+  const loopback = url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+  if (!(url.protocol === "https:" || loopback)) throw exampleError("UNSAFE_ENDPOINT", "Image URL must be HTTPS or an owned loopback HTTP URL");
   if (url.username || url.password || url.hash) throw exampleError("UNSAFE_ENDPOINT", "Image URL must not contain credentials or a fragment");
   return url.href;
 }

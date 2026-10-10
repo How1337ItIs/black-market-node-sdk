@@ -84,8 +84,12 @@ function resolvedWithConversions(deadline = future()) {
   const quotes = resolveExampleQuotes({ sdk, fixture, scenario });
   for (const quote of quotes) {
     const buyCount = quote.symbol === "WETH" ? 2 : 1;
-    quote.conversion = { escrow, response: buildResponse({ quoteAsset: quote.tokenAddress,
-      amountIn: BigInt(fixture.buyAmountWei) * BigInt(buyCount), deadline }), nativeInputPerBuy: BigInt(fixture.buyAmountWei), buyCount };
+    // WETH buys use payable native-wrap escrow funding (Kyber has no ETH->WETH
+    // swap route); USDG and any other non-native quote use reviewed Kyber builds.
+    quote.conversion = quote.symbol === "WETH"
+      ? { nativeWrap: true, nativeInputPerBuy: BigInt(fixture.buyAmountWei), buyCount }
+      : { escrow, response: buildResponse({ quoteAsset: quote.tokenAddress,
+          amountIn: BigInt(fixture.buyAmountWei) * BigInt(buyCount), deadline }), nativeInputPerBuy: BigInt(fixture.buyAmountWei), buyCount };
     quote.usdSeed = quote.symbol === "WETH" ? validateApiWethUsdSeed({ snapshot: priceSnapshot(), apiUrl: fixture.apiUrl })
       : { source: "usd-peg", priceSource: "usd-peg", chainId: 4663, tokenAddress: usdg, tokenDecimals: 6, priceUsdX18: unit };
   }
@@ -108,19 +112,29 @@ test("native Swap funding aggregates quotes and exactly apportions protected out
   const markets = scenario.markets.map((spec) => ({ quoteAsset: spec.quote === "USDG" ? usdg : weth }));
   const result = buildExampleBuysAndFunding({ sdk, fixture, scenario, markets, quotes, predictedToken: token });
   assert.deepEqual(result.buys.map((buy) => buy.marketIndex), [0, 1, 2]);
-  assert.deepEqual(result.buys.map((buy) => buy.quoteAmountIn), [4975n, 9951n, 4976n]);
+  // Market order is V4-WETH, V4-USDG, Abyss-WETH. WETH (native-wrap) buys are
+  // exact 1e13 each; the USDG buy consumes the full protected min-out (9951).
+  assert.deepEqual(result.buys.map((buy) => buy.quoteAmountIn), [10000000000000n, 9951n, 10000000000000n]);
   assert.ok(result.buys[0].sqrtPriceLimitX96 < result.buys[1].sqrtPriceLimitX96, "A token between quotes has independent buy direction");
   assert.deepEqual(result.funding.map((row) => row.inputAmount), [20000000000000n, 10000000000000n]);
-  assert.ok(result.funding.every((row) => row.kind === sdk.LifecycleFundingKind.Swap && row.inputAsset === zeroAddress));
-  const plan = { creator: fixture.creator, deadline: BigInt(quotes[0].conversion.response.expiresAt), markets, ...result };
+  const wethRow = result.funding.find((row) => row.asset.toLowerCase() === weth.toLowerCase());
+  const usdgRow = result.funding.find((row) => row.asset.toLowerCase() === usdg.toLowerCase());
+  assert.ok(wethRow && wethRow.kind === sdk.LifecycleFundingKind.NativeWrap && wethRow.inputAsset === weth && wethRow.amount === wethRow.inputAmount);
+  assert.ok(usdgRow && usdgRow.kind === sdk.LifecycleFundingKind.Swap && usdgRow.inputAsset === zeroAddress);
+  const plan = { creator: fixture.creator, deadline: BigInt(quotes[1].conversion.response.expiresAt), markets, ...result };
   assertExampleConversionBindings({ plan, quotes });
-  for (const change of [{ kind: sdk.LifecycleFundingKind.NativeWrap }, { inputAsset: weth }, { amount: 1n }, { data: "0x" }]) {
-    assert.throws(() => assertExampleConversionBindings({ plan: { ...plan, funding: [{ ...plan.funding[0], ...change }, plan.funding[1]] }, quotes }));
+  // WETH funding must stay NativeWrap/exact; each of these mutations must throw.
+  for (const change of [{ kind: sdk.LifecycleFundingKind.Swap }, { inputAsset: zeroAddress }, { amount: 1n }, { data: "0x1234" }]) {
+    assert.throws(() => assertExampleConversionBindings({ plan: { ...plan, funding: [{ ...plan.funding[0], ...change }, plan.funding[1]] }, quotes }),
+      undefined, `WETH funding mutation ${JSON.stringify(Object.keys(change))} must be rejected`);
   }
   assert.throws(() => buildExampleBuysAndFunding({ sdk, fixture, scenario, markets,
     quotes: quotes.map((quote) => ({ ...quote, conversion: undefined })), predictedToken: token }), { code: "MISSING_CONVERSION" });
-  quotes[0].conversion.response.amountOutMinimum = "1";
-  assert.throws(() => buildExampleBuysAndFunding({ sdk, fixture, scenario, markets, quotes, predictedToken: token }), { code: "INVALID_ALLOCATION" });
+  // Zeroing the WETH native-wrap input produces a zero allocation, which must throw.
+  const zeroWrap = quotes.map((quote) => quote.symbol === "WETH"
+    ? { ...quote, conversion: { ...quote.conversion, nativeInputPerBuy: 0n } }
+    : quote);
+  assert.throws(() => buildExampleBuysAndFunding({ sdk, fixture, scenario, markets, quotes: zeroWrap, predictedToken: token }), { code: "INVALID_ALLOCATION" });
 });
 
 test("Kyber calldata binds native intent, exact quote/escrow/input/minimum and reviewed executor policy", () => {
@@ -143,7 +157,7 @@ test("Kyber calldata binds native intent, exact quote/escrow/input/minimum and r
   }
 });
 
-test("Kyber builds once per quote at configured origin with zero native boundary and escrow sender/recipient", async (t) => {
+test("Kyber builds only for non-native quotes; WETH uses payable native-wrap funding", async (t) => {
   const artifacts = artifactsFor(t); const quotes = resolveExampleQuotes({ sdk, fixture, scenario });
   const markets = scenario.markets.map((spec) => ({ quoteAsset: spec.quote === "USDG" ? usdg : weth }));
   const deadline = future(); const requests = []; const client = fundingClient();
@@ -152,14 +166,21 @@ test("Kyber builds once per quote at configured origin with zero native boundary
       const body = JSON.parse(init.body); requests.push({ url: String(url), init, body });
       return new Response(JSON.stringify(buildResponse({ quoteAsset: body.tokenOut, amountIn: BigInt(body.amountIn), deadline })));
     } });
-  assert.equal(requests.length, 2);
-  assert.deepEqual(requests.map((row) => row.body.amountIn), ["20000000000000", "10000000000000"]);
-  for (const request of requests) {
-    assert.equal(request.url, `${fixture.kyberApiUrl}/api/v1/quote/kyber/build?chainId=4663`);
-    assert.equal(request.init.method, "POST"); assert.equal(request.init.redirect, "error");
-    assert.equal(request.body.tokenIn, zeroAddress); assert.equal(request.body.sender, escrow); assert.equal(request.body.recipient, escrow);
-    assert.equal(request.body.slippageBps, 50); assert.equal(request.body.deadline, deadline.toString());
-  }
+  // Exactly one Kyber build: the USDG leg (1 buy). WETH (2 buys) wraps natively.
+  assert.equal(requests.length, 1);
+  const request = requests[0];
+  assert.equal(request.url, `${fixture.kyberApiUrl}/api/v1/quote/kyber/build?chainId=4663`);
+  assert.equal(request.init.method, "POST"); assert.equal(request.init.redirect, "error");
+  assert.equal(request.body.tokenIn, zeroAddress); assert.equal(request.body.tokenOut, usdg);
+  assert.equal(request.body.amountIn, "10000000000000"); // 1 USDG buy x 1e13 wei
+  assert.equal(request.body.sender, escrow); assert.equal(request.body.recipient, escrow);
+  assert.equal(request.body.slippageBps, 50); assert.equal(request.body.deadline, deadline.toString());
+  const wethQuote = quotes.find((quote) => quote.symbol === "WETH");
+  const usdgQuote = quotes.find((quote) => quote.symbol === "USDG");
+  assert.ok(wethQuote.conversion.nativeWrap === true && wethQuote.conversion.response === undefined,
+    "WETH conversion is native-wrap only, no Kyber response retained");
+  assert.ok(usdgQuote.conversion.nativeWrap !== true && usdgQuote.conversion.response !== undefined,
+    "USDG conversion retains its reviewed Kyber build");
   assert.ok(!client.calls.some((row) => row.method.startsWith("eth_send")));
 });
 

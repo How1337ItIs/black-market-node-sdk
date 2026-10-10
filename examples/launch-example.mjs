@@ -73,6 +73,10 @@ function rpcClient(url, artifacts, signal, label) {
     headers.Authorization = authorization;
     endpoint.username = ""; endpoint.password = "";
   }
+  // The official chain-4663 endpoint filters bare non-browser requests at the
+  // transport (403 without an Origin). Mirror the launch app's public origin so
+  // the example RPC client is admitted identically to the UI it validates.
+  if (endpoint.hostname === "rpc.mainnet.chain.robinhood.com") headers.Origin = "https://abyss.trading";
   return { async request({ method, params = [] }) {
     const requestSignal = rpcRequestSignal(signal, label, method);
     const started = Date.now();
@@ -792,7 +796,12 @@ export async function assertExampleEconomicAuthority({ client, fixture, planned,
   assertExampleConversionBindings({ plan: planned.plan, quotes: economicReview.quotes });
   addressEqual(await sdk.predictLifecycleToken({ client, plan: planned.plan }), economicReview.predictedToken, "Fresh reviewed token orientation");
   const block = await client.request({ method: "eth_getBlockByNumber", params: ["latest", false] });
-  await assertExampleConversionAdmission({ client, fixture, escrow: economicReview.quotes[0].conversion.escrow, sdk, block, artifacts });
+  // Only quotes that actually used Kyber need router re-admission; native-wrap
+  // quotes are validated by planner admission and carry no router evidence.
+  const kyberQuotes = economicReview.quotes.filter((quote) => quote.conversion.nativeWrap !== true);
+  if (kyberQuotes.length > 0) {
+    await assertExampleConversionAdmission({ client, fixture, escrow: kyberQuotes[0].conversion.escrow, sdk, block, artifacts });
+  }
   const currentQuotes = [];
   for (const quote of economicReview.quotes) {
     const current = await readExampleQuoteUsdSeed({ sdk, fixture, quote, signal, fetchImpl });
@@ -840,7 +849,9 @@ async function executeExample({ fixture, privateKey, scenario, sdk, artifacts, s
     const seed = quote.usdSeed;
     console.log(`${quote.symbol}/USD ${usd(seed.priceUsdX18)}; source ${seed.source}; chain ${seed.chainId}; quote ${seed.tokenAddress} (${seed.tokenDecimals} decimals); retrieved ${seed.retrievedAt}.\n` +
       (seed.source === "abyss-api" ? `API ${seed.apiOrigin}, indexed block ${seed.indexedBlock}; graph block ${seed.blockNumber}; WETH graph block ${seed.graphBlockNumber}; ${seed.anchorKind} anchor ${seed.anchorAggregator}; upstream ${seed.sourceTimestamp} (${seed.upstreamAgeSeconds} seconds old at retrieval). Indicative valuation, not execution proof.\n` : "Reviewed SDK USDG dollar peg; no WETH API-price substitution.\n") +
-      `Kyber ${quote.conversion.apiOrigin}; input ${quote.conversion.response.amountIn} native wei; protected quote output ${quote.conversion.response.amountOutMinimum} raw ${quote.symbol}; conversion price impact ${quote.conversion.response.priceImpactBps ?? "unknown"} bps; expires ${quote.conversion.response.expiresAt}; oracle ${quote.oracle.oracleConfigId}.`);
+      (quote.conversion.nativeWrap === true
+        ? `Native-wrap payable funding; input ${quote.conversion.nativeInputPerBuy} wei per buy across ${quote.conversion.buyCount} buy(s); oracle ${quote.oracle.oracleConfigId}.`
+        : `Kyber ${quote.conversion.apiOrigin}; input ${quote.conversion.response.amountIn} native wei; protected quote output ${quote.conversion.response.amountOutMinimum} raw ${quote.symbol}; conversion price impact ${quote.conversion.response.priceImpactBps ?? "unknown"} bps; expires ${quote.conversion.response.expiresAt}; oracle ${quote.oracle.oracleConfigId}.`));
   }
   const economicAdmission = await admitEconomicReview(reviewHash);
   artifacts.privateRecovery({ economicAdmission });
