@@ -305,6 +305,8 @@ export const lifecycleV4LockerAbi = [
   { type: "function", name: "launcher", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "positionCount", stateMutability: "view", inputs: [{ type: "bytes32" }], outputs: [{ type: "uint256" }] },
   { type: "function", name: "isSealed", stateMutability: "view", inputs: [{ type: "bytes32" }], outputs: [{ type: "bool" }] },
+  // Present on the deployed V2 locker; read for permanent-custody verification.
+  { type: "function", name: "feeRecipient", stateMutability: "view", inputs: [{ type: "bytes32" }], outputs: [{ type: "address" }] },
 ] as const;
 const poolFeeCollectorFactoryCommonAbi = [
   { type: "function", name: "collectorDeployer", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
