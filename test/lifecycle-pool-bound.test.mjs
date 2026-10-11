@@ -133,11 +133,12 @@ test("config5 economic hashing commits its actual wire tuple and normalizes only
   assert.throws(() => hashPoolBoundV4MarketCommitment({ ...context, market: { ...selected, configVersion: 6 } }), { code: "INVALID_BOUND_MARKET" });
 });
 
-test("October8 config6 preset derives and mines its actual V2 constructor without relabeling config5", async () => {
+for (const key of [KnownLifecycleProfile.V4FixedFeePool, KnownLifecycleProfile.V4DynamicFeePool]) test(`${key}: config6 preset derives and mines its actual V2 constructor without relabeling config5`, async () => {
   const identity = { chainId: 4663n, orchestrator: "0x91560876033d568d25CDe98C78c33ff8FC43962c" };
-  const preset = getKnownLifecycleProfile({ ...identity, key: KnownLifecycleProfile.V4FixedFeePool });
+  const preset = getKnownLifecycleProfile({ ...identity, key });
   const deployment = getKnownLifecycleDeployment(identity);
-  const selectedConfig = { ...config, profileId: preset.profile.id, treasury: preset.profile.envelope.protocolTreasury,
+  const selectedConfig = { ...config, lpFeePips: key === KnownLifecycleProfile.V4DynamicFeePool ? 0 : config.lpFeePips,
+    profileId: preset.profile.id, treasury: preset.profile.envelope.protocolTreasury,
     protocolFeeDenominator: preset.profile.envelope.protocolFeeDenominator, termsDigest: preset.profile.envelope.termsDigest,
     developerBeneficiary: preset.profile.envelope.beneficiary, developerFeeBps: 0, hookSalt: zeroHash };
   const selectedMarket = { ...market, configVersion: 6, adapterId: preset.profile.registration.adapterId, profileId: preset.profile.id,
@@ -149,6 +150,10 @@ test("October8 config6 preset derives and mines its actual V2 constructor withou
   assert.equal(known.deployment.deployer, preset.boundHook.deployer);
   assert.equal(known.parameters.registrar, preset.profile.adapter.implementation);
   assert.equal(known.parameters.core, deployment.orchestrator);
+  assert.equal(known.parameters.lpFeePips, selectedConfig.lpFeePips);
+  assert.equal(known.parameters.poolManager, preset.boundHook.poolManager);
+  assert.equal(known.parameters.oracleFactory, preset.boundHook.oracleFactory);
+  assert.equal(known.parameters.liquidityLocker, preset.boundHook.liquidityLocker);
   assert.equal(known.parameters.minimumHookFeePips, selectedConfig.minimumHookFeePips);
   assert.equal(known.parameters.feeSensitivityPipsSecondsPerTick, selectedConfig.feeSensitivityPipsSecondsPerTick);
   const p = known.parameters;

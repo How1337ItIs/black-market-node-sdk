@@ -23,6 +23,7 @@ function dependencies(deployment, preset, graph = preset.profile.envelope.graph)
 
 test("known metadata is scoped to exact chain, core and profile identity", () => {
   const deployment = getKnownLifecycleDeployment(identity);
+  assert.deepEqual(listKnownLifecycleProfiles(identity).map((preset) => preset.key), Object.values(KnownLifecycleProfile));
   assert.equal(deployment.provenance.deploymentBlock, 82880546n);
   assert.equal(deployment.provenance.sourceCommit, "e174ce695c7010f50ca9211b07b9f178c990beac");
   assert.equal(getKnownLifecycleDeployment({ ...identity, orchestrator: "0xb75CBD17b9aecb7305B4DFcDa69595F783341c0E" }), undefined,
@@ -74,13 +75,14 @@ test("enum-selected construction metadata distinguishes quote-oracle Abyss from 
   }
 });
 
-test("consumer mutation cannot rewrite shared release construction or subsequent lookups", () => {
+for (const key of [KnownLifecycleProfile.V4FixedFeePool, KnownLifecycleProfile.V4DynamicFeePool]) test(`${key}: consumer mutation cannot rewrite shared release construction or subsequent lookups`, () => {
   const deployment = getKnownLifecycleDeployment(identity);
-  const v4 = select(KnownLifecycleProfile.V4FixedFeePool);
+  const v4 = select(key);
   const before = structuredClone(deployment);
   const mutations = [
     () => { KnownLifecycleProfile.Abyss3 = KnownLifecycleProfile.V4FixedFeePool; },
     () => { KnownLifecycleHook.FixedFeePoolV1 = "unreviewed-hook"; },
+    () => { KnownLifecycleHook.DynamicFeePoolV1 = "unreviewed-hook"; },
     () => { deployment.orchestrator = otherAddress; },
     () => { deployment.provenance.deploymentBlock = 0n; },
     () => { deployment.profiles.reverse(); },
@@ -102,12 +104,12 @@ test("consumer mutation cannot rewrite shared release construction or subsequent
   assert.equal(getKnownLifecycleProfile({ ...identity, profileId: v4.profile.id }), v4);
 });
 
-test("reviewed bytecode, bounds, profile and deployment dependency commitments agree and detect tampering", () => {
+for (const key of [KnownLifecycleProfile.V4FixedFeePool, KnownLifecycleProfile.V4DynamicFeePool]) test(`${key}: reviewed bytecode, bounds, profile and deployment commitments agree and detect tampering`, () => {
   const deployment = getKnownLifecycleDeployment(identity);
-  const v4 = select(KnownLifecycleProfile.V4FixedFeePool);
+  const v4 = select(key);
   const envelope = v4.profile.envelope;
   const creationHash = keccak256(v4.boundHook.creationCode);
-  assert.equal(creationHash, "0x11c4c7b1f265ed708b7d53ab828c89d237ca821333daa808f1913986c6f8f1ab");
+  if (key === KnownLifecycleProfile.V4FixedFeePool) assert.equal(creationHash, "0x11c4c7b1f265ed708b7d53ab828c89d237ca821333daa808f1913986c6f8f1ab");
   assert.equal(creationHash, v4.profile.topology.hookCreationCodeHash);
   assert.equal(creationHash, envelope.graph.hookCreationCodeHash);
   assert.equal(creationHash, envelope.artifactDigest);

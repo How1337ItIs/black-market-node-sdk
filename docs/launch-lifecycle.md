@@ -7,6 +7,14 @@ The canonical authorities are the registry/certification/adapter/config contract
 in the protocol repository. Plan identity is `LaunchPlanV1`. Pool-bound V4 uses **config 6**,
 canonical Abyss uses **config 1**, and generic current shared-V4 support uses **config 4**.
 
+## 0.8.1 release
+
+Adds the Robinhood October11 Dynamic Fee Hook preset:
+`KnownLifecycleHook.DynamicFeePoolV1` and `KnownLifecycleProfile.V4DynamicFeePool`
+(`"v4-dynamic-fee-pool"`), profile
+`0x27f219872fe934a5464bc9b900028256122f215b40cbdb69ef5f88cd5f627ccb`. The fixed
+preset and example default are unchanged.
+
 ## 0.8.0 release
 
 This release adds unstarted-launch topology validation, boundary tails enabled by
@@ -23,13 +31,16 @@ Known chain/core/profile identities use frozen release construction metadata.
 `getKnownLifecycleDeployment`, `getKnownLifecycleProfile` and
 `listKnownLifecycleProfiles` are pure, browser-safe selectors. Profile selection
 accepts either `KnownLifecycleProfile` keys or exact profile IDs.
-`KnownLifecycleHook.FixedFeePoolV1` identifies the shipped contract class, whose current constructor is V2.
+`KnownLifecycleHook.FixedFeePoolV1` and `KnownLifecycleHook.DynamicFeePoolV1`
+identify the fixed hook and **Dynamic Fee Hook** respectively; both use the V2 constructor.
+Select the latter with `KnownLifecycleProfile.V4DynamicFeePool` (`"v4-dynamic-fee-pool"`).
 Unknown identities return no preset; explicit `readLifecycleProfiles` and unlisted
 profile construction retain live discovery/certification. Presets describe release
 availability, never current admission, and contain no `admitted` claim.
-The current Robinhood preset is the mined October8 config6 graph, with its own
-addresses, runtime pins, creation-code chunks, profile/schema and 20-word V2
-constructor. Historical config5 codecs and 18-word V1 ABIs remain explicit for
+The Robinhood presets retain the mined October8 fixed config6 graph and add the
+October11 zero-author-royalty Dynamic Fee Hook, each with its own exact artifact,
+review, terms, runtime pins, creation-code chunks and 20-word V2 constructor.
+Historical config5 codecs and 18-word V1 ABIs remain explicit for
 existing deployments, but October5 evidence is not relabeled or selected as the
 current preset. Explicit live discovery certifies unlisted deployments from actual
 pinned reads.
@@ -508,12 +519,24 @@ capabilities and explicit atomic/staged behavior are unchanged.
 
 Robinhood mainnet (`4663`) selects the mined `pool-launch-v1` deployment captured at block
 `82880546` in `contracts/deployments/launch/pool-launch-v1/20261008T000141Z-e174ce6/manifest.json`.
-The manifest records 22 successful receipts and canonical runtime evidence. The graph has two
-adapters and five admitted profiles: one fixed pool-bound config6/V2 profile and four
-canonical Abyss variants. It does not deploy a shared V4 root.
-The current V4 profile is `0xf18140c2fb66a4202a0f22d62d6288bf7976db108de5381e5497aaed332a06f8`.
-Its exact creation-code hash is `0x11c4c7b1f265ed708b7d53ab828c89d237ca821333daa808f1913986c6f8f1ab`;
-the release artifact's unpatched runtime is not a deployed hook-instance runtime.
+The October8 manifest records 22 successful receipts and canonical runtime evidence,
+with two adapters and five profiles at that deployment. The subsequent October11
+Dynamic Fee Hook admission adds a third adapter and sixth profile to the same
+core/registry: four canonical Abyss variants and fixed/dynamic pool-bound config6/V2.
+Neither offering deploys a shared V4 root. The fixed preset and example selection
+remain `0xf18140c2fb66a4202a0f22d62d6288bf7976db108de5381e5497aaed332a06f8`,
+with creation hash `0x11c4c7b1f265ed708b7d53ab828c89d237ca821333daa808f1913986c6f8f1ab`.
+The Dynamic Fee Hook profile is
+`0x27f219872fe934a5464bc9b900028256122f215b40cbdb69ef5f88cd5f627ccb`,
+with creation hash `0xd448a4117b78714cc4f96824356c6a90ec666449fde5c57e2b7bbe072f5e4a7a`.
+Its exact graph and terms are prepared in
+`contracts/deployments/launch/pool-hook-template-v1/20261011T033141Z-dynamic-fee-zero-royalty/admission.json`;
+that file is **unsigned preparation, not a mined receipt**. Registration is evidenced
+by the successful `forge-broadcast/AdmitPoolHookTemplateV1.s.sol/4663/admit-latest.json`
+receipt for `0x1928b13d1a6bf8826d08493a18c483fc7d244a3ec4100a7f8118f510a5db640c`.
+Creation bytes concatenate the preserved storage-child runtimes after stripping each
+first STOP byte, exactly as `PoolHookDeployerV1._initCode` does; constructor arguments
+are appended separately. An unpatched artifact runtime is not a deployed hook-instance runtime.
 October5 config5/V1 evidence remains historical, never a substitute for this graph.
 
 | SDK field | Mainnet address |
@@ -648,6 +671,15 @@ Its base stores and exposes `minimumHookFeePips` and
 calculation. Sensitivity's encoded units are fee-pips × seconds/tick; they do not
 imply an active oracle-driven fee formula. Registered oracle configuration still
 governs the pool's oracle behavior, not this hook's fixed fee rate.
+
+The registered **Dynamic Fee Hook** instead uses the oracle's upward quote-per-base
+tick velocity: `minimum + floor(positiveTickChange * sensitivity / elapsedSeconds)`,
+capped at `hookFeePips` (the maximum). Quiet/falling prices, zero elapsed time or zero
+sensitivity use the minimum. Select its own preset/terms, set **`lpFeePips: 0`** and
+explicitly encode all three config6 fee settings. Its reviewed author allocation is
+**0 bps**, so `developerFeeBps` must be zero. Generic config6 codecs do not identify
+fee behavior or certify constructor compatibility; live constructor/simulation
+authority remains required. Fixed launch examples continue selecting the fixed preset.
 
 ```ts
 const profile = profiles.find((row) => row.id === selectedProfileId);

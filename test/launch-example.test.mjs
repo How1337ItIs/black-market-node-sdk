@@ -15,7 +15,7 @@ import {
   guardEconomicReviewWallet,
   deriveExampleMarketEconomics, openingEconomics, economicReviewHash,
 } from "../examples/launch-example-support.ts";
-import { validateCase, verifyLaunchInventory } from "../examples/launch-example.ts";
+import { selectExampleFixedV4Profile, validateCase, verifyLaunchInventory } from "../examples/launch-example.ts";
 const pricingSdk = await import(process.env.SDK_SOURCE_TEST === "1" ? "../src/index.ts" : "../dist/index.js");
 
 const hash = `0x${"ab".repeat(32)}`;
@@ -32,6 +32,21 @@ const json = (artifacts, name) => JSON.parse(readFileSync(join(artifacts.directo
 
 // Diagnostic boundaries only. These tests do not pretend to deploy a token,
 // simulate a chain, or prove publication against a mocked API/indexer.
+test("fixed V4 examples select their original offering and never adopt a newly admitted dynamic hook", () => {
+  const fixture = { chainId: 4663, orchestrator: pricingSdk.getAddresses(4663).launchOrchestrator };
+  const fixed = { ...pricingSdk.getKnownLifecycleProfile({ ...fixture, key: pricingSdk.KnownLifecycleProfile.V4FixedFeePool }).profile, admitted: true };
+  const dynamic = { ...pricingSdk.getKnownLifecycleProfile({ ...fixture, key: pricingSdk.KnownLifecycleProfile.V4DynamicFeePool }).profile, admitted: true };
+  const select = (profiles, selectedFixture = fixture) => selectExampleFixedV4Profile({ profiles, fixture: selectedFixture, sdk: pricingSdk });
+  assert.equal(select([dynamic, fixed]), fixed);
+  assert.equal(select([fixed, dynamic]), fixed);
+  assert.equal(select([dynamic, fixed], { ...fixture, chainId: "4663" }), fixed);
+  assert.throws(() => select([dynamic]), { code: "PROFILE_NOT_ADMITTED" });
+  assert.throws(() => select([{ ...fixed, admitted: false }, dynamic]), { code: "PROFILE_NOT_ADMITTED" });
+  const unlisted = { ...fixture, orchestrator: zeroAddress };
+  assert.equal(select([fixed], unlisted), fixed);
+  assert.throws(() => select([dynamic, fixed], unlisted), { code: "PROFILE_NOT_ADMITTED" });
+});
+
 test("recursive evidence redaction preserves selector/calldata/cause and public capabilities", () => {
   const redactor = new Redactor();
   const signature = `0x${"cd".repeat(65)}`;
