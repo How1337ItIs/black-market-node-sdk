@@ -1,12 +1,15 @@
 # Examples
 
-The launch examples use the public `@black-market/sdk` 0.8.1 package and viem.
+The launch examples use the public `@black-market/sdk` 0.9.0 package and viem.
 Build this checkout before running its examples; in a consumer project install
 `@black-market/sdk@0.8.0` or later for the `positionGaps` and recovery APIs.
 The default chain-4663 launch cases retain
 the October8 mined fixed pool-bound V4 config6/V2 and canonical Abyss config1 deployment.
 The SDK additionally knows the October11 zero-author-royalty Dynamic Fee Hook;
 its registration does not change the fixed cases' selection or fee schedule.
+HMM Fixed/Dynamic are additional October11 presets; their required typed launch
+tail and defaults are demonstrated by `hmm-launch-config.ts`. Existing fixed
+cases are intentionally unchanged. See the HMM section in the lifecycle guide.
 Historical October5 config5 evidence is not relabeled as these graphs. Discovery
 is read-only; fixed launch examples default to an unsigned dry run. Only
 `--broadcast` (or deliberate `--resume` continuation) authorizes real writes.
@@ -19,6 +22,7 @@ examples; their relative support imports use explicit `.ts` extensions for Node 
 | Script | Behavior |
 | --- | --- |
 | `quickstart.ts` | Reads the current mainnet orchestrator, checks its registry binding, and discovers admitted profiles. No wallet or writes. |
+| `hmm-launch-config.ts` | Pure HMM fixed/dynamic config construction with typed defaults and an automatically appended launch tail; no RPC, signatures or writes. |
 | `launch.ts` | Reviews/reconstructs an explicit saved plan and selected atomic/staged mode; optional offchain config6/V2 salt mining. Prints simulation, progress, and an admitted unsigned next transaction when evidence permits. |
 | `generate-lifecycle-commitment-fixture.ts` | Frozen independent historical config4/Abyss ABI bytes/hash/identity vector. Its pre-cutover allocations are not an executable 0.7.1 plan. |
 | `launch-lifecycle-smoke.ts` | Actual SDK launch/recovery/custody/fee operations, only on an explicitly authorized owned disposable loopback graph. |

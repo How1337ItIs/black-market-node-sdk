@@ -5,6 +5,9 @@ import type {
 import type { LifecycleProfile } from "./types.js";
 import { fixedFeePoolHookV1CreationCode } from "./deployments/fixed-fee-pool-hook-v1-20261008.js";
 import { dynamicFeePoolHookV1CreationCode } from "./deployments/dynamic-fee-pool-hook-v1-20261011.js";
+import { hmmFixedEnvelope, hmmFixedAdapter, hmmFixedRegistration, hmmFixedCreationCode } from "./deployments/hmm-fixed-pool-hook-v1-20261011.js";
+import { hmmDynamicEnvelope, hmmDynamicAdapter, hmmDynamicRegistration, hmmDynamicCreationCode } from "./deployments/hmm-dynamic-pool-hook-v1-20261011.js";
+import { HMM_FIXED_PROFILE_ID, HMM_DYNAMIC_PROFILE_ID } from "./hmm.js";
 
 export enum KnownLifecycleProfile {
   Abyss0 = "abyss-0",
@@ -13,11 +16,15 @@ export enum KnownLifecycleProfile {
   Abyss3 = "abyss-3",
   V4FixedFeePool = "v4-fixed-fee-pool",
   V4DynamicFeePool = "v4-dynamic-fee-pool",
+  V4HmmFixedPool = "v4-hmm-fixed-pool",
+  V4HmmDynamicPool = "v4-hmm-dynamic-pool",
 }
 
 export enum KnownLifecycleHook {
   FixedFeePoolV1 = "fixed-fee-pool-v1",
   DynamicFeePoolV1 = "dynamic-fee-pool-v1",
+  HmmFixedPoolV1 = "hmm-fixed-pool-v1",
+  HmmDynamicPoolV1 = "hmm-dynamic-pool-v1",
 }
 
 Object.freeze(KnownLifecycleProfile);
@@ -273,6 +280,25 @@ const dynamicFeePoolPreset: LifecycleProfilePreset = Object.freeze({
   }),
 });
 
+function hmmPreset(key: KnownLifecycleProfile, id: Hex, envelope: LaunchEnvelopeV2,
+  adapter: AdapterRegistrationV1, registration: ProfileRegistrationV1, creationCode: Hex): LifecycleProfilePreset {
+  return Object.freeze({
+    key, supported: true,
+    profile: Object.freeze({
+      id, registration, adapter,
+      topology: Object.freeze({ hookTopology: 2, configVersion: 6,
+        hookDeployer: envelope.graph.hookDeployer, hookCreationCodeHash: envelope.graph.hookCreationCodeHash }),
+      venueKind: "uniswap-v4", envelope,
+      developerTerms: Object.freeze({ adapter: adapter.implementation, beneficiary: envelope.beneficiary,
+        maximumDeveloperFeeBps: envelope.maximumDeveloperFeeBps, termsDigest: envelope.termsDigest, enabled: true }),
+      protocolMaximumDeveloperFeeBps: 2400,
+    }),
+    boundHook: Object.freeze({ creationCode, deployer: envelope.graph.hookDeployer,
+      poolManager: envelope.graph.manager, oracleFactory: envelope.graph.oracleFactory,
+      liquidityLocker: envelope.graph.locker, registrar: adapter.implementation }),
+  });
+}
+
 const knownDeployment: LifecycleDeploymentPreset = Object.freeze({
   chainId: 4663n,
   orchestrator: "0x91560876033d568d25CDe98C78c33ff8FC43962c",
@@ -287,6 +313,8 @@ const knownDeployment: LifecycleDeploymentPreset = Object.freeze({
     abyssPreset(KnownLifecycleProfile.Abyss3, "0xe1bd95e086469e6afd9791ccc957e4d22b735012cb3db4a747f703673c62c306"),
     fixedFeePoolPreset,
     dynamicFeePoolPreset,
+    hmmPreset(KnownLifecycleProfile.V4HmmFixedPool, HMM_FIXED_PROFILE_ID, hmmFixedEnvelope, hmmFixedAdapter, hmmFixedRegistration, hmmFixedCreationCode),
+    hmmPreset(KnownLifecycleProfile.V4HmmDynamicPool, HMM_DYNAMIC_PROFILE_ID, hmmDynamicEnvelope, hmmDynamicAdapter, hmmDynamicRegistration, hmmDynamicCreationCode),
   ]),
   provenance: Object.freeze({ sourceCommit: "e174ce695c7010f50ca9211b07b9f178c990beac", deploymentBlock: 82880546n }),
 });
@@ -316,7 +344,7 @@ export function getKnownLifecycleProfile(options: KnownLifecycleDeploymentIdenti
   return undefined;
 }
 
-/** Stable, frozen order: Abyss variants 0 through 3, then fixed and dynamic pool-bound V4. */
+/** Stable, frozen order: Abyss variants 0 through 3, fixed/dynamic V4, then HMM fixed/dynamic. */
 export function listKnownLifecycleProfiles(options: KnownLifecycleDeploymentIdentity): readonly LifecycleProfilePreset[] {
   return getKnownLifecycleDeployment(options)?.profiles ?? noProfiles;
 }

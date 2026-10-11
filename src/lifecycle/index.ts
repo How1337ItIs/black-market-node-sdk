@@ -3,6 +3,7 @@ export * from "./schema.js";
 export * from "./types.js";
 export * from "./abi.js";
 export * from "./markets.js";
+export * from "./hmm.js";
 export * from "./progress.js";
 export * from "./fork.js";
 export * from "./authors.js";
