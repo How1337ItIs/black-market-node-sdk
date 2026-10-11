@@ -78,7 +78,11 @@ tick partitions as a source preset. See `references/audit-history.md`.
   alone do not establish compatibility.
 - The shipped `FixedFeePoolHookV1` charges its fixed maximum-pips fee. Config6's
   minimum/sensitivity fields do **not** make this concrete hook dynamic.
-  A Surge/dynamic reference or working codec is not production admission.
+  The separate registered zero-author-royalty **Dynamic Fee Hook** is selected by
+  `KnownLifecycleProfile.V4DynamicFeePool` / `KnownLifecycleHook.DynamicFeePoolV1`;
+  it requires zero LP fee and explicit config6 minimum, maximum and sensitivity.
+  The catalogue's 500-bps author-share DynamicFeeHook remains a different artifact,
+  not this admitted zero-author-royalty offering.
 - Different compatible hooks can require different configuration and swap-time
   data. Do not assume all config6 hooks accept the fixed-hook form or empty hookData.
 - Keep LP fees, hook trading fees, protocol share, executor bounty, author

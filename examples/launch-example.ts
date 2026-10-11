@@ -182,6 +182,18 @@ export async function discoverExampleQuoteOracles({ client, fixture, scenario, q
   addressEqual(canonical?.hash, block.hash, "Pinned quote/oracle block remains canonical");
 }
 
+/** Fixed launch cases retain their exact known offering when more hooks are admitted. */
+export function selectExampleFixedV4Profile({ profiles, fixture, sdk }) {
+  const fixed = sdk.getKnownLifecycleProfile({ chainId: BigInt(fixture.chainId), orchestrator: fixture.orchestrator,
+    key: sdk.KnownLifecycleProfile.V4FixedFeePool });
+  const bound = profiles.filter((row) => (!fixed || same(row.id, fixed.profile.id)) &&
+    row.venueKind === "uniswap-v4" && row.topology.hookTopology === 2 &&
+    row.topology.configVersion === 6 && same(row.registration.configSchema, sdk.V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V6) &&
+    row.adapter.configVersion === 6 && row.envelope?.configVersion === 6);
+  if (bound.length !== 1 || !bound[0].admitted || !bound[0].envelope || !bound[0].developerTerms) throw exampleError("PROFILE_NOT_ADMITTED", "The fixed case requires its exact admitted pool-bound V4 config6/V2 profile, schema and frozen terms; unlisted graphs require an unambiguous offering", { data: bound });
+  return bound[0];
+}
+
 
 async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal, limits, metadata, image }) {
   const read = contractReader(client);
@@ -191,11 +203,7 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
   artifacts.event("registry-profiles", { profiles });
   const selected = {};
   if (scenario.markets.some((row) => row.venue === "v4")) {
-    const bound = profiles.filter((row) => row.venueKind === "uniswap-v4" && row.topology.hookTopology === 2 &&
-      row.topology.configVersion === 6 && same(row.registration.configSchema, sdk.V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V6) &&
-      row.adapter.configVersion === 6 && row.envelope?.configVersion === 6);
-    if (bound.length !== 1 || !bound[0].admitted || !bound[0].envelope || !bound[0].developerTerms) throw exampleError("PROFILE_NOT_ADMITTED", "An unambiguous admitted pool-bound V4 config6/V2 profile with its exact schema and frozen terms is required", { data: bound });
-    selected.v4 = bound[0];
+    selected.v4 = selectExampleFixedV4Profile({ profiles, fixture, sdk });
   }
   if (scenario.markets.some((row) => row.venue === "abyss")) {
     const canonical = [];

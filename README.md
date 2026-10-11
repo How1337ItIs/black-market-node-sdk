@@ -73,8 +73,9 @@ without re-execution. Retain the private session/capability and, for a pending i
 reload the original bytes via `EXAMPLE_IMAGE_PATH`. See the recovery guide above.
 Keep `.env`, keystores and private recovery files out of Git.
 
-The published `0.8.0` package ships launch topology safety, TypeScript examples,
-dry-run/`--broadcast` modes, retained-plan recovery, and the opt-in static session cache.
+The published `0.8.1` package ships launch topology safety, TypeScript examples,
+dry-run/`--broadcast` modes, retained-plan recovery, the opt-in static session cache,
+and the Robinhood Dynamic Fee Hook preset.
 `prepareAndPlanLifecycleLaunch` combines bound-hook preparation and complete admission;
 `preparePoolBoundLifecyclePlan` and `PlannedLaunch.atomicAttempt` are removed.
 Only the explicitly requested execution mode is simulated. Independent `planLaunch`,
@@ -82,10 +83,14 @@ recovery and build-next operations acquire fresh authority.
 
 Known deployments/profiles/hooks ship as frozen construction presets selected by
 typed keys without remote discovery. Explicit live discovery and unlisted profiles
-remain supported. The current October8 mined graph supports pool-bound config6/V2
-construction; historical config5 evidence is never reused or relabeled as that graph.
-Creator minimum/maximum hook fees and upward-price sensitivity are independent
-per-pool values frozen at launch. Optional `buySlippageBps` protects all ordered buys in one SDK
+remain supported. Six known profiles include the existing October8 fixed hook,
+four Abyss variants and the October11 zero-author-royalty **Dynamic Fee Hook**
+(`KnownLifecycleProfile.V4DynamicFeePool`, `KnownLifecycleHook.DynamicFeePoolV1`).
+Both bound hooks use config6/V2; dynamic pools require zero LP fee and explicit
+minimum/maximum hook fees and sensitivity. Fixed example/default selection is unchanged.
+Historical config5 evidence is never reused or relabeled as these graphs.
+Creator fee settings are independent per-pool values frozen at launch.
+Optional `buySlippageBps` protects all ordered buys in one SDK
 operation, returning only the final proved commitment. Pure transaction compilation
 reports exact calldata sizes. Position recipes use Black Market's Early Scarcity,
 Staircase and Smooth Ramp weights, widths and gaps with exact allocation maxima.

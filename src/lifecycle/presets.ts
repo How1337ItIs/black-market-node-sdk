@@ -4,6 +4,7 @@ import type {
 } from "./schema.js";
 import type { LifecycleProfile } from "./types.js";
 import { fixedFeePoolHookV1CreationCode } from "./deployments/fixed-fee-pool-hook-v1-20261008.js";
+import { dynamicFeePoolHookV1CreationCode } from "./deployments/dynamic-fee-pool-hook-v1-20261011.js";
 
 export enum KnownLifecycleProfile {
   Abyss0 = "abyss-0",
@@ -11,10 +12,12 @@ export enum KnownLifecycleProfile {
   Abyss2 = "abyss-2",
   Abyss3 = "abyss-3",
   V4FixedFeePool = "v4-fixed-fee-pool",
+  V4DynamicFeePool = "v4-dynamic-fee-pool",
 }
 
 export enum KnownLifecycleHook {
   FixedFeePoolV1 = "fixed-fee-pool-v1",
+  DynamicFeePoolV1 = "dynamic-fee-pool-v1",
 }
 
 Object.freeze(KnownLifecycleProfile);
@@ -195,6 +198,81 @@ const fixedFeePoolPreset: LifecycleProfilePreset = Object.freeze({
   }),
 });
 
+// pool-hook-template-v1/20261011T033141Z-dynamic-fee-zero-royalty: config.json,
+// admission.json (unsigned preparation), preserved storage-child runtimes and the
+// successful admit-latest.json receipt 0x1928b13d1a6bf8826d08493a18c483fc7d244a3ec4100a7f8118f510a5db640c.
+// The admitted envelope shares the fixed profile's bounds and protocol terms,
+// but has its own artifact, review, author terms, locker, deployer and adapter.
+const dynamicFeePoolEnvelope = Object.freeze({
+  ...fixedFeePoolEnvelope,
+  artifactDigest: "0xd448a4117b78714cc4f96824356c6a90ec666449fde5c57e2b7bbe072f5e4a7a",
+  reviewManifestDigest: "0x59c9c449ec9f1e5a552fd67e9538fe77055945f46513048115d1282d3a479589",
+  termsDigest: "0xbe3b09dc6d49fd548e76fed654b852039e8899e591ebacafc5e67f0692d0c699",
+  graph: Object.freeze({
+    ...fixedFeePoolEnvelope.graph,
+    locker: "0x3C68D5d75C69DF755eD53EA51f0be609cA76402c",
+    lockerCodeHash: "0xbc55801d253d519818b7be0a0008c359dd9774c068f7b103bdd0b7d4997e7467",
+    hookDeployer: "0x59F83bC43A075C40c68dea444dcd9c639BE7F1E7",
+    hookDeployerCodeHash: "0x1b11f186b567721148b442eab0a922dd2a2e85ddbf3b729d239eef2379b319c3",
+    hookCreationCodeHash: "0xd448a4117b78714cc4f96824356c6a90ec666449fde5c57e2b7bbe072f5e4a7a",
+    codeChunk0: "0x766eB09552C91faea2bA9ae46832dFCeD6C60335",
+    codeChunk0Hash: "0x818c56bf10ae21129fe54f1b8991d6f807ce4ccef35b34c56251c1fd2d7d623f",
+    codeChunk1: "0x4Ce7Ed36Ea5E26a83c0Dc536C7Babc2EA171439c",
+    codeChunk1Hash: "0xbc73944bfa7e74df5968907a05fe2579a17ab155d3a0db407588d1baff51b4de",
+  }),
+} satisfies LaunchEnvelopeV2);
+
+const dynamicFeePoolAdapter = Object.freeze({
+  implementation: "0xDa8581E1241722154B44404a032C086708080519",
+  codeHash: "0xddee60ce5afbc508b0337fb170b3e7446775db08a444635eaa3cfea0ff575fdb",
+  capabilities: 123n,
+  configVersion: 6,
+  enabled: true,
+} satisfies AdapterRegistrationV1);
+
+const dynamicFeePoolPreset: LifecycleProfilePreset = Object.freeze({
+  key: KnownLifecycleProfile.V4DynamicFeePool,
+  supported: true,
+  profile: Object.freeze({
+    id: "0x27f219872fe934a5464bc9b900028256122f215b40cbdb69ef5f88cd5f627ccb",
+    registration: Object.freeze({
+      adapterId: "0xce1347ee563f66097199aee9c7c651e1b938972924dc271605db1b6721502bc3",
+      configSchema: "0x51c5ca14c40012f78425cd1afb1ea77980da3fed0490a00911a8a4ed34792045",
+      dependencyDigest: "0x599fd5154bef5751fdb6e1265586c7eced3d3e7ebd2c6f0066a20f9c8b7bf810",
+      venue: dynamicFeePoolEnvelope.graph.manager,
+      factory: zeroAddress,
+      hook: zeroAddress,
+      capabilities: 123n,
+      enabled: true,
+    }),
+    adapter: dynamicFeePoolAdapter,
+    topology: Object.freeze({
+      hookTopology: 2,
+      configVersion: 6,
+      hookDeployer: dynamicFeePoolEnvelope.graph.hookDeployer,
+      hookCreationCodeHash: dynamicFeePoolEnvelope.graph.hookCreationCodeHash,
+    }),
+    venueKind: "uniswap-v4",
+    envelope: dynamicFeePoolEnvelope,
+    developerTerms: Object.freeze({
+      adapter: dynamicFeePoolAdapter.implementation,
+      beneficiary: dynamicFeePoolEnvelope.beneficiary,
+      maximumDeveloperFeeBps: dynamicFeePoolEnvelope.maximumDeveloperFeeBps,
+      termsDigest: dynamicFeePoolEnvelope.termsDigest,
+      enabled: true,
+    }),
+    protocolMaximumDeveloperFeeBps: 2400,
+  }),
+  boundHook: Object.freeze({
+    creationCode: dynamicFeePoolHookV1CreationCode,
+    deployer: dynamicFeePoolEnvelope.graph.hookDeployer,
+    poolManager: dynamicFeePoolEnvelope.graph.manager,
+    oracleFactory: dynamicFeePoolEnvelope.graph.oracleFactory,
+    liquidityLocker: dynamicFeePoolEnvelope.graph.locker,
+    registrar: dynamicFeePoolAdapter.implementation,
+  }),
+});
+
 const knownDeployment: LifecycleDeploymentPreset = Object.freeze({
   chainId: 4663n,
   orchestrator: "0x91560876033d568d25CDe98C78c33ff8FC43962c",
@@ -208,6 +286,7 @@ const knownDeployment: LifecycleDeploymentPreset = Object.freeze({
     abyssPreset(KnownLifecycleProfile.Abyss2, "0x49b3bd30fe302526d7799f2ef15f3b2b261b5c44e075aa48b98c6b37148b7d59"),
     abyssPreset(KnownLifecycleProfile.Abyss3, "0xe1bd95e086469e6afd9791ccc957e4d22b735012cb3db4a747f703673c62c306"),
     fixedFeePoolPreset,
+    dynamicFeePoolPreset,
   ]),
   provenance: Object.freeze({ sourceCommit: "e174ce695c7010f50ca9211b07b9f178c990beac", deploymentBlock: 82880546n }),
 });
@@ -237,7 +316,7 @@ export function getKnownLifecycleProfile(options: KnownLifecycleDeploymentIdenti
   return undefined;
 }
 
-/** Stable, frozen release order: Abyss variants 0 through 3, then the pool-bound V4 profile. */
+/** Stable, frozen order: Abyss variants 0 through 3, then fixed and dynamic pool-bound V4. */
 export function listKnownLifecycleProfiles(options: KnownLifecycleDeploymentIdentity): readonly LifecycleProfilePreset[] {
   return getKnownLifecycleDeployment(options)?.profiles ?? noProfiles;
 }

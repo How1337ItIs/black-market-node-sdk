@@ -1,11 +1,13 @@
 # Examples
 
-The launch examples use the public `@black-market/sdk` 0.8.0 package and viem.
+The launch examples use the public `@black-market/sdk` 0.8.1 package and viem.
 Build this checkout before running its examples; in a consumer project install
 `@black-market/sdk@0.8.0` or later for the `positionGaps` and recovery APIs.
-The current chain-4663 graph is
-the October8 mined pool-bound V4 config6/V2 and canonical Abyss config1 deployment.
-Historical October5 config5 evidence is not relabeled as the new graph. Discovery
+The default chain-4663 launch cases retain
+the October8 mined fixed pool-bound V4 config6/V2 and canonical Abyss config1 deployment.
+The SDK additionally knows the October11 zero-author-royalty Dynamic Fee Hook;
+its registration does not change the fixed cases' selection or fee schedule.
+Historical October5 config5 evidence is not relabeled as these graphs. Discovery
 is read-only; fixed launch examples default to an unsigned dry run. Only
 `--broadcast` (or deliberate `--resume` continuation) authorizes real writes.
 
@@ -483,7 +485,7 @@ The examples have been reviewed against `abyss-app`'s `scripts/launch-node.mjs`,
 `launch-node-deploy.mjs`, `launch-browser-wallet.mjs`, `launch-staged-smoke.mjs`,
 `launch-review-smoke.mjs`, and `src/lib/creation` / `src/lib/lifecycle` authoring,
 funding, execution and recovery modules. These are behavioral references, not SDK
-dependencies. The application consumes the published **`@black-market/sdk` 0.8.0** and
+dependencies. The application consumes the published **`@black-market/sdk` 0.8.1** and
 derives current deployment defaults through **`getAddresses`**, as do these examples.
 The package pin alone is not live deployment authority. The mined graph
 is recorded in the contracts repository at
