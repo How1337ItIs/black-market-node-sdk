@@ -17,6 +17,22 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
+### HMM pool hooks (0.9.0)
+
+Robinhood mainnet has frozen **HMM Fixed** and **HMM Dynamic** presets:
+`KnownLifecycleProfile.V4HmmFixedPool` / `V4HmmDynamicPool`. Both require zero
+LP and developer fees, plus a typed `HmmLaunchConfig` passed to the config6
+encoder; it appends the required 448-byte tail automatically. Use
+`defaultHmmLaunchConfig({ tokenBudget, quoteAsset, quoteDecimals })` for calibrated
+WETH/USDG defaults. Unknown quotes require explicit raw quote thresholds.
+
+At harvest, the configured share of **quote fees** funds a per-market HMM
+liquidity manager; the remainder follows the normal creator/reward split.
+Token fees and locked launch positions are untouched. The fee owner can change
+the share later. Premium decay defaults to off (72 hours is an explicit opt-in).
+See [HMM configuration](docs/launch-lifecycle.md#090-release-hmm-pool-hooks) and
+the [pure, unsigned HMM example](examples/hmm-launch-config.ts).
+
 ## Examples
 
 The most complete case is [`launch-erc20-dividends-multiquote-mixed.ts`](examples/launch-erc20-dividends-multiquote-mixed.ts).

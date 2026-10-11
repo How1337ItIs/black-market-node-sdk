@@ -1,6 +1,6 @@
 {
   "name": "@black-market/sdk",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "TypeScript SDK for Abyss token launches, swaps, and lending.",
   "license": "MIT",
   "repository": {
