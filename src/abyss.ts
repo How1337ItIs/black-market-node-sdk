@@ -18,6 +18,7 @@ export type AbyssPoolKey = {
 };
 
 export const ABYSS_FEE_TIERS = [
+  { feePips: 100, tickSpacing: 1, label: "0.01%" },
   { feePips: 500, tickSpacing: 10, label: "0.05%" },
   { feePips: 3_000, tickSpacing: 60, label: "0.30%" },
   { feePips: 10_000, tickSpacing: 200, label: "1%" },

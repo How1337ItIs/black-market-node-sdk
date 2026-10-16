@@ -50,6 +50,24 @@ test("automatic recipes deterministically derive current market-cap vectors", ()
   }
 });
 
+test("0.01% recipes infer spacing one with full one-sided boundary tails", () => {
+  for (const launchedTokenIsQuote of [false, true]) {
+    const recipe = recipeFor(launchedTokenIsQuote, 100);
+    assert.deepEqual(recipe, deriveLaunchPoolRecipe({
+      pairedTokenDecimals: 18, pairedTokenUsdPriceX18, targetMarketCapUsdX18,
+      launchedTokenIsQuote, fee: 100, tickSpacing: 1,
+    }));
+    assert.equal(launchedTokenIsQuote ? recipe.tickUpper : recipe.tickLower,
+      launchedTokenIsQuote ? 887_272 : -887_272);
+    assert.equal(launchedTokenIsQuote ? recipe.tickLower : recipe.tickUpper, recipe.launchTick);
+    assert.equal(recipe.launchTick, launchedTokenIsQuote ? -205_420 : 205_419);
+    assert.equal(recipe.launchedTokenAmountMaximum, AUCTION_SUPPLY);
+    assert.equal(recipe.pairedTokenAmountMaximum, 0n);
+    assert(recipe.liquidity > 0n);
+  }
+  assert.throws(() => recipeFor(true, 101), /not an Abyss fee tier/);
+});
+
 
 test("pure initial-buy estimate updates monotonically with input", () => {
   const recipe = deriveLaunchPoolRecipe({

@@ -7,6 +7,7 @@ const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../src/lifecycle/index.ts
 const { ABYSS_LIFECYCLE_CONFIG_SCHEMA, abyssLifecycleAdapterAbi, buildNextTransaction, createLifecycleSessionCache, decodeAbyssLifecycleMarketConfig, encodeAbyssLifecycleMarketConfig, fixedFeePoolHookV1Abi, getKnownLifecycleDeployment, getKnownLifecycleProfile, hashLaunchIdentity, hashLaunchPlan, KnownLifecycleProfile, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleFundingEscrowAbi, lifecycleRegistryAbi, LifecyclePhase, LIFECYCLE_REQUIRED_CAPABILITIES, LIFECYCLE_MULTI_POSITION_CAPABILITY, planLaunch, prepareAndPlanLifecycleLaunch, readLifecycleProfiles, simulateLaunchPlan } = await import(sdkPath);
 const { prepareLaunchSimulation, simulateLaunchTransactions } = await import(sdkPath.replace("index.", "simulation."));
 const { readLifecycleBlock, withLifecycleReadClient } = await import(sdkPath.replace("index.", "rpc."));
+const { ABYSS_FEE_TIERS, deriveLaunchPoolRecipe, deriveLaunchPositionRanges } = await import(sdkPath.replace("lifecycle/index.", "index."));
 const address = (n) => toHex(BigInt(n), { size: 20 });
 const ACCOUNT = address(0xa0), CORE = address(0xf0), REGISTRY = address(0xf1), ESCROW = address(0xf2), ADAPTER = address(0xf3), FACTORY = address(0xf4), TOKEN = address(0x10);
 const CODE = "0x600160005560016000f3";
@@ -41,7 +42,8 @@ function progress(plan, phase = LifecyclePhase.None, prepared = 0) {
 function identity(plan, index) {
   const [currency0, currency1] = BigInt(TOKEN) < BigInt(plan.markets[index].quoteAsset)
     ? [TOKEN, plan.markets[index].quoteAsset] : [plan.markets[index].quoteAsset, TOKEN];
-  const fields = { venue: 1, manager: zeroAddress, factory: FACTORY, pool: address(0x100 + index), poolId: zeroHash, profileId: plan.markets[index].profileId, currency0, currency1, fee: 3000, tickSpacing: 60, hook: zeroAddress, openingSqrtPriceX96: 1n << 96n };
+  const config = decodeAbyssLifecycleMarketConfig(plan.markets[index].config);
+  const fields = { venue: 1, manager: zeroAddress, factory: FACTORY, pool: address(0x100 + index), poolId: zeroHash, profileId: plan.markets[index].profileId, currency0, currency1, fee: config.fee, tickSpacing: ABYSS_FEE_TIERS.find(({ feePips }) => feePips === config.fee).tickSpacing, hook: zeroAddress, openingSqrtPriceX96: config.openingSqrtPriceX96 };
   const canonicalId = keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "uint8" }, { type: "address" }, { type: "address" }, { type: "address" }, { type: "bytes32" }, { type: "bytes32" }], [plan.chainId, fields.venue, fields.manager, fields.factory, fields.pool, fields.poolId, fields.profileId]));
   return { ...fields, canonicalId };
 }
@@ -2489,6 +2491,48 @@ test("native prerequisite and proof catch branches expose refusal without privat
       "A provider failure cannot authorize another economic pass");
   }
 });
+
+for (const token0 of [true, false]) {
+  test(`0.01% token${token0 ? 0 : 1} recipes produce spacing-one ranges admitted by lifecycle planning`, async () => {
+    const plan = makePlan({ chainId: 4663n, token0 });
+    const budget = 100n * 10n ** 18n;
+    plan.token.supply = budget;
+    plan.markets[0].tokenBudget = budget;
+    const recipe = deriveLaunchPoolRecipe({
+      pairedTokenDecimals: 18, pairedTokenUsdPriceX18: 10n ** 18n,
+      targetMarketCapUsdX18: 5n * 10n ** 18n, supply: budget, tokenBudget: budget,
+      launchedTokenIsQuote: token0, fee: 100,
+    });
+    const ranges = deriveLaunchPositionRanges({
+      launchSqrtPriceX96: recipe.launchSqrtPriceX96, launchedTokenIsQuote: token0,
+      tokenBudget: budget, tickSpacing: 1, venue: "abyss",
+      distributionPreset: "staircase", positionCount: 3, positionGaps: "adjacent",
+    });
+    assert.equal(ranges.boundaryTick, token0 ? 887272 : -887272);
+    assert.equal(ranges.tokenAmountMaximum, budget);
+    assert.equal(ranges.positions.length, 3);
+    const config = { ...decodeAbyssLifecycleMarketConfig(plan.markets[0].config), fee: 100,
+      openingSqrtPriceX96: recipe.launchSqrtPriceX96,
+      positions: ranges.positions.map((position) => ({ tickLower: position.tickLower, tickUpper: position.tickUpper,
+        liquidity: position.liquidity, tokenAmountMaximum: position.maxTokenAmount })) };
+    plan.markets[0].config = encodeAbyssLifecycleMarketConfig(config);
+    for (const mode of ["atomic", "staged"]) {
+      const planned = await review(clientFor(plan), plan, { mode });
+      assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+      assert.equal(planned.planHash, hashLaunchPlan(plan));
+      for (const transaction of planned.transactions.filter((transaction) => transaction.to.toLowerCase() === CORE)) {
+        const committed = decodeFunctionData({ abi: launchLifecycleAbi, data: transaction.data }).args[0];
+        assert.equal(hashLaunchPlan(committed), hashLaunchPlan(plan));
+      }
+    }
+    plan.markets[0].config = encodeAbyssLifecycleMarketConfig({ ...config, fee: 101 });
+    await assert.rejects(review(clientFor(plan), plan), { code: "INVALID_MARKET" });
+    plan.markets[0].config = encodeAbyssLifecycleMarketConfig({ ...config,
+      positions: config.positions.map((position, index) => index === config.positions.length - 1
+        ? { ...position, ...(token0 ? { tickUpper: 887271 } : { tickLower: -887271 }) } : position) });
+    await assert.rejects(review(clientFor(plan), plan), { code: "MISSING_PERMANENT_TAIL" });
+  });
+}
 
 for (const token0 of [true, false]) {
   for (const mode of ["atomic", "staged"]) {

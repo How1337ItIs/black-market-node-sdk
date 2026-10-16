@@ -7,6 +7,19 @@ The canonical authorities are the registry/certification/adapter/config contract
 in the protocol repository. Plan identity is `LaunchPlanV1`. Pool-bound V4 uses **config 6**,
 canonical Abyss uses **config 1**, and generic current shared-V4 support uses **config 4**.
 
+## 0.9.1 release: Abyss 0.01% fee tier
+
+`ABYSS_FEE_TIERS` now includes `{ feePips: 100, tickSpacing: 1, label: "0.01%" }`.
+Pass `fee: 100` to `deriveLaunchPoolRecipe` to derive spacing-one geometry without
+an explicit spacing override. Use `tickSpacing: 1` when passing that recipe to
+`deriveLaunchPositionRanges`; the permanent boundary tail reaches tick `887272`
+for launch token0 or `-887272` for launch token1. Abyss config1 lifecycle planning
+derives this spacing from the canonical catalog automatically.
+
+The Robinhood chain 4663 factory has enabled fee 100 with spacing 1. Other
+deployments must enable the tier before execution; local recipe construction is
+not evidence of live profile admission. Existing tiers and defaults are unchanged.
+
 ## 0.9.0 release: HMM pool hooks
 
 The October11 registered **HMM Fixed** and **HMM Dynamic** use
