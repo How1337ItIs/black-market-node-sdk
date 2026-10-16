@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1
+
+- Add the canonical Abyss 0.01% fee tier (`feePips: 100`, `tickSpacing: 1`) to recipes and lifecycle topology planning.
+- Cover both token orderings, spacing-one boundary tails and lifecycle admission without changing existing tiers or launch defaults.
+
 ## 0.9.0
 
 - Add frozen Robinhood mainnet HMM Fixed and HMM Dynamic pool presets with their exact admitted profile, adapter, envelope, dependency graph and hash-verified constructor creation code.
