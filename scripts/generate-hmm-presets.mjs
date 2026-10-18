@@ -1,37 +1,41 @@
-// Regenerate only from the read-only Black Market deployment evidence (commit 1ca9881).
-// node --experimental-transform-types scripts/generate-hmm-presets.mjs /path/to/black-market [Robinhood RPC URL]
+// Regenerate from the preserved HMM V2 release JSON and pinned live admission JSON only.
+// node --experimental-transform-types scripts/generate-hmm-presets.mjs release.json live.json
 import { readFile, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
-import { createPublicClient, http, keccak256, concatHex, zeroAddress } from 'viem';
-import { decodeLaunchEnvelope } from '../src/lifecycle/schema.ts';
-const root = process.argv[2];
-if (!root) throw new Error('Pass the Black Market evidence checkout');
-const client = createPublicClient({ transport: http(process.argv[3] ?? 'https://rpc.mainnet.chain.robinhood.com/') });
-if (await client.getChainId() !== 4663) throw new Error('Expected Robinhood mainnet');
+import { concatHex, decodeAbiParameters, keccak256 } from 'viem';
+import { decodeLaunchEnvelope, hashLifecycleProfile, profileRegistrationV1Components } from '../src/lifecycle/schema.ts';
+const [releasePath, livePath] = process.argv.slice(2);
+if (!releasePath || !livePath) throw new Error('Pass preserved HMM V2 release and live admission JSON files');
+const release = JSON.parse(await readFile(releasePath, 'utf8'));
+const live = JSON.parse(await readFile(livePath, 'utf8'));
 const literal = (value, indent = 0) => {
   if (typeof value === 'bigint') return `${value}n`;
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   return `Object.freeze({\n${Object.entries(value).map(([k,v]) => `${' '.repeat(indent + 2)}${k}: ${literal(v, indent + 2)},`).join('\n')}\n${' '.repeat(indent)}})`;
 };
-for (const [variant, evidence] of [['fixed', '20261011T214314Z-hmm-fixed'], ['dynamic', '20261011T220032Z-hmm-dynamic']]) {
-  const admission = JSON.parse(await readFile(resolve(root, `contracts/deployments/launch/pool-hook-template-v1/${evidence}/admission.json`), 'utf8'));
+const admissions = [];
+for (const [index, variant] of ['fixed', 'dynamic'].entries()) {
+  const admission = release.profiles[index];
+  const observed = live.profiles.find((profile) => profile.profileId === admission.profileId);
+  if (!observed || observed.envelopeBytes !== admission.envelopeBytes || observed.registrationBytes !== admission.registrationBytes || observed.admissionReceipt.status !== '0x1') throw new Error('Pinned admission differs from preserved release');
   const envelope = decodeLaunchEnvelope(admission.envelopeBytes);
-  const chunks = [];
-  for (const index of [0, 1]) {
-    const address = admission.graph[`codeChunk${index}`];
-    if (address.toLowerCase() === zeroAddress) continue;
-    const runtime = await client.getCode({ address });
-    if (!runtime || keccak256(runtime) !== admission.graph[`codeChunk${index}Hash`] || !runtime.startsWith('0x00')) throw new Error('Storage-child runtime differs from admission evidence');
-    chunks.push(`0x${runtime.slice(4)}`);
-  }
-  const creationCode = concatHex(chunks);
-  if (keccak256(creationCode) !== envelope.artifactDigest) throw new Error('Creation-code hash differs');
-  const adapterRuntime = await client.getCode({ address: admission.adapter });
-  if (!adapterRuntime) throw new Error('Missing adapter runtime');
-  const adapter = { implementation: admission.adapter, codeHash: keccak256(adapterRuntime), capabilities: envelope.capabilities, configVersion: envelope.configVersion, enabled: true };
-  const words = admission.registrationBytes.slice(2).match(/.{64}/g);
-  const registration = { adapterId: admission.adapterId, configSchema: `0x${words[1]}`, dependencyDigest: `0x${words[2]}`, venue: envelope.graph.manager, factory: zeroAddress, hook: zeroAddress, capabilities: envelope.capabilities, enabled: true };
+  const registration = decodeAbiParameters([{ type: 'tuple', components: profileRegistrationV1Components }], admission.registrationBytes)[0];
+  const adapterLog = observed.admissionReceipt.logs.find((log) => log.address.toLowerCase() === release.registry.toLowerCase() && log.topics[1] === admission.adapterId && log.topics[2]?.slice(-40).toLowerCase() === admission.adapter.slice(2).toLowerCase());
+  if (!adapterLog) throw new Error('Missing successful adapter admission evidence');
+  const [codeHash, capabilities, configVersion] = decodeAbiParameters([{ type: 'bytes32' }, { type: 'uint64' }, { type: 'uint32' }], adapterLog.data);
+  const adapter = { implementation: admission.adapter, codeHash, capabilities, configVersion, enabled: true };
+  for (const [name, actual, expected] of [
+    ['profile', hashLifecycleProfile(envelope), admission.profileId],
+    ['registered envelope', keccak256(concatHex([admission.registrationBytes, admission.envelopeBytes])), admission.envelopeHash],
+    ['creation code', keccak256(admission.creationCode), envelope.graph.hookCreationCodeHash],
+    ['adapter', registration.adapterId, admission.adapterId],
+  ]) if (actual !== expected) throw new Error(`${variant} ${name} commitment differs: ${actual} != ${expected}`);
   const prefix = `hmm${variant[0].toUpperCase()}${variant.slice(1)}`;
-  await writeFile(new URL(`../src/lifecycle/deployments/hmm-${variant}-pool-hook-v1-20261011.ts`, import.meta.url), `import type { Hex } from "viem";\nimport type { LaunchEnvelopeV2, AdapterRegistrationV1, ProfileRegistrationV1 } from "../schema.js";\n\n// Black Market main 1ca9881: pool-hook-template-v1/${evidence}.\n// Generated by scripts/generate-hmm-presets.mjs from admission bytes and hash-checked live storage children.\nexport const ${prefix}Envelope = ${literal(envelope)} satisfies LaunchEnvelopeV2;\nexport const ${prefix}Adapter = ${literal(adapter)} satisfies AdapterRegistrationV1;\nexport const ${prefix}Registration = ${literal(registration)} satisfies ProfileRegistrationV1;\n// ${creationCode.length / 2 - 1} bytes; keccak256 ${keccak256(creationCode)}; append 640-byte V2 constructor.\nexport const ${prefix}CreationCode: Hex = "${creationCode}";\n`);
-  console.log(variant, admission.profileId, adapter.codeHash, keccak256(creationCode), 'all child hashes verified');
+  await writeFile(new URL(`../src/lifecycle/deployments/hmm-${variant}-pool-hook-v2-20261017.ts`, import.meta.url), `import type { Hex } from "viem";\nimport type { LaunchEnvelopeV2, AdapterRegistrationV1, ProfileRegistrationV1 } from "../schema.js";\n\n// Preserved hooks/${admission.slug}; admission ${admission.admissionTransaction}.\n// Generated by scripts/generate-hmm-presets.mjs; pinned readback block ${live.blockNumber}.\nexport const ${prefix}Envelope = ${literal(envelope)} satisfies LaunchEnvelopeV2;\nexport const ${prefix}Adapter = ${literal(adapter)} satisfies AdapterRegistrationV1;\nexport const ${prefix}Registration = ${literal(registration)} satisfies ProfileRegistrationV1;\n// ${admission.creationCode.length / 2 - 1} bytes; keccak256 ${keccak256(admission.creationCode)}; append the 640-byte PoolBoundHookParametersV2 constructor, not the launch tail.\nexport const ${prefix}CreationCode: Hex = ${JSON.stringify(admission.creationCode)};\n`);
+  admissions.push({ slug: admission.slug, profileId: admission.profileId, adapter, envelopeBytes: admission.envelopeBytes, registrationBytes: admission.registrationBytes, envelopeHash: admission.envelopeHash, admissionTransaction: admission.admissionTransaction, admissionBlock: Number(BigInt(observed.admissionReceipt.blockNumber)), constructor: admission.abi.find((item) => item.type === 'constructor') });
 }
+const abis = { hmmLiquidityManagerV2Abi: release.abis.HMMLiquidityManagerV2, hmmFeeCollectorV2Abi: release.abis.HMMFeeCollectorV2, hmmFeeCollectorFactoryV2Abi: release.abis.HMMFeeCollectorFactoryV2, hmmFixedHookV2Abi: release.profiles[0].abi, hmmDynamicHookV2Abi: release.profiles[1].abi };
+// ABI-only compiler metadata is unnecessary for viem; retain every callable, event and error.
+const cleanAbi = (value) => JSON.parse(JSON.stringify(value, (key, item) => key === 'internalType' ? undefined : item));
+await writeFile(new URL('../src/lifecycle/hmm-abi.ts', import.meta.url), `// Complete HMM V2 ABIs from the preserved admitted release; generated by scripts/generate-hmm-presets.mjs.\n${Object.entries(abis).map(([name, abi]) => `export const ${name} = [\n${cleanAbi(abi).map((item) => `  ${JSON.stringify(item)},`).join('\n')}\n] as const;`).join('\n\n')}\n`);
+await writeFile(new URL('../test/fixtures/hmm-v2-admission.json', import.meta.url), JSON.stringify({ chainId: release.chainId, orchestrator: release.orchestrator, registry: release.registry, observedBlock: live.blockNumber, profiles: admissions }, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2) + '\n');
+console.log('Generated HMM V2 presets, full ABIs and preserved admission fixtures');

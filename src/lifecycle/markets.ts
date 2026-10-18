@@ -96,6 +96,7 @@ export function encodePoolBoundV4LifecycleMarketConfig(config: V4PoolBoundLifecy
   if (isHmmProfile(config.profileId)) {
     if (config.version !== 6 || config.hmmLaunchConfig === undefined) throw new LifecyclePlanningError("INVALID_HMM_CONFIG", "HMM profiles require config6 and an explicit hmmLaunchConfig");
     if (config.lpFeePips !== 0) throw new LifecyclePlanningError("INVALID_HOOK_FEES", "HMM profiles require zero LP fee");
+    if (config.developerFeeBps !== 0) throw new LifecyclePlanningError("DEVELOPER_FEE_CEILING", "HMM profiles require zero developer fee");
     return concatHex([prefix, encodeHmmLaunchTail(config.hmmLaunchConfig)]);
   }
   if (config.version === 6 && config.hmmLaunchConfig !== undefined) throw new LifecyclePlanningError("INVALID_HMM_CONFIG", "An HMM launch tail requires an HMM profile");

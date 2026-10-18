@@ -2,8 +2,8 @@ import { decodeAbiParameters, encodeAbiParameters, type Address, type Hex } from
 import { AUCTION_QUOTE_OPTIONS, ROBINHOOD_WETH } from "../auction.js";
 import { LifecyclePlanningError } from "./types.js";
 
-export const HMM_FIXED_PROFILE_ID: Hex = "0x7e51d9aa979940e7867c75a82e05e924aa067e9d436f7731c3e3299f9e55d53d";
-export const HMM_DYNAMIC_PROFILE_ID: Hex = "0x109598e017b8f12648aff0f0dc04dbf8d4c0493f41a63068682d8f9d0a07a83d";
+export const HMM_FIXED_PROFILE_ID: Hex = "0x45e957bcc7068350a65f5b4de5453b674d54d0f5eb2a88fc839da13197e80e98";
+export const HMM_DYNAMIC_PROFILE_ID: Hex = "0x8e500f203ace505072e209c5f077e11de6d071ac7f298cd75c0e05c6a55c36e6";
 export function isHmmProfile(profileId: Hex): boolean {
   const id = profileId.toLowerCase();
   return id === HMM_FIXED_PROFILE_ID || id === HMM_DYNAMIC_PROFILE_ID;
@@ -14,7 +14,7 @@ export type HmmStrategyConfig = {
   bidWidth: number; askWidth: number; gap: number; staleAfterSeconds: number; staleDisplacement: number;
   minQuoteDeploy: bigint; minQuoteHarvest: bigint; minTokenHarvest: bigint;
   resalePremiumBps: number; maxAsks: number; maxAskTokenExposure: bigint; maxAcquiredInventory: bigint;
-  premiumDecaySeconds: number;
+  premiumDecaySeconds: number; maxBidQuote: bigint; referenceDeviation: number;
 };
 export type HmmLaunchConfig = { strategyShareBps: number; strategy: HmmStrategyConfig };
 export const hmmStrategyComponents = [
@@ -24,6 +24,7 @@ export const hmmStrategyComponents = [
   { name: "minTokenHarvest", type: "uint256" }, { name: "resalePremiumBps", type: "uint16" },
   { name: "maxAsks", type: "uint8" }, { name: "maxAskTokenExposure", type: "uint256" },
   { name: "maxAcquiredInventory", type: "uint256" }, { name: "premiumDecaySeconds", type: "uint32" },
+  { name: "maxBidQuote", type: "uint256" }, { name: "referenceDeviation", type: "int24" },
 ] as const;
 export const hmmLaunchComponents = [
   { name: "strategyShareBps", type: "uint16" }, { name: "strategy", type: "tuple", components: hmmStrategyComponents },
@@ -37,7 +38,7 @@ function amount(name: string, value: bigint, min: bigint, max = (1n << 256n) - 1
 }
 function invalid(message: string): never { throw new LifecyclePlanningError("INVALID_HMM_CONFIG", message); }
 
-/** Mirrors HMMFeeCollectorFactoryV1._decodeHMM, including Solidity field widths. */
+/** Mirrors HMMFeeCollectorFactoryV2._decodeHMM, including Solidity field widths. */
 export function validateHmmLaunchConfig(config: HmmLaunchConfig): void {
   integer("strategyShareBps", config.strategyShareBps, 0, 10000);
   const s = config.strategy;
@@ -49,31 +50,34 @@ export function validateHmmLaunchConfig(config: HmmLaunchConfig): void {
   integer("resalePremiumBps", s.resalePremiumBps, 0, 5000);
   integer("maxAsks", s.maxAsks, 1, 8);
   integer("premiumDecaySeconds", s.premiumDecaySeconds, 0, 0xffffffff);
+  integer("referenceDeviation", s.referenceDeviation, 0, 8388607);
   amount("minQuoteDeploy", s.minQuoteDeploy, 0n);
   amount("minQuoteHarvest", s.minQuoteHarvest, 1n);
   amount("minTokenHarvest", s.minTokenHarvest, 1n);
   const cap = (1n << 128n) - 1n;
   amount("maxAskTokenExposure", s.maxAskTokenExposure, 0n, cap);
   amount("maxAcquiredInventory", s.maxAcquiredInventory, s.minTokenHarvest, cap);
+  amount("maxBidQuote", s.maxBidQuote, 1n, cap);
   if (s.maxAskTokenExposure < BigInt(s.maxAsks) || s.maxAskTokenExposure < s.minTokenHarvest) invalid("maxAskTokenExposure must cover maxAsks and minTokenHarvest");
 }
 
-/** Exactly abi.encode(HMMLaunchConfigV1): fourteen static words (448 bytes). */
+/** Exactly abi.encode(HMMLaunchConfigV2): sixteen static words (512 bytes). */
 export function encodeHmmLaunchTail(config: HmmLaunchConfig): Hex {
   validateHmmLaunchConfig(config);
   return encodeAbiParameters([{ type: "tuple", components: hmmLaunchComponents }], [config]);
 }
 export function decodeHmmLaunchTail(encoded: Hex): HmmLaunchConfig {
-  if (encoded.length !== 2 + 448 * 2) invalid("HMM launch tail must be exactly 448 bytes");
+  if (encoded.length !== 2 + 512 * 2) invalid("HMM launch tail must be exactly 512 bytes");
   const config = decodeAbiParameters([{ type: "tuple", components: hmmLaunchComponents }], encoded)[0];
   if (encodeHmmLaunchTail(config).toLowerCase() !== encoded.toLowerCase()) invalid("HMM launch tail is not canonical");
   return config;
 }
 
-/** Model calibration defaults, not an investment recommendation. Unknown quotes need explicit thresholds. */
+/** Existing calibration defaults; callers must choose the V2 bid and reference guards explicitly. */
 export function defaultHmmLaunchConfig(options: {
   tokenBudget: bigint; quoteAsset: Address | string; quoteDecimals?: number;
   minQuoteDeploy?: bigint; minQuoteHarvest?: bigint;
+  maxBidQuote: bigint; referenceDeviation: number;
 }): HmmLaunchConfig {
   amount("tokenBudget", options.tokenBudget, 1n, (1n << 128n) - 1n);
   const quote = AUCTION_QUOTE_OPTIONS.find((q) => q.id === options.quoteAsset || q.address.toLowerCase() === options.quoteAsset.toLowerCase());
@@ -92,6 +96,7 @@ export function defaultHmmLaunchConfig(options: {
       minQuoteDeploy, minQuoteHarvest, minTokenHarvest: options.tokenBudget / 100000n,
       resalePremiumBps: 500, maxAsks: 4, maxAskTokenExposure: options.tokenBudget / 10n,
       maxAcquiredInventory: options.tokenBudget, premiumDecaySeconds: 0,
+      maxBidQuote: options.maxBidQuote, referenceDeviation: options.referenceDeviation,
     },
   };
   validateHmmLaunchConfig(config);

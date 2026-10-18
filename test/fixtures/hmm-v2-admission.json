@@ -1,0 +1,266 @@
+{
+  "chainId": 4663,
+  "orchestrator": "0x91560876033d568d25CDe98C78c33ff8FC43962c",
+  "registry": "0xB2B0f9F36617810D67b8fC175153Aa10024C1358",
+  "observedBlock": 91874655,
+  "profiles": [
+    {
+      "slug": "hmm-fixed-v2",
+      "profileId": "0x45e957bcc7068350a65f5b4de5453b674d54d0f5eb2a88fc839da13197e80e98",
+      "adapter": {
+        "implementation": "0x7635bb78cb0189a34e0140836bC4f17E62D7a8D4",
+        "codeHash": "0x1349fa8996716d413e76d3e23211754639820cf422b963b8b44db36c7d54b0d1",
+        "capabilities": "123",
+        "configVersion": 6,
+        "enabled": true
+      },
+      "envelopeBytes": "0xf1b6adc6e0321acb5a0febb1d4affb651155fa0b32ad483df209f51dc81b89bee5c552d101e6fed9840debc99b102c14e20ca172453b7d43179b407fb01edc3072e0b2d542556d472a47f9c38b2c91079c72793af847dee77933f0eca203129d27d1c2848ea4c705653408a8245b15d41e5f8163dd0f8220a175c9aa1ee52378000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000060000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000000000000000000000000000000000007b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001afc0000000000000000000000000000000000000000000000000000000000003fff000000000000000000000000961981916ab6575c3af3eececbf6a3b7fad7c9e100000000000000000000000000000000000000000000000000000000000000060000000000000000000000007cb44b8693b3c350a2bcd4b681af85365aa27783000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000007fff0000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000030000000000000000000000008366a39cc670b4001a1121b8f6a443a643e409510000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e7fef2bc860b25bbdeb6f6ab96d88baaa77ddad7000000000000000000000000a65f9415b50e966a67ea6cc607aa899fe6cec9f0000000000000000000000000ca3d4b8612815975dbf5ccb5c49cc0d2c100a72e00000000000000000000000050e3be1389b8001bf1e76787ccbd9e150eb44c37000000000000000000000000f43475da6b379b5da8ad90f9b3886f6392b414809fb8f46c3b980b9db25dfdb487a69a308a86be145860269b4036a4e74480787bbd3881180b547f5fe817545743cfb4343e96b1bc6640dcd70c106b0066e956260000000000000000000000000000000000000000000000000000000000000000974fb5c72d91ccb99f1eb4679a5d4432c82bbaa0906b1c2917ec4da3499b7b980322c569abddd951e410289d2b070fca302879a74f795a4d333cd0f9c2aa564b3b688b50ae22af0ca2074b8f34c96a1ab0cf86b465f758a133f1c15cf74e22ec7a0b4579c42e0c37e96b956a35dca5dcea1eb0c5bb5ff551f5413b4bc00afafe8f8a4be2f2f0b32944bdff45a41adda6518d7a70b4b510512abe9bfab3acf714f1b6adc6e0321acb5a0febb1d4affb651155fa0b32ad483df209f51dc81b89be000000000000000000000000daf66854b3fdac9dd993b6a082080d760468ac17c9f8dba55d8bbd8f515b36a916e8f4aca4c06e60da41fb4eadfdd5e84b3fc4b500000000000000000000000016899c471dbe96b44432d070061158ef3b3547321d1ba90e7518b4632315c4f80d7896793c9ed628a0bc4acbabb7becf6e5377380000000000000000000000000000000000000000000000000000000000000000",
+      "registrationBytes": "0xbd781bb9a1f7abbbfc7a56e88f383c04e0b97241651f156f195091c19bff711451c5ca14c40012f78425cd1afb1ea77980da3fed0490a00911a8a4ed3479204516e80d4dcc52914ed56583fe8b6bd619c7f28079b8d8cd2edf544028087250a20000000000000000000000008366a39cc670b4001a1121b8f6a443a643e4095100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000000000001",
+      "envelopeHash": "0x2a9e5085737fa5a5b4e012e5f8ddc94f35ea09e2f76717b378513caba291af1d",
+      "admissionTransaction": "0x3f997e382b4f88ba3e44ac50c5794dc72afb6b390c9d58f311ad46b5527fea25",
+      "admissionBlock": 91837128,
+      "constructor": {
+        "type": "constructor",
+        "inputs": [
+          {
+            "name": "parameters",
+            "type": "tuple",
+            "internalType": "struct PoolBoundHookParametersV2",
+            "components": [
+              {
+                "name": "poolManager",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "registrar",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "oracleFactory",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "core",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "liquidityLocker",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "token",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "quoteCurrency",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "lpFeePips",
+                "type": "uint24",
+                "internalType": "uint24"
+              },
+              {
+                "name": "tickSpacing",
+                "type": "int24",
+                "internalType": "int24"
+              },
+              {
+                "name": "sqrtPriceX96",
+                "type": "uint160",
+                "internalType": "uint160"
+              },
+              {
+                "name": "hookFeePips",
+                "type": "uint24",
+                "internalType": "uint24"
+              },
+              {
+                "name": "minimumHookFeePips",
+                "type": "uint24",
+                "internalType": "uint24"
+              },
+              {
+                "name": "feeSensitivityPipsSecondsPerTick",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "feeMode",
+                "type": "uint8",
+                "internalType": "uint8"
+              },
+              {
+                "name": "protocolFeeDenominator",
+                "type": "uint8",
+                "internalType": "uint8"
+              },
+              {
+                "name": "treasury",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "externalLiquidityDisabled",
+                "type": "bool",
+                "internalType": "bool"
+              },
+              {
+                "name": "oracleConfigId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "marketCommitment",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "expectedPositionCount",
+                "type": "uint32",
+                "internalType": "uint32"
+              }
+            ]
+          }
+        ],
+        "stateMutability": "nonpayable"
+      }
+    },
+    {
+      "slug": "hmm-dynamic-v2",
+      "profileId": "0x8e500f203ace505072e209c5f077e11de6d071ac7f298cd75c0e05c6a55c36e6",
+      "adapter": {
+        "implementation": "0x886ea067b204257F422F14aF15fF58925370D8d3",
+        "codeHash": "0x4ed9f1ff8516f4acc04b4c6f1601bdd03413ed2c1a9defce9f16631edb40c983",
+        "capabilities": "123",
+        "configVersion": 6,
+        "enabled": true
+      },
+      "envelopeBytes": "0xa34e62ffbe33e4665a8f35521ab6168830d1b49e69d64a7078eb2bc910c22fc243581c257b85c1de39f22cc4133a0df8609ebab69a1437bd79a0edd2098da31c72e0b2d542556d472a47f9c38b2c91079c72793af847dee77933f0eca203129d1f938732548db1e9e447926e14cfec16a0f0eebb542ee295529a1c19535a59ab000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000060000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000000000000000000000000000000000007b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001afc0000000000000000000000000000000000000000000000000000000000003fff000000000000000000000000961981916ab6575c3af3eececbf6a3b7fad7c9e100000000000000000000000000000000000000000000000000000000000000060000000000000000000000007cb44b8693b3c350a2bcd4b681af85365aa27783000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000007fff0000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000030000000000000000000000008366a39cc670b4001a1121b8f6a443a643e409510000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e7fef2bc860b25bbdeb6f6ab96d88baaa77ddad7000000000000000000000000571880b289f73e265da25e3d07289be5cbb55475000000000000000000000000b0b3be89d096e427fbe48041ab57e6aa69826ef70000000000000000000000008ca57c7f4a3982d9574d93fa5cbe0b2f6a69c94a000000000000000000000000eb9b8c3646da8fedea4f0d866d4c74f8eb1b8b719fb8f46c3b980b9db25dfdb487a69a308a86be145860269b4036a4e74480787bbd3881180b547f5fe817545743cfb4343e96b1bc6640dcd70c106b0066e956260000000000000000000000000000000000000000000000000000000000000000974fb5c72d91ccb99f1eb4679a5d4432c82bbaa0906b1c2917ec4da3499b7b98970b70cbcc27f7690072a5cb025687d2060e0fc85bb003208eedd9b21b5a0b0e5c87d0a517f3520bdfe84ba01ca7621dd24236b0973a6f11893bdb591ff74d5c56f0c8a282d05ef4e4d42c727370aaf02153d26a3efe10d5402fca8d667d933180f16e4090509d198117ea5bacb1124c4fb847c7a0535ce6c52cc19ad67e634ba34e62ffbe33e4665a8f35521ab6168830d1b49e69d64a7078eb2bc910c22fc2000000000000000000000000cd36ed8a655a804324fde228e62f7521db990c02d73162845522c086184d0ae6cb572f704a1c3f60483311b09683123fb7e4d39a0000000000000000000000008996e0875e5dab61ef3b5438d05e69542ab5fba53594a628127a8446965a867a682d8a7232372ca0ff57adfba39872093a41fd880000000000000000000000000000000000000000000000000000000000000000",
+      "registrationBytes": "0x41651f0ab87e1ac3ce95346e06cab2e9fd11fe5aed569083d5d1253d14b9d6ff51c5ca14c40012f78425cd1afb1ea77980da3fed0490a00911a8a4ed34792045949ec6492b3f1bd0cff85a9991fe9b48492e57d79dd04c729ad2fe2168b1bdc10000000000000000000000008366a39cc670b4001a1121b8f6a443a643e4095100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000000000001",
+      "envelopeHash": "0x8145b03a7829e7b9ee9b88cfaa852231bbdbf717edcc14b0bd29f883dcf98071",
+      "admissionTransaction": "0xb9008b2db27f8469aaec0b3daf115acfcdd4e6045052378944479532b1463905",
+      "admissionBlock": 91839338,
+      "constructor": {
+        "type": "constructor",
+        "inputs": [
+          {
+            "name": "parameters",
+            "type": "tuple",
+            "internalType": "struct PoolBoundHookParametersV2",
+            "components": [
+              {
+                "name": "poolManager",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "registrar",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "oracleFactory",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "core",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "liquidityLocker",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "token",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "quoteCurrency",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "lpFeePips",
+                "type": "uint24",
+                "internalType": "uint24"
+              },
+              {
+                "name": "tickSpacing",
+                "type": "int24",
+                "internalType": "int24"
+              },
+              {
+                "name": "sqrtPriceX96",
+                "type": "uint160",
+                "internalType": "uint160"
+              },
+              {
+                "name": "hookFeePips",
+                "type": "uint24",
+                "internalType": "uint24"
+              },
+              {
+                "name": "minimumHookFeePips",
+                "type": "uint24",
+                "internalType": "uint24"
+              },
+              {
+                "name": "feeSensitivityPipsSecondsPerTick",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "feeMode",
+                "type": "uint8",
+                "internalType": "uint8"
+              },
+              {
+                "name": "protocolFeeDenominator",
+                "type": "uint8",
+                "internalType": "uint8"
+              },
+              {
+                "name": "treasury",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "externalLiquidityDisabled",
+                "type": "bool",
+                "internalType": "bool"
+              },
+              {
+                "name": "oracleConfigId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "marketCommitment",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "expectedPositionCount",
+                "type": "uint32",
+                "internalType": "uint32"
+              }
+            ]
+          }
+        ],
+        "stateMutability": "nonpayable"
+      }
+    }
+  ]
+}

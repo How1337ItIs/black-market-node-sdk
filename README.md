@@ -17,21 +17,25 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-### HMM pool hooks (0.9.0)
+### HMM V2 pool hooks (0.10.0)
 
-Robinhood mainnet has frozen **HMM Fixed** and **HMM Dynamic** presets:
-`KnownLifecycleProfile.V4HmmFixedPool` / `V4HmmDynamicPool`. Both require zero
-LP and developer fees, plus a typed `HmmLaunchConfig` passed to the config6
-encoder; it appends the required 448-byte tail automatically. Use
-`defaultHmmLaunchConfig({ tokenBudget, quoteAsset, quoteDecimals })` for calibrated
-WETH/USDG defaults. Unknown quotes require explicit raw quote thresholds.
+Robinhood mainnet has admitted **HMM Fixed V2** and **HMM Dynamic V2** presets:
+`KnownLifecycleProfile.V4HmmFixedPool` / `V4HmmDynamicPool`. The generic keys and
+`HmmLaunchConfig` now mean V2 only. Config6 appends an exact **512-byte** tail;
+old HMM profiles and 448-byte payloads are not supported by these helpers.
+Both require zero LP and developer fees.
 
-At harvest, the configured share of **quote fees** funds a per-market HMM
-liquidity manager; the remainder follows the normal creator/reward split.
-Token fees and locked launch positions are untouched. The fee owner can change
-the share later. Premium decay defaults to off (72 hours is an explicit opt-in).
-See [HMM configuration](docs/launch-lifecycle.md#090-release-hmm-pool-hooks) and
-the [pure, unsigned HMM example](examples/hmm-launch-config.ts).
+`defaultHmmLaunchConfig({ tokenBudget, quoteAsset, quoteDecimals, maxBidQuote,
+referenceDeviation })` preserves existing WETH/USDG calibration, but requires
+explicit bid-principal and oracle-reference guards. There are no guessed V2 risk
+defaults. Unknown quotes still require explicit raw quote thresholds.
+
+On each swap, the configured share of fees in **both currencies**, after treasury,
+funds the per-market HMM manager; the remainder follows normal fee distribution.
+HMM does not burn fees or touch locked launch positions. The current fee owner
+can change the share, all 15 strategy settings, and placement pause state using
+the exported V2 ABIs. See [HMM configuration and migration](docs/launch-lifecycle.md#0100-release-hmm-v2-only)
+and the [pure, unsigned example](examples/hmm-launch-config.ts).
 
 ## Examples
 
