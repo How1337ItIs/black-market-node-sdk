@@ -1,8 +1,8 @@
 # Examples
 
-The launch examples use the public `@black-market/sdk` 0.9.0 package and viem.
+The launch examples use the public `@black-market/sdk` 0.11.0 package and viem.
 Build this checkout before running its examples; in a consumer project install
-`@black-market/sdk@0.8.0` or later for the `positionGaps` and recovery APIs.
+`@black-market/sdk@0.11.0` for current gas packing and proof-coverage semantics.
 The default chain-4663 launch cases retain
 the October8 mined fixed pool-bound V4 config6/V2 and canonical Abyss config1 deployment.
 The SDK additionally knows the October11 zero-author-royalty Dynamic Fee Hook;
@@ -72,6 +72,18 @@ generic EVM, not as a Nitro metering substitute. Unsigned review reports
 `transportPreflight: "not-requested"` unless a consumer supplies its active submission
 RPC to build-next. See the
 [lifecycle guide](../docs/launch-lifecycle.md#execution-constraints-and-stateful-simulation).
+
+Robinhood defaults to a 50M aggregate simulation gas-used budget. Inspect
+`simulation.deferredTransactionIds`: admitted/proved means the proven prefix,
+not every future transaction or eventual activation. Deferred commands have no
+gas/price/estimate/admission; obtain each fresh immediate envelope through
+`buildNextTransaction` after canonical progress advances. Reviewed envelopes are
+replayed directly, without measuring/replaying the suffix again. The saved-plan
+CLI prints proof coverage and never signs. Override `limits.maxSimulationGas` only
+for a provider that supports the selected budget. Examples requiring actual
+activation outputs for `buySlippageBps` or economic review refuse if activation is
+deferred; use a suitably higher-budget provider rather than inventing buy outputs.
+
 
 For a real new graph, create the saved plan using `readLifecycleProfiles` with its
 explicit chain/core and admitted pool-bound config6 profile. Supply that graph's RPC
@@ -380,6 +392,13 @@ to tighten the complete transaction envelope: `EXAMPLE_CHAIN_GAS_CAP`,
 `EXAMPLE_HEADROOM_BPS` preserves your explicit 0–10000 policy. These are local
 restrictions, not invented provider/account assurances or admission bypasses.
 Poster allocation is already inside Nitro gas/affordability and is not charged twice.
+
+Robinhood's separate aggregate simulation gas-used budget defaults to **50M**.
+`EXAMPLE_SIMULATION_GAS_CAP` overrides that budget (positive decimal gas) for
+providers supporting more or less. It does not change per-transaction compute
+capacity. Multi-step examples requiring full activation outputs for buy protection
+and economic review need a provider/budget covering activation, or refuse before
+signing; do not raise the setting beyond the provider's actual supported budget.
 
 ### Evidence and failure recovery
 

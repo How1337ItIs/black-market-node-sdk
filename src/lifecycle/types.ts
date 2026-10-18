@@ -44,7 +44,9 @@ export type LifecycleLimitContext = { client: LifecycleRpcClient; account: Addre
 export type LifecycleLimits = {
   /** Optional tightening caps on the complete transaction gas envelope, including Nitro poster gas. */
   headroomBps?: number; chainGasLimit?: bigint; rpcGasLimit?: bigint; accountGasLimit?: bigint;
-  maxCalldataBytes?: number; maxSimulationGas?: bigint;
+  maxCalldataBytes?: number;
+  /** Aggregate gas-used budget for one simulation request; defaults to 50M on chain 4663. */
+  maxSimulationGas?: bigint;
   chainId?: bigint; orchestrator?: Address; account?: Address; observedBlockNumber?: bigint; observedBlockHash?: Hash;
   /** External data fee not already charged in gas, called with exact calldata and the pinned block.
    * Nitro poster fees are included in gas and use the native NodeInterface instead. */
@@ -112,9 +114,12 @@ export type LifecycleSimulationStep = {
 };
 export type LifecycleSimulation = LifecycleProofOutcomes & {
   backend: "eth_simulateV1" | "controlled-fork" | "unavailable";
+  /** Admission/proved outcomes cover the successful prefix, not the deferred suffix. */
   confidence: "stateful" | "provisional"; admitted: boolean;
   blockNumber: bigint; blockHash: Hash; account: Address; chainId: bigint;
   steps: readonly LifecycleSimulationStep[]; limits: ResolvedLifecycleLimits;
+  /** Unproved suffix. These transactions receive no gas, price, estimate or admission. */
+  deferredTransactionIds: readonly string[];
   reason?: string; failedTransactionId?: string;
   failureCategory?: LifecycleFailureCategory; capacityConstraint?: LifecycleCapacityConstraint;
 };
@@ -163,7 +168,7 @@ export type PlannedLaunch = {
   /** Exact CREATE2 metadata captured from the final committed bound markets. */
   hookDeployments: readonly LifecyclePoolBoundHookDeployment[];
   progress: CanonicalLaunchProgress;
-  preparationBatchSize: number; limits?: LifecycleLimitSource;
+  limits?: LifecycleLimitSource;
   /** Unstarted-launch admission choices only; never part of the committed plan or calldata. */
   allowTopologyGaps?: boolean; allowMissingPermanentTail?: boolean;
 };
@@ -204,8 +209,8 @@ export type BuildNextTransactionOptions = ReadLaunchProgressOptions & {
   planned: PlannedLaunch; action?: "continue" | "cancel"; limits?: LifecycleLimitSource; fork?: ControlledLifecycleFork;
   /** Optional active submission RPC. Only the immediate next exact transaction is estimated, read-only. */
   submissionClient?: LifecycleRpcClient;
-  /** Untrusted reviewed next envelope. Fresh canonical semantics and complete
-   * execution/headroom/affordability proof must accept its exact gas and gasPrice. */
+  /** Untrusted reviewed next envelope. Canonical identity and direct exact replay
+   * prove only this immediate transaction at its held gas and gasPrice. */
   reviewedTransaction?: LifecycleTransaction;
 };
 export class LifecyclePlanningError extends Error {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.0
+
+- Size HMM V2 atomic/activation gas with one forwarding reserve (`4,250,000 + 500,000 × (HMM markets − 1)`) in addition to measured gross gas. Clamp reserve/headroom targets to legal compute and total-envelope caps instead of refusing optional padding; exact signed-envelope replay remains mandatory.
+- Greedily pack staged preparations using 14.5M per HMM V2 market and 16M per other market. Split only a packed batch whose measurement fails after using at least 95% of its envelope, including CREATE-wrapped `DeploymentFailed`. Remove the misleading `PlannedLaunch.preparationBatchSize`; inspect exact transaction spans instead.
+- Default Robinhood's aggregate simulation gas-used budget to 50M (`limits.maxSimulationGas`). Prove the longest estimated prefix and expose `simulation.deferredTransactionIds`; deferred commands have no gas, price, estimate or admission. Proved/admitted flags describe the prefix, not eventual activation. Build-next refreshes proof as canonical progress advances.
+- Replay a reviewed immediate envelope directly at its held gas/price, without a new measurement, gas-price/poster recommendation or suffix replay. Preserve identity, deployment, nonce/receipt/confirmation, native Nitro, balance and canonical-state checks; allow at most one legal-envelope rescue for genuine OOG on newly sized envelopes.
+- Refuse buy-slippage calibration when activation outputs lie beyond proof coverage; update lifecycle documentation, unsigned examples and focused offline regressions. No new signing or broadcast behavior.
+
 ## 0.10.0
 
 - **Breaking HMM-only cutover:** generic HMM types, helpers and profile keys now select the admitted HMM V2 release. Remove HMM V1 preset identities, creation metadata and versioned hook keys; use `KnownLifecycleHook.HmmFixedPoolV2` / `HmmDynamicPoolV2`. Non-HMM V1 APIs are unchanged.

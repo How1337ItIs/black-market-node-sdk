@@ -540,6 +540,7 @@ export async function readExampleConfiguration(sdk, redactor, env = process.env)
       chainTransactionGasLimit: gasCap("EXAMPLE_CHAIN_GAS_CAP"),
       rpcTransactionGasLimit: gasCap("EXAMPLE_RPC_GAS_CAP"),
       accountTransactionGasLimit: gasCap("EXAMPLE_ACCOUNT_GAS_CAP"),
+      rpcTotalSimulationGasLimit: gasCap("EXAMPLE_SIMULATION_GAS_CAP"),
       maxCalldataBytes: integer("EXAMPLE_MAX_CALLDATA_BYTES", undefined, 1, Number.MAX_SAFE_INTEGER),
       headroomBps: integer("EXAMPLE_HEADROOM_BPS", 1500, 0, 10000),
       provenance: { scope: "user-ceilings", note: "Optional local tightening restrictions, not verified provider or account limits" },

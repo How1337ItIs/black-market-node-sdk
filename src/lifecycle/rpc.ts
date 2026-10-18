@@ -433,6 +433,7 @@ async function resolveLifecycleLimitsFresh(context: LifecycleLimitContext, sourc
     throw new LifecyclePlanningError("LIMIT_CONTEXT_MISMATCH", "Supplied execution policy provenance differs from the canonical chain/account/core/block context");
   }
   const protocol = context.chainId === 4663n ? "nitro" : "evm";
+  const maxSimulationGas = configuration.maxSimulationGas ?? (context.chainId === 4663n ? 50_000_000n : undefined);
   let arbOSVersion: bigint | undefined; let maxTxComputeGas: bigint | undefined; let maxBlockComputeGas: bigint | undefined;
   if (protocol === "nitro") {
     try {
@@ -464,14 +465,14 @@ async function resolveLifecycleLimitsFresh(context: LifecycleLimitContext, sourc
     ...(configuration.rpcGasLimit === undefined ? ["RPC transaction gas-envelope cap is unknown"] : []),
     ...(configuration.accountGasLimit === undefined ? ["Current account/wallet transaction gas-envelope cap is unknown"] : []),
     ...(configuration.maxCalldataBytes === undefined ? ["Applicable chain/account/RPC calldata byte cap is unknown"] : []),
-    ...(configuration.maxSimulationGas === undefined ? ["RPC aggregate simulation gas cap is unknown"] : []),
+    ...(maxSimulationGas === undefined ? ["RPC aggregate simulation gas cap is unknown"] : []),
   ];
   assertCurrent();
   return {
     configuration, assertCurrent,
     limits: Object.freeze({
       protocol, executionGasCeiling, transactionGasCeiling, arbOSVersion, maxTxComputeGas, maxBlockComputeGas, headroomBps,
-      maxCalldataBytes: configuration.maxCalldataBytes, maxSimulationGas: configuration.maxSimulationGas,
+      maxCalldataBytes: configuration.maxCalldataBytes, maxSimulationGas,
       blockGasLimit: context.block.gasLimit, chainGasLimit: configuration.chainGasLimit,
       rpcGasLimit: configuration.rpcGasLimit, accountGasLimit: configuration.accountGasLimit,
       unknownExecutionConstraints: Object.freeze(unknownExecutionConstraints),

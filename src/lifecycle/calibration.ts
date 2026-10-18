@@ -43,6 +43,7 @@ export function validateBuySlippageBps(bps: number): void {
 export function protectOrderedBuyMinimums(planned: PlannedLaunch, bps: number): LaunchPlanV1 {
   validateBuySlippageBps(bps);
   const { simulation, plan } = planned;
+  if (simulation.deferredTransactionIds.length !== 0) throw new LifecyclePlanningError("LAUNCH_DIAGNOSTIC_FAILED", "Buy slippage calibration requires actual activation outputs beyond the proven RPC prefix; use a higher aggregate simulation cap/provider or preserve already committed minima without buySlippageBps", simulation);
   if (simulation.confidence !== "stateful" || simulation.backend === "unavailable" || simulation.steps.length !== planned.transactions.length || simulation.steps.some((step, index) => !step.success || step.transactionId !== planned.transactions[index]?.id)) throw new LifecyclePlanningError("LAUNCH_DIAGNOSTIC_FAILED", simulation.reason ?? "The complete diagnostic launch sequence did not execute successfully", simulation);
   const activation = planned.transactions.find((transaction) => transaction.kind === "atomic" || transaction.kind === "activate");
   const step = simulation.steps.find((candidate) => candidate.transactionId === activation?.id);

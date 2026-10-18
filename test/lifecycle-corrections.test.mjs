@@ -185,7 +185,7 @@ function minimalPlanned(plan) {
     plan, planHash: hashLaunchPlan(plan), launchId: hashLaunchIdentity(plan), predictedToken: TOKEN, tokenFactory: ADAPTER, tokenFactoryCodeHash: keccak256(CODE), hookDeployments: [],
     account: plan.creator, chainId: plan.chainId, mode: "staged", confirmations: 1,
     transactions: [], prerequisites: [], profiles: [], simulation,
-    progress: null, preparationBatchSize: plan.markets.length,
+    progress: null,
   };
 }
 
