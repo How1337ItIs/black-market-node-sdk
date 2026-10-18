@@ -7,6 +7,7 @@
 - Default Robinhood's aggregate simulation gas-used budget to 50M (`limits.maxSimulationGas`). Prove the longest estimated prefix and expose `simulation.deferredTransactionIds`; deferred commands have no gas, price, estimate or admission. Proved/admitted flags describe the prefix, not eventual activation. Build-next refreshes proof as canonical progress advances.
 - Replay a reviewed immediate envelope directly at its held gas/price, without a new measurement, gas-price/poster recommendation or suffix replay. Preserve identity, deployment, nonce/receipt/confirmation, native Nitro, balance and canonical-state checks; allow at most one legal-envelope rescue for genuine OOG on newly sized envelopes.
 - Refuse buy-slippage calibration when activation outputs lie beyond proof coverage; update lifecycle documentation, unsigned examples and focused offline regressions. No new signing or broadcast behavior.
+- When no simulation prefix fits, report an immediate estimated per-transaction compute overflow before the RPC aggregate-budget diagnostic, with concise one-decimal-million gas estimates. Conservative estimates alone do not reject otherwise provable envelopes.
 
 ## 0.10.0
 

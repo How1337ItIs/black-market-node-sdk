@@ -437,7 +437,7 @@ async function planLaunchWithReads(options: PlanLaunchOptions, client: Lifecycle
         assertFinalPlan(planned, options.signal);
       }
       if (!simulation.admitted && simulation.failedTransactionId === "activate") simulation = { ...simulation, reason: `${simulation.reason ?? "Final activation failed"}; final mint/lock/all-buys/public-opening is indivisible and will not be partitioned` };
-    } else if (!diagnostic && !simulation.admitted) {
+    } else if (!diagnostic && !simulation.admitted && !(simulation.capacityConstraint === "compute" && simulation.confidence === "provisional")) {
       simulation = { ...simulation, reason: `${simulation.reason ?? "Exact atomic plan is not admitted"}; choose staged explicitly only if empty preparation can be partitioned and complete activation fits` };
     }
     if (reviewed !== undefined && !matchesReviewedNextTransaction(transactions[0], reviewed)) {

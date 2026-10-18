@@ -820,6 +820,24 @@ test("aggregate gas-used budgets prove the longest estimated prefix rather than 
   assert.equal(economicRequests(overflow).length, 0);
 });
 
+test("no-prefix refusal reports immediate compute overflow before the RPC aggregate budget", async () => {
+  const two = makeHmmPlan(2), impossible = clientFor(two);
+  const refused = await review(impossible, two);
+  assert.equal(refused.simulation.admitted, false);
+  assert.equal(refused.simulation.failureCategory, "capacity");
+  assert.equal(refused.simulation.capacityConstraint, "compute");
+  assert.equal(refused.simulation.reason, "Atomic launch needs about 55.3M gas, above the 32.0M per-transaction limit; use staged");
+  assert.equal(economicRequests(impossible).length, 0);
+  const one = makePlan({ chainId: 4663n });
+  const budget = await review(clientFor(one), one, { limits: { maxSimulationGas: 30_000_000n } });
+  assert.equal(budget.simulation.admitted, false);
+  assert.equal(budget.simulation.capacityConstraint, "simulation-gas");
+  assert.match(budget.simulation.reason, /RPC aggregate simulation gas cap/);
+  const fitting = makeHmmPlan();
+  assert.equal((await review(clientFor(fitting, { computeUsed: 27_360_000n }), fitting)).simulation.admitted, true,
+    "Conservative estimates alone must not reject a provable single-HMM atomic envelope");
+});
+
 test("measurement transport exhaustion truncates only at the observed aggregate ceiling", async () => {
   const plan = makePlan({ chainId: 4663n });
   for (const exhausted of [true, false]) {

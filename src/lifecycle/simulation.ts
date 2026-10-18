@@ -488,8 +488,18 @@ async function simulateLaunchTransactionsWithContext(
     transactions = transactions.slice(0, count);
     base.deferredTransactionIds = allTransactions.slice(count).map((transaction) => transaction.id);
     if (count === 0) {
+      const computeCap = limits.transactionGasCeiling !== undefined && limits.transactionGasCeiling < limits.executionGasCeiling ? limits.transactionGasCeiling : limits.executionGasCeiling;
+      const exceedsCompute = estimatedGas > computeCap;
+      const gasInMillions = (gas: bigint) => {
+        const tenths = (gas + 50_000n) / 100_000n;
+        return `${tenths / 10n}.${tenths % 10n}`;
+      };
+      const atomic = allTransactions[0]!.kind === "atomic";
+      const reason = exceedsCompute
+        ? `${atomic ? "Atomic launch" : "Immediate transaction"} needs about ${gasInMillions(estimatedGas)}M gas, above the ${gasInMillions(computeCap)}M per-transaction limit${atomic ? "; use staged" : ""}`
+        : "The immediate transaction estimate exceeds the RPC aggregate simulation gas cap; no prefix can be proved";
       await assertLifecycleBlock(client, block, planned.chainId);
-      return { ...base, confidence: "provisional", executionProof: "unavailable", backend: "unavailable", admitted: false, steps: [], failureCategory: "capacity", capacityConstraint: "simulation-gas", reason: "The immediate transaction estimate exceeds the RPC aggregate simulation gas cap; no prefix can be proved" };
+      return { ...base, confidence: "provisional", executionProof: "unavailable", backend: "unavailable", admitted: false, steps: [], failureCategory: "capacity", capacityConstraint: exceedsCompute ? "compute" : "simulation-gas", reason };
     }
   }
   const recommendedGasPrice = nextEnvelope === undefined ? rpcQuantity(gasPriceValue, "gas price") : nextEnvelope.gasPrice;

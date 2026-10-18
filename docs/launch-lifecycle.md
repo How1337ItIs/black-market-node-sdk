@@ -33,6 +33,10 @@ for a provider with a different budget. The SDK measures and validates the longe
 estimated prefix that fits: begin 9.5M, preparations as above, activation 6M per
 market plus `R`, and small approvals/cancellation. A measurement failure after
 cumulative use reaches 95% of that cap defers the failed call and suffix.
+If even the immediate estimate cannot fit that budget, refusal first identifies
+any estimated per-transaction compute overflow (gas displayed in millions to one
+decimal), rather than suggesting that a larger RPC budget solves it. Estimates
+alone do not reject an envelope that can still be measured and exactly proved.
 
 `simulation.admitted`, `executionProof: "proved"` and `protocolFit: "proved"` cover
 only the successful proven prefix. **They do not promise eventual activation.**
