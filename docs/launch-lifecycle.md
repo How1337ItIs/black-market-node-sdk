@@ -20,72 +20,138 @@ The Robinhood chain 4663 factory has enabled fee 100 with spacing 1. Other
 deployments must enable the tier before execution; local recipe construction is
 not evidence of live profile admission. Existing tiers and defaults are unchanged.
 
-## 0.9.0 release: HMM pool hooks
+## 0.10.0 release: HMM V2 only
 
-The October11 registered **HMM Fixed** and **HMM Dynamic** use
-`KnownLifecycleProfile.V4HmmFixedPool` (`v4-hmm-fixed-pool`) and
-`KnownLifecycleProfile.V4HmmDynamicPool` (`v4-hmm-dynamic-pool`), with hook keys
-`KnownLifecycleHook.HmmFixedPoolV1` / `HmmDynamicPoolV1`. Their frozen profile,
-adapter, envelope, graph, runtime hashes and creation code come from Black Market
-main `1ca9881`, admissions `20261011T214314Z-hmm-fixed` and
-`20261011T220032Z-hmm-dynamic`. Each graph has its own HMM collector/deployer and
-locker; these are not aliases for the existing fixed/dynamic hooks.
-Live `readLifecycleProfiles` remains the authority for `admitted`, not the presets.
+The admitted October17 **HMM Fixed V2** and **HMM Dynamic V2** replace the SDK's
+earlier HMM offerings. Generic keys `KnownLifecycleProfile.V4HmmFixedPool`
+(`v4-hmm-fixed-pool`) and `V4HmmDynamicPool` (`v4-hmm-dynamic-pool`) now select V2.
+Versioned hook keys are `KnownLifecycleHook.HmmFixedPoolV2` / `HmmDynamicPoolV2`.
+These are not aliases for the non-HMM fixed/dynamic hooks; those APIs are unchanged.
 
-Both require `lpFeePips: 0` and `developerFeeBps: 0`. Fixed uses `hookFeePips`
-as the static trading fee; Dynamic uses the same minimum/maximum/sensitivity
-policy as the Dynamic Fee Hook. Config6 requires `hmmLaunchConfig`:
+| Preset | Admitted V2 profile ID |
+| --- | --- |
+| HMM Fixed V2 (`hooks/hmm-fixed-v2`) | `0x45e957bcc7068350a65f5b4de5453b674d54d0f5eb2a88fc839da13197e80e98` |
+| HMM Dynamic V2 (`hooks/hmm-dynamic-v2`) | `0x8e500f203ace505072e209c5f077e11de6d071ac7f298cd75c0e05c6a55c36e6` |
+
+Frozen adapters, envelopes, complete dependency graphs, creation code and admission
+fixtures preserve the V2 release and pinned registry readback at block 91,874,655.
+Each graph has its own collector/deployer, locker and hook deployer. Presets are
+construction data, not a current admission certificate: live
+`readLifecycleProfiles` and execution proof remain authoritative.
+
+Both require `lpFeePips: 0` and `developerFeeBps: 0`. Fixed charges `hookFeePips`
+as its static fee; Dynamic uses config6 minimum/maximum/sensitivity policy.
+Config6 requires a typed `hmmLaunchConfig`:
 
 ```ts
 const hmmLaunchConfig = defaultHmmLaunchConfig({
   tokenBudget: marketTokenBudget, quoteAsset: "USDG", quoteDecimals: 6,
+  // Illustrative caller choices, not SDK risk defaults:
+  maxBidQuote: 100n * 10n ** 6n, // maximum 100 USDG of new/refreshed bid principal
+  referenceDeviation: 0, // do not ask below or bid above the rounded reference
 });
-// Optional explicit UI choices:
-hmmLaunchConfig.strategyShareBps = 2500; // 25%; default 50%; 100% is also valid.
-hmmLaunchConfig.strategy.premiumDecaySeconds = 259200; // 72h; default off (0).
+hmmLaunchConfig.strategyShareBps = 2500; // optional 25%; existing default is 50%
+hmmLaunchConfig.strategy.premiumDecaySeconds = 259200; // optional 72h; default off
 const config = encodePoolBoundV4LifecycleMarketConfig({
   ...reviewedV6Fields, lpFeePips: 0, developerFeeBps: 0, hmmLaunchConfig,
 });
 ```
 
-`HmmStrategyConfig` / `HmmLaunchConfig` mirror Solidity
-`HMMStrategyConfigV1` / `HMMLaunchConfigV1`; `encodeHmmLaunchTail` produces exactly
-`abi.encode(HMMLaunchConfigV1)` (448 bytes). The V6 codec automatically appends it
-only for HMM profile IDs and rejects a missing tail. Decoding preserves the typed
-tail through `prepareAndPlanLifecycleLaunch` salt mining and recovery; plain V6,
-noncanonical prefixes and incorrectly sized tails are rejected before RPC planning.
-The full plan hash includes the tail. The hook constructor's market-economics
-commitment hashes only the canonical V6 prefix with zero salt, exactly as the
-HMM collector factory does.
+`HmmStrategyConfig` / `HmmLaunchConfig` are V2-only and mirror Solidity
+`HMMStrategyConfigV2` / `HMMLaunchConfigV2`. `encodeHmmLaunchTail` produces exactly
+`abi.encode(HMMLaunchConfigV2)`: **16 static words / 512 bytes**. The V6 codec
+appends the tail only for current HMM profile IDs. Missing tails, old 448-byte
+tails, extra words and noncanonical prefixes are rejected before RPC planning.
+Mining and recovery preserve the typed tail. The full launch-plan hash binds
+every tail byte, including both new guards.
 
-`validateHmmLaunchConfig` mirrors the collector factory: share <=10,000 bps;
-positive bid/ask widths and stale displacement, nonnegative gap, positive stale
-seconds and harvest thresholds; resale premium <=5,000 bps; 1–8 asks; exposure
->= ask count and minimum token harvest; inventory >= minimum token harvest;
-both caps <= uint128 max. Solidity int24/uint32/uint256 widths are enforced.
-Minimum quote deployment may be zero; premium decay is any uint32.
-Widths, gap and displacement are **tick spacings**, not raw ticks.
+The hook constructor is still **one 20-word / 640-byte
+`PoolBoundHookParametersV2` tuple**. Do not append the HMM tail to creation code.
+The collector factory hashes only the canonical config6 prefix with zero hook
+salt for the hook's market-economics commitment; the auxiliary strategy settings
+are handed to the manager through the collector. Changing those settings changes
+the full plan commitment, but not the hook constructor's prefix-only commitment.
 
-Defaults: 50% share; widths 5/5, gap 1, stale 86,400 seconds/displacement 5,
-resale premium 500 bps, 4 asks, decay off. Token thresholds are raw market-budget
-ratios: harvest budget/100,000, ask exposure budget/10, acquired inventory budget.
-Budgets too small to produce a positive harvest or above uint128 are rejected.
-WETH minimum quote deploy/harvest is 0.0005/0.005 ETH; USDG is 1/10 six-decimal
-units. Symbols and canonical catalog addresses work; supplied decimals must match.
-Other quotes require explicit `minQuoteDeploy` and `minQuoteHarvest` raw values.
-Do not infer USD prices or units for unsupported assets.
+`validateHmmLaunchConfig` enforces the factory's exact launch guards and Solidity
+field widths. Share is 0..10,000 bps. All 15 strategy fields are listed in wire order:
 
-Each harvest sends the share of collected **QUOTE** fees to the per-market manager;
-the remainder follows the normal owner/holder-reward split. Token-side fees are
-untouched. The fee owner may call `HMMFeeCollectorV1.setStrategyShareBps` later.
-The manager bids below price and re-sells acquired inventory at/above realized
-cost plus premium; it never touches the locked launch positions.
+| Field | Unit and accepted launch values |
+| --- | --- |
+| `bidWidth` | Tick spacings; positive int24 |
+| `askWidth` | Tick spacings; positive int24 |
+| `gap` | Tick spacings; nonnegative int24 |
+| `staleAfterSeconds` | Positive uint32 seconds |
+| `staleDisplacement` | Tick spacings; positive int24 |
+| `minQuoteDeploy` | Raw quote units; any uint256, including zero |
+| `minQuoteHarvest` | Raw quote units; positive uint256 |
+| `minTokenHarvest` | Raw launch-token units; positive, covered by both token caps |
+| `resalePremiumBps` | 0..5,000 bps |
+| `maxAsks` | 1..8 |
+| `maxAskTokenExposure` | Raw launch-token units; at least ask count and minimum token harvest, at most uint128 max |
+| `maxAcquiredInventory` | Raw launch-token units; at least minimum token harvest, at most uint128 max |
+| `premiumDecaySeconds` | Any uint32 seconds; zero disables decay |
+| `maxBidQuote` | Raw quote-principal ceiling for new/refreshed bids; positive and at most uint128 max |
+| `referenceDeviation` | Tick spacings; nonnegative int24 |
 
-Independent Solidity ABI fixtures are generated by
-`node scripts/generate-hmm-fixtures.mjs` (Foundry `cast abi-encode`). Snapshot
-regeneration uses `node --experimental-transform-types scripts/generate-hmm-presets.mjs
-/path/to/black-market`; it reads hash-checked storage-child runtime code from
-Robinhood without modifying the evidence checkout.
+For reference pool tick `R`, deviation `D` and spacing `S`, ask lower is at least
+`R - D*S` and bid upper is at most `R + D*S`, with side-appropriate grid rounding.
+The reference comes from the hook's truncated oracle, not an independent spot
+price supplied by the caller.
+
+The default helper **requires explicit `maxBidQuote` and `referenceDeviation`**;
+neither has a guessed risk default. All other defaults are preserved: 50% share,
+widths 5/5, gap 1, stale 86,400 seconds/displacement 5, premium 500 bps, 4 asks,
+decay off. Token thresholds are raw market-budget ratios: harvest budget/100,000,
+ask exposure budget/10, inventory budget. Too-small budgets producing zero harvest
+and budgets above uint128 are rejected. WETH quote deploy/harvest thresholds remain
+0.0005/0.005 ETH; USDG is 1/10 six-decimal units. Catalog symbols/addresses work;
+explicit decimals must match. Other quotes require explicit `minQuoteDeploy` and
+`minQuoteHarvest`; no unsupported asset's USD price or units are inferred.
+
+### V2 fee funding and owner controls
+
+V2 reserves the strategy share **on each swap in both pool currencies, after the
+protocol treasury share**, rather than waiting for harvest. The remaining fees
+follow the normal fee-hub distribution. HMM itself does not burn fees and never
+touches the permanently locked launch positions.
+
+The browser-safe lifecycle and root exports include complete
+`hmmLiquidityManagerV2Abi`, `hmmFeeCollectorV2Abi`, `hmmFeeCollectorFactoryV2Abi`,
+`hmmFixedHookV2Abi` and `hmmDynamicHookV2Abi`. Use ordinary viem contract calls;
+the SDK adds no speculative transaction wrappers:
+
+- Read `strategyOwner()` and `liquidityManager()` on the collector. Authority
+  follows the **current** fee owner from the canonical hub/fee-owner registry.
+- Call collector `setStrategyShareBps(uint16)` for 0..10,000 bps. It changes future
+  swap reservations, not fees already reserved.
+- Read manager `strategyConfig()` for the complete 15-field tuple, then call
+  `setStrategyConfig(HMMStrategyConfigV2)` to update every setting immediately.
+  This queues a book refresh for the next maintenance pass. Lowering intake caps
+  does not forcibly liquidate existing inventory; existing lots keep their stored
+  floor and age. New premium settings apply to newly acquired lots.
+- Read `placementsPaused()` and call `setPlacementsPaused(bool)` on the manager.
+  Pausing queues auxiliary-liquidity withdrawal on maintenance and stops new
+  placements, not trading or fee collection. It does not withdraw locked launch LP.
+
+These writes require the current fee-owner wallet and explicit transaction
+authorization. Read-only planning never invokes them.
+
+### Breaking migration from the earlier HMM SDK
+
+Rebuild unstarted HMM plans with the new preset IDs/adapters/graphs, supply both
+new guards, re-encode the 512-byte tail, and re-mine/re-prove the resulting plan.
+Do not pad old 448-byte payloads, reuse an old graph/salt, or relabel old bytes.
+The former `HmmFixedPoolV1` / `HmmDynamicPoolV1` enum members and old HMM metadata
+have no compatibility aliases. Existing onchain HMM V1 profiles/markets were not
+deregistered or upgraded by this SDK release; submitted legacy plans must not be
+mutated into V2 plans. Use tooling matching their original contract release.
+
+Independent Solidity ABI fixtures are regenerated with
+`node scripts/generate-hmm-fixtures.mjs` (Foundry `cast abi-encode` / `calldata`).
+To regenerate canonical V2 metadata/ABIs from preserved evidence without RPC or
+onchain writes, use `node --experimental-transform-types
+scripts/generate-hmm-presets.mjs release.json live.json`; both JSON files must be
+the exact V2 release and matching successful admission/pinned-readback records.
 
 ## 0.8.1 release
 

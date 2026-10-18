@@ -12,7 +12,7 @@ const { createLifecycleSessionCache, decodePoolBoundV4LifecycleMarketConfig, enc
   lifecycleAdapterAbi, lifecycleErc20Abi, lifecycleFundingEscrowAbi, lifecycleOracleFactoryAbi, lifecycleRegistryAbi, lifecycleV4LockerAbi,
   poolFeeCollectorFactoryV1Abi, poolFeeCollectorFactoryConfigV6Abi, poolHookDeployerV1Abi, poolHookDeployerConfigV6Abi, poolMarketAdapterV1Abi, parseLaunchPlan, planLaunch,
   prepareAndPlanLifecycleLaunch, minePoolBoundHookSalt, readLaunchProgress, readPoolBoundHookDeployment, buildPoolBoundHookDeploymentTransaction, LIFECYCLE_MULTI_POSITION_CAPABILITY,
-  LIFECYCLE_REQUIRED_CAPABILITIES, readLifecycleProfiles, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V5, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V6 } = await import(sdkPath);
+  LIFECYCLE_REQUIRED_CAPABILITIES, readLifecycleProfiles, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V5, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V6, KnownLifecycleProfile, getKnownLifecycleProfile } = await import(sdkPath);
 const { assertLifecycleBlock, lifecyclePinnedRpc, lifecycleStaticRpc, lifecycleRpc, readLifecycleBlock, readLifecycleChainId, readLifecycleContract, readLifecycleStaticContract, withLifecycleReadClient } = await import(rpcPath);
 const address = (value) => toHex(BigInt(value), { size: 20 });
 const hash = (value) => toHex(BigInt(value), { size: 32 });
@@ -23,26 +23,27 @@ const echoAbi = parseAbi(["function echo() view returns (uint256)", "function ch
 
 // Complete version-selected observations exercise the real graph certification path.
 // These are offline RPC fixtures, not deployment or simulation evidence.
-function boundProfileClient({ configVersion = 6, secondChunk = false, extraCapabilities = 0n, pinnedTags = ["0x2a"] } = {}) {
+function boundProfileClient({ configVersion = 6, secondChunk = false, extraCapabilities = 0n, pinnedTags = ["0x2a"], hmmPreset } = {}) {
   const deployerAbi = configVersion === 5 ? poolHookDeployerV1Abi : poolHookDeployerConfigV6Abi;
   const collectorAbi = configVersion === 5 ? poolFeeCollectorFactoryV1Abi : poolFeeCollectorFactoryConfigV6Abi;
   const hookAbi = configVersion === 5 ? fixedFeePoolHookV1Abi : fixedFeePoolHookConfigV6Abi;
   const codeHash = keccak256(CODE);
-  const chunk0 = secondChunk ? `0x00${"60".repeat(24575)}` : CHUNK;
-  const chunk1 = secondChunk ? CHUNK : "0x";
-  const creationCode = concatHex([`0x${chunk0.slice(4)}`, secondChunk ? `0x${chunk1.slice(4)}` : "0x"]);
-  const capabilities = LIFECYCLE_REQUIRED_CAPABILITIES | extraCapabilities;
-  const bounds = { minimumTickSpacing: 1, maximumTickSpacing: 200, maximumPositions: 32, maximumOracleCardinality: 4096, feeModeFlags: 3 };
+  const hmmCreation = hmmPreset?.boundHook.creationCode.slice(2);
+  const chunk0 = hmmCreation === undefined ? secondChunk ? `0x00${"60".repeat(24575)}` : CHUNK : `0x00${hmmCreation.slice(0, 24575 * 2)}`;
+  const chunk1 = hmmCreation === undefined ? secondChunk ? CHUNK : "0x" : `0x00${hmmCreation.slice(24575 * 2)}`;
+  const creationCode = concatHex([`0x${chunk0.slice(4)}`, chunk1 === "0x" ? "0x" : `0x${chunk1.slice(4)}`]);
+  const capabilities = hmmPreset?.profile.adapter.capabilities ?? LIFECYCLE_REQUIRED_CAPABILITIES | extraCapabilities;
+  const bounds = hmmPreset?.profile.envelope.bounds ?? { minimumTickSpacing: 1, maximumTickSpacing: 200, maximumPositions: 32, maximumOracleCardinality: 4096, feeModeFlags: 3 };
   const graph = { manager: address(0xf3), hookRoot: zeroAddress, oracleFactory: address(0xf4), locker: address(0xf5), collectorFactory: address(0xf6),
     collectorDeployer: address(0xf7), hookDeployer: address(0xf8), coreCodeHash: codeHash, managerCodeHash: codeHash,
     hookRuntimeCodeHash: zeroHash, oracleFactoryCodeHash: codeHash, lockerCodeHash: codeHash, collectorFactoryCodeHash: codeHash,
     collectorDeployerCodeHash: codeHash, hookDeployerCodeHash: codeHash, hookCreationCodeHash: keccak256(creationCode),
-    codeChunk0: address(0xf9), codeChunk0Hash: keccak256(chunk0), codeChunk1: secondChunk ? address(0xfc) : zeroAddress,
-    codeChunk1Hash: secondChunk ? keccak256(chunk1) : zeroHash, sharedHookSalt: zeroHash };
-  const envelope = { artifactDigest: hash(1), reviewManifestDigest: hash(2), configBoundsDigest: hashLaunchBounds(bounds), termsDigest: hash(3),
+    codeChunk0: address(0xf9), codeChunk0Hash: keccak256(chunk0), codeChunk1: chunk1 !== "0x" ? address(0xfc) : zeroAddress,
+    codeChunk1Hash: chunk1 !== "0x" ? keccak256(chunk1) : zeroHash, sharedHookSalt: zeroHash };
+  const envelope = { ...(hmmPreset?.profile.envelope ?? { artifactDigest: hash(1), reviewManifestDigest: hash(2), configBoundsDigest: hashLaunchBounds(bounds), termsDigest: hash(3),
     topology: 2, configVersion, economicVersion: 3, capabilities, flags: 0n, callbackFlags: 0x1afc,
-    callbackMask: 0x3fff, protocolTreasury: address(0xda), protocolFeeDenominator: 5, beneficiary: address(0xdb), maximumDeveloperFeeBps: 500, bounds, graph };
-  const id = hashLifecycleProfile(envelope), adapterId = hash(4);
+    callbackMask: 0x3fff, protocolTreasury: address(0xda), protocolFeeDenominator: 5, beneficiary: address(0xdb), maximumDeveloperFeeBps: 500 }), bounds, graph };
+  const id = hashLifecycleProfile(envelope), adapterId = hmmPreset?.profile.registration.adapterId ?? hash(4);
   const digest = hashLaunchDependencies({ chainId: 4663n, core: CORE, registry: REGISTRY, registrar: ADAPTER, graph });
   const registration = { adapterId, configSchema: configVersion === 5 ? V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V5 : V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V6, dependencyDigest: digest, venue: graph.manager,
     factory: zeroAddress, hook: zeroAddress, capabilities, enabled: true };
@@ -87,7 +88,7 @@ function boundProfileClient({ configVersion = 6, secondChunk = false, extraCapab
     else if (target === REGISTRY) result = { core: CORE, profileIds: [id], profile: registration,
       adapter: adapterRegistration,
       profileTopology: { hookTopology: 2, configVersion, hookDeployer: graph.hookDeployer, hookCreationCodeHash: graph.hookCreationCodeHash },
-      profileEnvelope: envelope, developerTerms: [ADAPTER, envelope.beneficiary, 500, envelope.termsDigest, true], protocolMaximumDeveloperFeeBps: 1000,
+      profileEnvelope: envelope, developerTerms: [ADAPTER, envelope.beneficiary, envelope.maximumDeveloperFeeBps, envelope.termsDigest, true], protocolMaximumDeveloperFeeBps: 1000,
       requireEligible: ADAPTER }[call.functionName];
     else if (target === ADAPTER) result = { PROFILE_ID: id, CONFIG_SCHEMA: registration.configSchema,
       CONFIG_VERSION: configVersion, implementationRegistry: REGISTRY, poolManager: graph.manager, hookRoot: graph.hookRoot, oracleFactory: graph.oracleFactory,
@@ -104,6 +105,28 @@ function boundProfileClient({ configVersion = 6, secondChunk = false, extraCapab
   } };
   return client;
 }
+
+for (const key of [KnownLifecycleProfile.V4HmmFixedPool, KnownLifecycleProfile.V4HmmDynamicPool]) test(`${key}: V2 graph certification accepts current artifacts and refuses missing admission or altered storage code`, async () => {
+  const hmmPreset = getKnownLifecycleProfile({ chainId: 4663n, orchestrator: "0x91560876033d568d25CDe98C78c33ff8FC43962c", key });
+  // Preserve the admitted V2 identity and exact creation bytes. These synthetic
+  // runtimes/addresses exercise certification, not a claim of live admission.
+  const source = boundProfileClient({ hmmPreset });
+  assert.equal(source.id, hmmPreset.profile.id);
+  const [profile] = await readLifecycleProfiles({ client: source, orchestrator: CORE, profileIds: [source.id] });
+  assert.equal(profile.admitted, true, profile.reason);
+  assert.equal(profile.topology.hookCreationCodeHash, hmmPreset.profile.topology.hookCreationCodeHash);
+  for (const tamper of [
+    (client) => { client.state.values[`${REGISTRY}:profile`] = { ...client.registration, enabled: false }; },
+    (client) => { client.state.codes[client.graph.codeChunk1] = CHUNK; },
+    (client) => { client.state.values[`${client.graph.collectorFactory}:collectorDeployer`] = address(0xaa); },
+  ]) {
+    const changed = boundProfileClient({ hmmPreset });
+    tamper(changed);
+    const [refused] = await readLifecycleProfiles({ client: changed, orchestrator: CORE, profileIds: [changed.id] });
+    assert.equal(refused.admitted, false);
+    assert.ok(refused.reason);
+  }
+});
 
 test("profile discovery selects exact config5 or config6 schemas and refuses crossed or unknown registrations", async () => {
   for (const configVersion of [5, 6]) {

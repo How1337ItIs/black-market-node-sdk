@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { typescriptNodeArgs } from "./register-typescript.mjs";
 import { economicReviewHash, Redactor } from "../examples/launch-example-support.ts";
 import { launchExampleBroadcastCommand } from "../examples/launch-example.ts";
 
@@ -13,7 +14,7 @@ const examples = fileURLToPath(new URL("../examples/", import.meta.url));
 function offlineRun(t, argv = [], options = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "launch-example-mode-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
-  const child = spawnSync(process.execPath, ["--input-type=module", "-e",
+  const child = spawnSync(process.execPath, [...typescriptNodeArgs, "--input-type=module", "-e",
     `import { runOfflineExample } from ${JSON.stringify(driver)}; await runOfflineExample(${JSON.stringify(argv)}, ${JSON.stringify(options)});`], {
     cwd, encoding: "utf8", timeout: 15_000, env: { PATH: process.env.PATH, SDK_SOURCE_TEST: process.env.SDK_SOURCE_TEST },
   });
@@ -119,7 +120,7 @@ test("all eleven wrappers reject malformed mode flags before configuration or ar
   const malformed = [["--broadcast", "--broadcast"], ["--broadcast=false"], ["--broadcast", "--resume", "dir"],
     ["--resume", "dir", "--broadcast"], ["--resume"], ["--unknown"]];
   for (const [index, wrapper] of wrappers.entries()) {
-    const child = spawnSync(process.execPath, [join(examples, wrapper), ...malformed[index % malformed.length]], {
+    const child = spawnSync(process.execPath, [...typescriptNodeArgs, join(examples, wrapper), ...malformed[index % malformed.length]], {
       cwd, encoding: "utf8", env: { PATH: process.env.PATH }, timeout: 15_000,
     });
     assert.equal(child.status, 1, wrapper);

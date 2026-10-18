@@ -10,7 +10,10 @@ const tokenBudget = 1000000n * 10n ** 18n;
 for (const key of [KnownLifecycleProfile.V4HmmFixedPool, KnownLifecycleProfile.V4HmmDynamicPool]) {
   const preset = getKnownLifecycleProfile({ ...identity, key })!;
   const envelope = preset.profile.envelope!;
-  const hmmLaunchConfig = defaultHmmLaunchConfig({ tokenBudget, quoteAsset: "USDG", quoteDecimals: 6 });
+  // Illustrative caller-chosen guards: at most 100 six-decimal USDG
+  // of bid principal, and no ask below/bid above the rounded oracle reference.
+  const hmmLaunchConfig = defaultHmmLaunchConfig({ tokenBudget, quoteAsset: "USDG", quoteDecimals: 6,
+    maxBidQuote: 100n * 10n ** 6n, referenceDeviation: 0 });
   // Optional explicit choices: share 2500/5000/10000 bps; decay off/259200 (72h).
   const config = encodePoolBoundV4LifecycleMarketConfig({
     version: 6, lpFeePips: 0, tickSpacing: 60, sqrtPriceX96: 1n << 96n,

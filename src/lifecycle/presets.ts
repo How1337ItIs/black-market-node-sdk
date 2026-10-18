@@ -5,8 +5,8 @@ import type {
 import type { LifecycleProfile } from "./types.js";
 import { fixedFeePoolHookV1CreationCode } from "./deployments/fixed-fee-pool-hook-v1-20261008.js";
 import { dynamicFeePoolHookV1CreationCode } from "./deployments/dynamic-fee-pool-hook-v1-20261011.js";
-import { hmmFixedEnvelope, hmmFixedAdapter, hmmFixedRegistration, hmmFixedCreationCode } from "./deployments/hmm-fixed-pool-hook-v1-20261011.js";
-import { hmmDynamicEnvelope, hmmDynamicAdapter, hmmDynamicRegistration, hmmDynamicCreationCode } from "./deployments/hmm-dynamic-pool-hook-v1-20261011.js";
+import { hmmFixedEnvelope, hmmFixedAdapter, hmmFixedRegistration, hmmFixedCreationCode } from "./deployments/hmm-fixed-pool-hook-v2-20261017.js";
+import { hmmDynamicEnvelope, hmmDynamicAdapter, hmmDynamicRegistration, hmmDynamicCreationCode } from "./deployments/hmm-dynamic-pool-hook-v2-20261017.js";
 import { HMM_FIXED_PROFILE_ID, HMM_DYNAMIC_PROFILE_ID } from "./hmm.js";
 
 export enum KnownLifecycleProfile {
@@ -23,8 +23,8 @@ export enum KnownLifecycleProfile {
 export enum KnownLifecycleHook {
   FixedFeePoolV1 = "fixed-fee-pool-v1",
   DynamicFeePoolV1 = "dynamic-fee-pool-v1",
-  HmmFixedPoolV1 = "hmm-fixed-pool-v1",
-  HmmDynamicPoolV1 = "hmm-dynamic-pool-v1",
+  HmmFixedPoolV2 = "hmm-fixed-pool-v2",
+  HmmDynamicPoolV2 = "hmm-dynamic-pool-v2",
 }
 
 Object.freeze(KnownLifecycleProfile);

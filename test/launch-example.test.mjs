@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { runInNewContext } from "node:vm";
 import { keccak256, parseTransaction, recoverTransactionAddress, recoverTypedDataAddress, zeroAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { typescriptNodeArgs } from "./register-typescript.mjs";
 import {
   createLocalLaunchWallet, errorEvidence, executionRpcUrl, launchApiUrl,
   publishUntilIndexed, readExampleConfiguration, Redactor, registerEndpointSecrets,
@@ -344,7 +345,7 @@ test("example fails missing key or API upfront and retains redacted configuratio
     [1, signingKey, ""],
   ]) {
     const cwd = mkdtempSync(join(parent, `case-${index}-`));
-    const child = spawnSync(process.execPath, [script], {
+    const child = spawnSync(process.execPath, [...typescriptNodeArgs, script], {
       cwd, encoding: "utf8", timeout: 10_000,
       env: { ...process.env, PRIVATE_KEY: privateKey, EXAMPLE_KEYSTORE_PATH: "", EXAMPLE_KEYSTORE_PASSWORD: "",
         LAUNCH_API_URL: apiUrl, RPC_URL: "https://rpc.invalid/private-path?key=private-query" },
@@ -366,7 +367,7 @@ test("working-directory .env loads once and existing environment wins", (t) => {
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   writeFileSync(join(cwd, ".env"), 'EXAMPLE_TEST_KEEP="file value"\nEXAMPLE_TEST_LOAD="quoted # value" # comment\n', { mode: 0o600 });
   const helper = new URL("../examples/launch-example-support.ts", import.meta.url).href;
-  const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+  const child = spawnSync(process.execPath, [...typescriptNodeArgs, "--input-type=module", "-e", `
     import { writeFileSync } from "node:fs";
     import { loadExampleEnvironment } from ${JSON.stringify(helper)};
     loadExampleEnvironment();

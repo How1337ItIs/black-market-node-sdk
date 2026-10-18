@@ -1,6 +1,6 @@
 {
   "name": "@black-market/sdk",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "description": "TypeScript SDK for Abyss token launches, swaps, and lending.",
   "license": "MIT",
   "repository": {
@@ -43,7 +43,7 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "pnpm build",
     "test": "pnpm test:unit",
-    "test:unit": "pnpm build && node --test test/*.test.mjs",
+    "test:unit": "pnpm build && node --import ./test/register-typescript.mjs --test test/*.test.mjs",
     "test:api": "pnpm build && node --test test/integration/launch-api.read.test.mjs",
     "test:api:write": "pnpm build && node --test test/integration/launch-api.sessions.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"

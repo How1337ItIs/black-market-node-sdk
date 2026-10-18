@@ -33,6 +33,10 @@ Read the relevant skill before working on those paths.
 ## Checks
 
 - `pnpm test`: build and run the offline unit suite.
+  The test-only TypeScript preload uses the existing compiler dev dependency so
+  example tests also run on Node 20. After building, focused runs use
+  `node --import ./test/register-typescript.mjs --test test/<name>.test.mjs`;
+  CLI child tests pass the same preload by absolute URL.
 - `pnpm typecheck`: check the public TypeScript surface.
 - `node examples/quickstart.ts`: read-only live smoke after building.
 - HTTP tests are opt-in: `pnpm test:api` and `pnpm test:api:write` need an actual
