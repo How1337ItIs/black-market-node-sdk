@@ -30,6 +30,7 @@ const options = { client, account: plan.creator, plan, mode, limits, fork, recei
 const planned = args.includes("--mine")
   ? await prepareAndPlanLifecycleLaunch({ ...options, onProgress: ({ marketIndex, attempts }) => console.error("salt mining", marketIndex, attempts.toString()) })
   : await planLaunch(options);
+console.error("Proof coverage:", planned.simulation.steps.length, "steps; deferred:", planned.simulation.deferredTransactionIds);
 const progress = await readLaunchProgress({ client, planned, receipts, confirmations });
 const next = planned.simulation.admitted ? await buildNextTransaction({ client, planned, limits, fork, receipts, confirmations }) : undefined;
 console.log(JSON.stringify({ plan: JSON.parse(serializeLaunchPlan(planned.plan)), mode,

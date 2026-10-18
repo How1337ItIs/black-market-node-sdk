@@ -1,13 +1,13 @@
 import type { Address, Hex } from "viem";
 import type {
-  AdapterRegistrationV1, LaunchEnvelopeV2, ProfileRegistrationV1, ProfileTopologyV1,
+  AdapterRegistrationV1, LaunchEnvelopeV2, LaunchPlanV1, ProfileRegistrationV1, ProfileTopologyV1,
 } from "./schema.js";
 import type { LifecycleProfile } from "./types.js";
 import { fixedFeePoolHookV1CreationCode } from "./deployments/fixed-fee-pool-hook-v1-20261008.js";
 import { dynamicFeePoolHookV1CreationCode } from "./deployments/dynamic-fee-pool-hook-v1-20261011.js";
 import { hmmFixedEnvelope, hmmFixedAdapter, hmmFixedRegistration, hmmFixedCreationCode } from "./deployments/hmm-fixed-pool-hook-v2-20261017.js";
 import { hmmDynamicEnvelope, hmmDynamicAdapter, hmmDynamicRegistration, hmmDynamicCreationCode } from "./deployments/hmm-dynamic-pool-hook-v2-20261017.js";
-import { HMM_FIXED_PROFILE_ID, HMM_DYNAMIC_PROFILE_ID } from "./hmm.js";
+import { HMM_FIXED_PROFILE_ID, HMM_DYNAMIC_PROFILE_ID, isHmmProfile } from "./hmm.js";
 
 export enum KnownLifecycleProfile {
   Abyss0 = "abyss-0",
@@ -279,6 +279,20 @@ const dynamicFeePoolPreset: LifecycleProfilePreset = Object.freeze({
     registrar: dynamicFeePoolAdapter.implementation,
   }),
 });
+
+// HMMLiquidityHookV2.sol:98-119 requires ~3.06M available before manager calls,
+// including opening and swaps. Robinhood fork measurements: activation minima
+// 9.60M/15.40M/21.11M for 1/2/3 markets despite used gas 5.85M/11.13M/16.54M.
+// Apply this forwarding target once per activate/atomic envelope, not per callback.
+export const HMM_V2_FORWARDING_BASE_GAS = 4_250_000n;
+export const HMM_V2_FORWARDING_EXTRA_MARKET_GAS = 500_000n;
+export const HMM_V2_PREPARE_GAS = 14_500_000n;
+
+export function hmmV2ForwardingReserve(plan: LaunchPlanV1): bigint {
+  let count = 0;
+  for (const market of plan.markets) if (isHmmProfile(market.profileId)) count += 1;
+  return count === 0 ? 0n : HMM_V2_FORWARDING_BASE_GAS + HMM_V2_FORWARDING_EXTRA_MARKET_GAS * BigInt(count - 1);
+}
 
 function hmmPreset(key: KnownLifecycleProfile, id: Hex, envelope: LaunchEnvelopeV2,
   adapter: AdapterRegistrationV1, registration: ProfileRegistrationV1, creationCode: Hex): LifecycleProfilePreset {

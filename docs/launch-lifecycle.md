@@ -7,6 +7,50 @@ The canonical authorities are the registry/certification/adapter/config contract
 in the protocol repository. Plan identity is `LaunchPlanV1`. Pool-bound V4 uses **config 6**,
 canonical Abyss uses **config 1**, and generic current shared-V4 support uses **config 4**.
 
+## 0.11.0 release: gas sizing, packing and prefix proof
+
+New atomic/activation envelopes containing HMM V2 markets add one forwarding target:
+`R = 4_250_000 + 500_000 * (hmmMarkets - 1)` gas (zero for non-HMM plans).
+For measured gross gas `G` (`maxUsedGas`, falling back to `gasUsed`), compute is
+`min(max(G + R, ceil(G * (10000 + headroomBps) / 10000)), computeCap)`.
+Begin/preparation/approval/cancel commands do not receive this reserve. Nitro poster
+gas is budgeted separately inside the same complete gas envelope. Optional padding
+and the reserve are targets, not refusal thresholds; exact validated replay proves
+the clamped envelope. There is no bisection or extra ordinary-path request.
+
+Staged planning greedily packs contiguous markets against the unpadded compute cap:
+HMM V2 costs 14.5M per market; other profiles cost a conservative 16M. At 32M,
+1/2/3/5 HMM markets produce `[1]`/`[2]`/`[2,1]`/`[2,2,1]`.
+Only a packed measurement failure consuming at least 95% of its given gas splits
+that batch in half, regardless of its error selector. Low-gas semantic failures
+remain failures. `preparationBatchSize` is removed; inspect each preparation's
+`marketStart`/`marketCount`. The pure unsigned compiler still accepts explicit
+`preparationBatches`.
+
+Robinhood chain 4663 defaults `limits.maxSimulationGas` to **50_000_000n** aggregate
+gas **used**, not the sum of individual legal transaction envelopes. Override it
+for a provider with a different budget. The SDK measures and validates the longest
+estimated prefix that fits: begin 9.5M, preparations as above, activation 6M per
+market plus `R`, and small approvals/cancellation. A measurement failure after
+cumulative use reaches 95% of that cap defers the failed call and suffix.
+If even the immediate estimate cannot fit that budget, refusal first identifies
+any estimated per-transaction compute overflow (gas displayed in millions to one
+decimal), rather than suggesting that a larger RPC budget solves it. Estimates
+alone do not reject an envelope that can still be measured and exactly proved.
+
+`simulation.admitted`, `executionProof: "proved"` and `protocolFit: "proved"` cover
+only the successful proven prefix. **They do not promise eventual activation.**
+`simulation.deferredTransactionIds` explicitly lists unproved remaining steps
+(empty for full coverage); these commands carry no `gas`, `gasPrice`, `estimate`
+or `admission`. Call `buildNextTransaction` before each signature: canonical
+progress advances the proof window and gives the immediate next transaction exact
+gas. Reviewed envelopes receive only a direct exact replay of that immediate step,
+without new measurement, poster/price recommendations or suffix proof.
+
+`buySlippageBps` requires actual activation outputs. If activation is deferred,
+calibration refuses clearly; use a higher-budget native provider or preserve
+already committed minima by omitting recalibration. Outputs are never fabricated.
+
 ## 0.9.1 release: Abyss 0.01% fee tier
 
 `ABYSS_FEE_TIERS` now includes `{ feePips: 100, tickSpacing: 1, label: "0.01%" }`.
@@ -342,15 +386,13 @@ progress, funding/allowances and deployment/profile authority. It matches
 Preparation batching remains SDK-derived, not caller-selected. Malformed,
 wrong-step or changed envelopes refuse without returning executable calldata.
 
-Fresh measurement and complete native validated replay use the held price.
-The immediate replay uses the exact held gas; later unfinished steps receive
-fresh gas bounds and remain in the same stateful sequence. Current compute,
-poster, minimum headroom, tightening ceilings and full-sequence actual-balance
-affordability still apply. Exact replay also checks gross-gas headroom without
-counting Nitro's temporary compute hold. Neither natural child base fees nor
-payer balances are overridden. A higher advisory quote alone is not a refusal;
-an invalid current fee, insufficient gas or failed proof never silently raises
-the held envelope.
+The SDK directly validates only the immediate transaction at its exact held
+gas/price. It does not repeat measurement, quote a new gas price/poster budget or
+simulate future steps. Current protocol/transaction limits, native metering,
+postconditions and immediate actual-balance affordability still apply. Existing
+padding may be consumed; neither a new padding target nor a higher advisory quote
+alone invalidates a held envelope. Natural child base fees and payer balances are
+never overridden, and failed replay never raises held gas or switches backend.
 
 Approvals/resets, atomic launches, every staged next step and cancellation use
 this same contract. Cancellation retains its adapter-independent recovery policy.
@@ -742,13 +784,13 @@ Validation uses `validateV4LifecycleMarket`; the collector factory getter is
 | --- | --- |
 | `readLifecycleProfiles({client, orchestrator, profileIds?, offset?, limit?})` | Bounded registry discovery, schema/topology dispatch, reviewed graph/terms certification and current registry admission. Default offset/limit is 0/100; explicit IDs can select a reviewed deployment's identities. |
 | `predictLifecycleToken({client, plan})` | Exact prediction from the explicit core. |
-| `prepareAndPlanLifecycleLaunch({client, account, plan, mode, allowTopologyGaps?, allowMissingPermanentTail?, limits?, fork?, receipts?, confirmations?, signal?, onProgress?})` | Mines config6/V2 salts offchain, verifies per-market launch topology and exact final deployment bindings, and returns complete selected-mode admission under one SDK-owned fresh post-mining snapshot. No source-chain deployment or broadcast. |
+| `prepareAndPlanLifecycleLaunch({client, account, plan, mode, buySlippageBps?, allowTopologyGaps?, allowMissingPermanentTail?, limits?, fork?, receipts?, confirmations?, signal?, onProgress?})` | Mines config6/V2 salts offchain, verifies per-market topology and exact final deployment bindings, and proves the selected-mode prefix under one fresh post-mining snapshot. Reports deferred steps; buy calibration requires activation coverage. No source-chain deployment or broadcast. |
 | `readPoolBoundHookDeployment({client, plan, marketIndex})` | Verifies typed factory, code chunks, constructor, normalized economics, initcode, salt, CREATE2 prediction and recorded provenance of existing code. Works with draft salts; permission bits are additionally required for executable predeployment. |
 | `buildPoolBoundHookDeploymentTransaction({client, plan, marketIndex})` | Optional permissionless typed `deploy(parameters,salt)` calldata. Does not create a token, register/initialize a pool, bind a collector or activate a launch. |
 | `planLaunch({client, account, plan, mode, allowTopologyGaps?, allowMissingPermanentTail?, limits?, fork?, receipts?, confirmations?, signal?})` | Independently fresh per-market topology/domain/funding/profile/progress/execution admission of the already-finalized commitment, simulating only the explicitly selected mode. |
 | `simulateLaunchPlan({client, planned, limits?, fork?, receipts?, confirmations?})` | Rereads canonical state and proves remaining work. Preserves receipt evidence, economics and selected mode. |
 | `readLaunchProgress({client, planned, receipts?, confirmations?})` | Confirmation-bound canonical state, latest head, receipt/replacement/reorg status, account-nonce safety and actual prepared market/live state. |
-| `buildNextTransaction({client, planned, reviewedTransaction?, submissionClient?, limits?, fork?, receipts?, confirmations?, action?})` | Rereads progress, constraints and complete stateful proof before returning one admitted transaction. Optional untrusted `reviewedTransaction` must match the current canonical next step and freshly prove its exact gas/price. Optional `submissionClient` adds read-only immediate exact-envelope preflight. `action: "cancel"` uses the stored commitment without requiring fresh adapter/profile admission. Terminal launches return `undefined`. |
+| `buildNextTransaction({client, planned, reviewedTransaction?, submissionClient?, limits?, fork?, receipts?, confirmations?, action?})` | Rereads canonical progress and constraints, proves the immediate next transaction plus the fitting prefix, and returns one admitted envelope. With `reviewedTransaction`, directly replays only that matching immediate step at its exact held gas/price. Optional `submissionClient` adds read-only exact-envelope preflight. `action: "cancel"` retains adapter-independent recovery. Terminal launches return `undefined`. |
 
 Clients may be viem public clients or raw `request({method,params})` RPC clients. Transport, wallet, signing and durable storage are application-owned. `PlannedLaunch` contains bigint values and live limit callbacks: persist `serializeLaunchPlan(plan)`, explicit execution mode, confirmation policy and receipt references, not the entire object.
 
@@ -879,17 +921,17 @@ Mining is cancellable/nonblocking; `abort()` raises `AbortError` and does not ca
 Every planning call requires `mode: "atomic" | "staged"`. Only that requested mode receives economic simulation; staged does not compute or expose an unused atomic attempt.
 
 - Atomic: after funding prerequisites, token creation, empty infrastructure, all mint/lock/buys/public activation are one transaction.
-- Staged: prerequisites, `beginLaunch(Staged)`, contiguous empty `prepareMarkets` batches, then one `activateLaunch`. Only a stateful preparation refusal classified as capacity with a compute or gas-envelope constraint can partition into smaller empty batches. Opaque `DeploymentFailed`, unclassified/source/provider-clamp errors, byte-cap refusals and near-cap consumption do not authorize that search. Core/validator/registry/hook invariant errors stop planning.
+- Staged: prerequisites, `beginLaunch(Staged)`, greedily packed contiguous empty `prepareMarkets` batches, then one `activateLaunch`. A packed measurement failure using at least 95% of its given gas splits only that batch; low-gas semantic errors, byte caps and unlocated provider failures do not justify a split. Proof may cover only a prefix, with the unproved suffix explicitly deferred.
 - Activation cannot split. If mint/lock/all buys/opening cannot fit, staged is also refused. No position/buy/minimum is omitted to manufacture success.
 
 No automatic atomic-to-staged fallback exists. Obtain separate consent to review the same commitment as staged. Both venues use token transfer restrictions plus activation-time canonical opening-state checks, not a pool gate. Manipulated opening price or preactivation liquidity fails verification; the token stays inactive and the launch remains Ready/cancellable. Failed activation rolls back every mint, seal, buy and opening together.
 
 ## Execution constraints and stateful simulation
 
-Optional `chainGasLimit`, `rpcGasLimit`, `accountGasLimit`, `maxCalldataBytes` and
-`maxSimulationGas` tighten admission when supplied. Missing policy remains explicit in
-`limits.unknownExecutionConstraints`/`unknownConstraints`; it does not reject an otherwise
-proved exact sequence or invent a provider/account cap. No policy service is required.
+Optional `chainGasLimit`, `rpcGasLimit`, `accountGasLimit` and `maxCalldataBytes`
+tighten admission. `maxSimulationGas` sets the aggregate used-gas proof-window
+budget (default 50M on 4663, unknown on other chains). Missing policy stays explicit
+in `limits.unknownExecutionConstraints`/`unknownConstraints`; no policy service is required.
 A `LifecycleLimitSource` callback receives the canonical chain/account/core/block context.
 Any supplied provenance must match it; stale/mismatched/malformed facts or a failed supplied
 resolver reject rather than disappearing into optional uncertainty. Gas caps are positive
@@ -897,7 +939,9 @@ exact uint64 `bigint`; calldata is a positive safe integer byte count.
 Reviewed gas envelopes are positive uint64 too; zero-metering observations cannot admit
 a zero-gas transaction. Headroom calculations retain wide exact bigint intermediates.
 
-Headroom defaults to 1,500 bps, bounded 0–10,000. Generic EVM admission uses the pinned
+Headroom defaults to 1,500 bps, bounded 0–10,000; it clamps to current legal ceilings
+instead of rejecting a fitting measured requirement. HMM V2 adds the forwarding
+target documented above once on atomic/activation. Generic EVM admission uses the pinned
 bounded header and supplied total-envelope restrictions plus actual validated RPC proof.
 It reports an absent independent per-transaction cutoff honestly, without importing a
 universal Ethereum cutoff. `executionGasCeiling` and `transactionGasCeiling` are equal on
@@ -910,8 +954,8 @@ carries that successfully replayed ceiling, never a smaller unproved envelope.
 Replay source, HTTP and malformed-response failures remain provisional with
 `executionProof: "unavailable"` and do not retry economic execution. `AbortError`
 propagates unchanged, including cancellation during supplied policy and Nitro getter
-reads. A recognized execution refusal may discover at most one genuinely larger
-validated envelope within the same legal compute/total limits. Without returned
+reads. Only explicit genuine native out-of-gas evidence may discover at most one
+larger validated envelope within the same legal compute/total limits. Without returned
 failing-call evidence, `failedTransactionId` stays absent; an opaque RPC error does
 not invent a failing transaction or authorize preparation partitioning.
 Returned failures retain the actual exact-replay prefix and its first failing
@@ -949,10 +993,10 @@ The buffered compute-discovery envelope plus buffered poster budget is carried i
 exact validated replay; an approximate poster quote is never subtracted from total
 gas use to certify exact compute fit.
 Measurement waits for successful capability and candidate-specific poster evidence,
-then uses the legal complete compute-plus-poster envelope. Near-cap gas consumption
-does not diagnose OOG, constructor failure or collision. Unsupported/transport
-evidence remains unavailable, and only a recognized execution-envelope refusal
-can trigger bounded envelope discovery.
+then uses the legal complete compute-plus-poster envelope. A packed preparation
+failure consuming at least 95% may invalidate its cost estimate without claiming
+its selector diagnoses OOG. Unsupported/transport evidence remains unavailable,
+except an observed aggregate-budget exhaustion can preserve a successful prefix.
 
 A separate pinned validated simulation probes all three ArbOS/version/getter values
 against the canonical observations. Only that isolated capability probe temporarily
@@ -975,13 +1019,13 @@ does not manufacture an all-in estimate. All observations and limits refresh for
 For initial construction, the exact legacy gas-price envelope is the greater of
 the fresh RPC recommendation and twice the pinned base fee. This avoids
 underpriced submission when `eth_gasPrice` lags the block base fee. Reviewed
-envelopes retain their exact gas/price only after fresh full-sequence measurement,
-native validated replay, current minimum headroom and affordability checks.
+envelopes retain exact gas/price through direct immediate native validated replay
+and immediate affordability, without repeating measurement or applying new padding.
 The held price need not equal a new recommendation or twice the current base fee;
 natural child fees and the actual submission estimate must accept it. Replay,
 affordability and submission use that same price, without a base-fee override.
-A known aggregate budget whose legal minimum already exceeds its ceiling refuses
-before capability probes or poster work; equality is allowed. A definitive returned
+An aggregate budget selects the longest fitting estimated prefix; only when even
+the immediate estimate does not fit is no proof possible. A definitive returned
 failure from the final exact replay skips a later payer-balance lookup, while
 retaining fee/estimate validation and final canonical checks. Successful replay
 still requires current actual-balance affordability.
@@ -1013,14 +1057,15 @@ Simulation and `next.admission` carry flat, independent proof outcomes:
 
 | Field | Values | Scope |
 | --- | --- | --- |
-| `executionProof` | `"proved"`, `"failed"`, `"unavailable"` | Complete stateful exact-envelope execution and postconditions, never permissive measurement alone. |
+| `executionProof` | `"proved"`, `"failed"`, `"unavailable"` | Stateful exact-envelope execution/postconditions for the proven prefix (or the immediate reviewed step), never measurement alone or an unproved suffix. |
 | `protocolFit` | `"proved"`, `"failed"`, `"unknown"` | Applicable proven protocol and known tightening restrictions. Missing optional policy remains separately disclosed. |
 | `transportPreflight` | `"not-requested"`, `"passed"`, `"failed"` | Immediate exact next-transaction acceptance estimate on the supplied submission RPC. |
 
-`admitted` means the current exact sequence is proved to fit and affordable; it is
-not guaranteed wallet submission or future execution. Admission reuses simulation
-`blockNumber`, `blockHash`, `account`, `chainId` and `limits`. Plans never preflight
-future dependent transactions against state that does not exist.
+`admitted` means the proven prefix fits and is affordable, not that deferred
+transactions have executed or that eventual activation is guaranteed. Always
+inspect `simulation.deferredTransactionIds`. Admission reuses `blockNumber`,
+`blockHash`, `account`, `chainId` and `limits`; signing uses only fresh build-next
+admission. Plans never preflight future steps independently against nonexistent state.
 
 ```ts
 const planned = await planLaunch({ client, account: plan.creator, plan, mode: "atomic" });

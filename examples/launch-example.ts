@@ -477,6 +477,7 @@ function limitSource(fixture, artifacts) {
       chainGasLimit: policy.chainTransactionGasLimit === undefined ? undefined : BigInt(policy.chainTransactionGasLimit),
       rpcGasLimit: policy.rpcTransactionGasLimit === undefined ? undefined : BigInt(policy.rpcTransactionGasLimit),
       accountGasLimit: policy.accountTransactionGasLimit === undefined ? undefined : BigInt(policy.accountTransactionGasLimit),
+      maxSimulationGas: policy.rpcTotalSimulationGasLimit === undefined ? undefined : BigInt(policy.rpcTotalSimulationGasLimit),
       maxCalldataBytes: policy.maxCalldataBytes, headroomBps: policy.headroomBps,
     };
     artifacts.event("execution-limits", { limits, provenance: policy.provenance });

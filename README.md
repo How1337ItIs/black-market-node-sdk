@@ -48,8 +48,10 @@ On Robinhood mainnet (**chain 4663**), it:
    (three), priced from the same whole-supply USD valuation (default $5,000).
 3. Funds one opening buy per market with 0.00001 ETH each by default. ETH wraps
    into WETH; USDG uses an admitted Kyber conversion. ETH for gas is additional.
-4. Prepares and proves the complete staged plan, prints the economic review,
-   and saves artifacts. The default dry-run never signs or submits anything.
+4. Prepares and proves the staged plan, prints the economic review, and saves
+   artifacts. Activation outputs must fit the provider's proof budget; configure
+   `EXAMPLE_SIMULATION_GAS_CAP` only for a provider supporting that budget.
+   The default dry-run never signs or submits anything.
 5. With authorization, stages metadata, begins and prepares the markets, then
    activates all seven positions and three buys together. It verifies chain
    results and API publication; optional images are verified before submission.

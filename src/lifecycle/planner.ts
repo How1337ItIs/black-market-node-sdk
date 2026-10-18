@@ -10,7 +10,7 @@ import { prepareLaunchSimulation, simulateLaunchTransactions, type NextTransacti
 import { LifecyclePlanningError, type BuildNextTransactionOptions, type CanonicalLaunchProgress, type LifecycleBlock, type LifecycleConstructionProfile, type LifecycleFundingPrerequisite, type LifecyclePoolBoundHookDeployment, type LifecycleProfile, type LifecycleRpcClient, type LifecycleSimulation, type LifecycleTransaction, type PlannedLaunch, type PlanLaunchOptions, type PrepareAndPlanLifecycleLaunchOptions, type SimulateLaunchPlanOptions } from "./types.js";
 import { deriveKnownPoolBoundHookDeployment, protectOrderedBuyMinimums, validateBuySlippageBps } from "./calibration.js";
 import { getKnownLifecycleDeployment, getKnownLifecycleProfile } from "./presets.js";
-import { buildLaunchTransactions } from "./transactions.js";
+import { buildLaunchTransactions, packPreparationBatches } from "./transactions.js";
 import { assertLifecycleMarketAllocation, assertLifecycleSupplyAllocation } from "./allocations.js";
 
 type ValidatedPlanShape = {
@@ -132,11 +132,9 @@ async function readPlanMetadata(client: LifecycleRpcClient, plan: LaunchPlanV1, 
   return { profiles, hookDeployments, reasons: live.filter((profile) => !profile.admitted).map((profile) => profile.reason ?? "Unlisted lifecycle profile is unavailable") };
 }
 
-function orderedTransactions(plan: LaunchPlanV1, mode: "atomic" | "staged", progress: CanonicalLaunchProgress, approvals: readonly LifecycleTransaction[], batchSize: number): LifecycleTransaction[] {
+function orderedTransactions(plan: LaunchPlanV1, mode: "atomic" | "staged", progress: CanonicalLaunchProgress, approvals: readonly LifecycleTransaction[], batches: readonly number[]): LifecycleTransaction[] {
   if (progress.canonical.phase === LifecyclePhase.Active || progress.canonical.phase === LifecyclePhase.Cancelled) return [];
   const prepared = progress.canonical.preparedMarkets;
-  const batches: number[] = prepared > 0 ? [prepared] : [];
-  for (let first = prepared; first < plan.markets.length; first += batchSize) batches.push(Math.min(batchSize, plan.markets.length - first));
   const commands = buildLaunchTransactions({ plan, mode, preparationBatches: mode === "staged" ? batches : undefined }).filter((transaction) =>
     (transaction.kind !== "begin" && transaction.kind !== "atomic" || progress.canonical.phase === LifecyclePhase.None) &&
     (transaction.kind !== "prepare" || (transaction.marketStart ?? 0) >= prepared));
@@ -147,7 +145,8 @@ function orderedTransactions(plan: LaunchPlanV1, mode: "atomic" | "staged", prog
 function attachEstimates(transactions: readonly LifecycleTransaction[], simulation: LifecycleSimulation): LifecycleTransaction[] {
   return transactions.map((transaction) => {
     const estimate = simulation.steps.find((step) => step.transactionId === transaction.id)?.estimate;
-    return { ...transaction, calldataBytes: (transaction.data.length - 2) / 2, gas: estimate?.gasLimit, gasPrice: estimate?.gasPrice, estimate, admission: { admitted: simulation.admitted, confidence: simulation.confidence, executionProof: simulation.executionProof, protocolFit: simulation.protocolFit, transportPreflight: simulation.transportPreflight, blockNumber: simulation.blockNumber, blockHash: simulation.blockHash, account: simulation.account, chainId: simulation.chainId, reason: simulation.reason, limits: simulation.limits } };
+    return { ...transaction, calldataBytes: (transaction.data.length - 2) / 2, gas: estimate?.gasLimit, gasPrice: estimate?.gasPrice, estimate,
+      admission: estimate === undefined ? undefined : { admitted: simulation.admitted, confidence: simulation.confidence, executionProof: simulation.executionProof, protocolFit: simulation.protocolFit, transportPreflight: simulation.transportPreflight, blockNumber: simulation.blockNumber, blockHash: simulation.blockHash, account: simulation.account, chainId: simulation.chainId, reason: simulation.reason, limits: simulation.limits } };
   });
 }
 type ReviewedNextTransaction = Pick<LifecycleTransaction, "id" | "kind" | "chainId" | "from" | "to" | "data" | "value"> & NextTransactionEnvelope;
@@ -364,8 +363,8 @@ async function planLaunchWithReads(options: PlanLaunchOptions, client: Lifecycle
     }),
   ]));
   assertPlanningActive(options.signal);
-  const placeholder: LifecycleSimulation = { backend: "unavailable", confidence: "provisional", admitted: false, executionProof: "unavailable", protocolFit: "unknown", transportPreflight: "not-requested", blockNumber: block.number, blockHash: block.hash, account, chainId: plan.chainId, limits, steps: [] };
-  let planned: PlannedLaunch = { ...identity, tokenFactory, tokenFactoryCodeHash, chainId: plan.chainId, transactions: [], totalCalldataBytes: 0, prerequisites: [], profiles: [], hookDeployments: [], progress, simulation: placeholder, preparationBatchSize: plan.markets.length, limits: options.limits,
+  const placeholder: LifecycleSimulation = { backend: "unavailable", confidence: "provisional", admitted: false, executionProof: "unavailable", protocolFit: "unknown", transportPreflight: "not-requested", blockNumber: block.number, blockHash: block.hash, account, chainId: plan.chainId, limits, steps: [], deferredTransactionIds: [] };
+  let planned: PlannedLaunch = { ...identity, tokenFactory, tokenFactoryCodeHash, chainId: plan.chainId, transactions: [], totalCalldataBytes: 0, prerequisites: [], profiles: [], hookDeployments: [], progress, simulation: placeholder, limits: options.limits,
     allowTopologyGaps: options.allowTopologyGaps === true, allowMissingPermanentTail: options.allowMissingPermanentTail === true };
   const receiptsPending = progress.receipts.some((receipt) => receipt.status === "pending" || receipt.status === "unconfirmed");
   if (!progress.confirmationSafe || receiptsPending) {
@@ -393,48 +392,58 @@ async function planLaunchWithReads(options: PlanLaunchOptions, client: Lifecycle
   ]));
   assertFinalPlan(planned, options.signal);
   planned = { ...planned, prerequisites: funding.prerequisites, profiles: metadata.profiles, hookDeployments: metadata.hookDeployments };
-  let preparationBatchSize = plan.markets.length;
-  let transactions = orderedTransactions(plan, mode, progress, funding.approvals, preparationBatchSize);
+  const prepared = progress.canonical.preparedMarkets;
+  const computeCap = limits.transactionGasCeiling !== undefined && limits.transactionGasCeiling < limits.executionGasCeiling ? limits.transactionGasCeiling : limits.executionGasCeiling;
+  let batches: number[] = [];
+  if (mode === "staged") batches = reviewed === undefined ? packPreparationBatches(plan, prepared, computeCap)
+    : [...(prepared > 0 ? [prepared] : []), ...(prepared < plan.markets.length ? [plan.markets.length - prepared] : [])];
+  if (reviewed !== undefined && reviewed.kind === "prepare") {
+    // Canonical progress fixes the start; the exact held calldata fixes its span.
+    // Never rediscover a batch or enlarge a reviewed transaction.
+    const match = /^prepare:(\d+):(\d+)$/.exec(reviewed.id);
+    const start = Number(match?.[1]), count = Number(match?.[2]);
+    if (start !== prepared || !Number.isSafeInteger(count) || count <= 0 || start + count > plan.markets.length) throw new LifecyclePlanningError("REVIEWED_TRANSACTION_MISMATCH", "Reviewed preparation differs from canonical unfinished progress");
+    batches = [...(prepared > 0 ? [prepared] : []), count, ...(start + count < plan.markets.length ? [plan.markets.length - start - count] : [])];
+  }
+  let transactions = orderedTransactions(plan, mode, progress, funding.approvals, batches);
+  if (reviewed !== undefined) {
+    if (!matchesReviewedNextTransaction(transactions[0], reviewed)) throw new LifecyclePlanningError("REVIEWED_TRANSACTION_MISMATCH", "Reviewed transaction differs from the current canonical unfinished next step");
+    transactions = transactions.slice(0, 1);
+  }
   if (metadata.reasons.length > 0) {
     await assertLifecycleBlock(client, block, plan.chainId);
     return { ...planned, simulation: { ...placeholder, confidence: "stateful", reason: metadata.reasons.join("; "), failureCategory: "semantic" }, transactions, totalCalldataBytes: transactions.reduce((total, transaction) => total + (transaction.data.length - 2) / 2, 0) };
   }
-  const preparedSimulation = prepareLaunchSimulation({ client, planned, limits: options.limits, fork: options.fork, signal: options.signal }, block);
+  const preparedSimulation = prepareLaunchSimulation({ client, planned, limits: options.limits, fork: options.fork, signal: options.signal }, block, true, reviewed);
   try {
-    const execute = diagnostic ? preparedSimulation.measure : (candidate: readonly LifecycleTransaction[]) => {
-      if (reviewed === undefined) return preparedSimulation(candidate);
-      if (!matchesReviewedNextTransaction(candidate[0], reviewed)) {
-        // A fresh prepare batch may still require SDK-owned capacity discovery.
-        // Never use held fees for a different step or caller-selected calldata.
-        if (candidate[0]?.kind === "prepare" && reviewed.kind === "prepare") return preparedSimulation(candidate);
-        throw new LifecyclePlanningError("REVIEWED_TRANSACTION_MISMATCH", "Reviewed transaction differs from the current canonical unfinished next step");
-      }
-      return preparedSimulation(candidate, reviewed);
-    };
+    const execute = diagnostic ? preparedSimulation.measure : (candidate: readonly LifecycleTransaction[]) => preparedSimulation(candidate, reviewed);
     let simulation = await execute(transactions);
     assertFinalPlan(planned, options.signal);
     if (mode === "staged") {
-      // Only explicit gas/compute evidence can partition empty preparations.
-      // Byte caps cannot shrink: each prepare still carries the entire plan.
-      while (!simulation.admitted && simulation.failureCategory === "capacity" &&
-        (simulation.capacityConstraint === "compute" || simulation.capacityConstraint === "gas-envelope") &&
-        !(reviewed !== undefined && simulation.capacityConstraint === "gas-envelope" && simulation.failedTransactionId === transactions[0]?.id && matchesReviewedNextTransaction(transactions[0], reviewed)) &&
-        simulation.failedTransactionId?.startsWith("prepare:") && preparationBatchSize > 1) {
-        const failedMarketCount = transactions.find((transaction) => transaction.id === simulation.failedTransactionId)?.marketCount ?? 0;
-        if (failedMarketCount <= 1) break;
-        preparationBatchSize = Math.ceil(failedMarketCount / 2);
-        transactions = orderedTransactions(plan, mode, progress, funding.approvals, preparationBatchSize);
+      // Only a measurement that consumed almost its entire legal envelope
+      // invalidates packing estimates, including gas hidden by CREATE wrappers.
+      while (reviewed === undefined && !simulation.admitted && simulation.failedTransactionId?.startsWith("prepare:")) {
+        const failedIndex = transactions.findIndex((transaction) => transaction.id === simulation.failedTransactionId);
+        const failedTransaction = transactions[failedIndex];
+        const step = simulation.steps.find((candidate) => candidate.transactionId === simulation.failedTransactionId);
+        const count = failedTransaction?.marketCount ?? 0;
+        if (count <= 1 || step?.estimate !== undefined || step?.gasUsed === undefined || step.gasLimit === undefined || step.gasUsed * 100n < step.gasLimit * 95n) break;
+        let first = 0;
+        const batchIndex = batches.findIndex((batch) => { const matches = first === failedTransaction?.marketStart; first += batch; return matches; });
+        const left = Math.ceil(count / 2);
+        batches.splice(batchIndex, 1, left, count - left);
+        transactions = orderedTransactions(plan, mode, progress, funding.approvals, batches);
         simulation = await execute(transactions);
         assertFinalPlan(planned, options.signal);
       }
       if (!simulation.admitted && simulation.failedTransactionId === "activate") simulation = { ...simulation, reason: `${simulation.reason ?? "Final activation failed"}; final mint/lock/all-buys/public-opening is indivisible and will not be partitioned` };
-    } else if (!diagnostic && !simulation.admitted) {
+    } else if (!diagnostic && !simulation.admitted && !(simulation.capacityConstraint === "compute" && simulation.confidence === "provisional")) {
       simulation = { ...simulation, reason: `${simulation.reason ?? "Exact atomic plan is not admitted"}; choose staged explicitly only if empty preparation can be partitioned and complete activation fits` };
     }
     if (reviewed !== undefined && !matchesReviewedNextTransaction(transactions[0], reviewed)) {
       throw new LifecyclePlanningError("REVIEWED_TRANSACTION_MISMATCH", "Reviewed transaction differs from the current canonical unfinished next step");
     }
-    return { ...planned, simulation, preparationBatchSize, transactions: attachEstimates(transactions, simulation), totalCalldataBytes: transactions.reduce((total, transaction) => total + (transaction.data.length - 2) / 2, 0) };
+    return { ...planned, simulation, transactions: attachEstimates(transactions, simulation), totalCalldataBytes: transactions.reduce((total, transaction) => total + (transaction.data.length - 2) / 2, 0) };
   } finally { preparedSimulation.close(); }
 }
 

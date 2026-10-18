@@ -8,6 +8,7 @@ const { ABYSS_LIFECYCLE_CONFIG_SCHEMA, abyssLifecycleAdapterAbi, buildNextTransa
 const { prepareLaunchSimulation, simulateLaunchTransactions } = await import(sdkPath.replace("index.", "simulation."));
 const { readLifecycleBlock, withLifecycleReadClient } = await import(sdkPath.replace("index.", "rpc."));
 const { ABYSS_FEE_TIERS, deriveLaunchPoolRecipe, deriveLaunchPositionRanges } = await import(sdkPath.replace("lifecycle/index.", "index."));
+const { decodePoolBoundV4LifecycleMarketConfig, defaultHmmLaunchConfig, encodePoolBoundV4LifecycleMarketConfig } = await import(sdkPath);
 const address = (n) => toHex(BigInt(n), { size: 20 });
 const ACCOUNT = address(0xa0), CORE = address(0xf0), REGISTRY = address(0xf1), ESCROW = address(0xf2), ADAPTER = address(0xf3), FACTORY = address(0xf4), TOKEN = address(0x10);
 const CODE = "0x600160005560016000f3";
@@ -35,6 +36,29 @@ function makePlan({ chainId = 31337n, markets = 1, nativeFunding = false, token0
     deadline: 1000n, executorFeeBps: 0,
   };
 }
+function makeHmmPlan(markets = 1, dynamicFirst = false) {
+  const plan = makePlan({ chainId: 4663n, markets });
+  plan.orchestrator = "0x91560876033d568d25CDe98C78c33ff8FC43962c";
+  plan.token.supply = 1_000_000n * BigInt(markets);
+  plan.funding = [];
+  plan.buys = [];
+  plan.markets = plan.markets.map((market, index) => {
+    const preset = getKnownLifecycleProfile({ ...plan, key: (index + Number(dynamicFirst)) % 2 === 0 ? KnownLifecycleProfile.V4HmmFixedPool : KnownLifecycleProfile.V4HmmDynamicPool });
+    const envelope = preset.profile.envelope;
+    return { ...market, adapterId: preset.profile.registration.adapterId, profileId: preset.profile.id, tokenBudget: 1_000_000n, configVersion: 6,
+      config: encodePoolBoundV4LifecycleMarketConfig({ version: 6, lpFeePips: 0, tickSpacing: 60, sqrtPriceX96: 1n << 96n,
+        hookFeePips: 10000, minimumHookFeePips: 1000, feeSensitivityPipsSecondsPerTick: 7654321, feeMode: 0,
+        protocolFeeDenominator: envelope.protocolFeeDenominator, treasury: envelope.protocolTreasury, externalLiquidityDisabled: false,
+        oracleConfigId: toHex(9n, { size: 32 }), profileId: preset.profile.id, termsDigest: envelope.termsDigest,
+        developerBeneficiary: envelope.beneficiary, developerFeeBps: 0, hookSalt: zeroHash,
+        positions: [{ tickLower: 0, tickUpper: 887220, liquidity: 1n, salt: zeroHash, maxTokenAmount: 1_000_000n }],
+        hmmLaunchConfig: defaultHmmLaunchConfig({ tokenBudget: 1_000_000n, quoteAsset: "USDG", maxBidQuote: 1_000_000n, referenceDeviation: 0 }) }) };
+  });
+  return plan;
+}
+function marketConfig(market) {
+  return market.configVersion === 1 ? decodeAbyssLifecycleMarketConfig(market.config) : decodePoolBoundV4LifecycleMarketConfig(market.config, market.configVersion);
+}
 function progress(plan, phase = LifecyclePhase.None, prepared = 0) {
   if (phase === LifecyclePhase.None) return { launchId: zeroHash, planHash: zeroHash, creator: zeroAddress, nonce: 0n, mode: 0, phase, token: zeroAddress, feeHub: zeroAddress, rewards: zeroAddress, preparedMarkets: 0, marketCount: 0, buyCount: 0, positionCount: 0, deadline: 0n };
   return { launchId: hashLaunchIdentity(plan), planHash: hashLaunchPlan(plan), creator: ACCOUNT, nonce: plan.nonce, mode: 1, phase, token: TOKEN, feeHub: address(0xf6), rewards: zeroAddress, preparedMarkets: prepared, marketCount: plan.markets.length, buyCount: plan.buys.length, positionCount: prepared, deadline: plan.deadline };
@@ -42,8 +66,8 @@ function progress(plan, phase = LifecyclePhase.None, prepared = 0) {
 function identity(plan, index) {
   const [currency0, currency1] = BigInt(TOKEN) < BigInt(plan.markets[index].quoteAsset)
     ? [TOKEN, plan.markets[index].quoteAsset] : [plan.markets[index].quoteAsset, TOKEN];
-  const config = decodeAbyssLifecycleMarketConfig(plan.markets[index].config);
-  const fields = { venue: 1, manager: zeroAddress, factory: FACTORY, pool: address(0x100 + index), poolId: zeroHash, profileId: plan.markets[index].profileId, currency0, currency1, fee: config.fee, tickSpacing: ABYSS_FEE_TIERS.find(({ feePips }) => feePips === config.fee).tickSpacing, hook: zeroAddress, openingSqrtPriceX96: config.openingSqrtPriceX96 };
+  const config = marketConfig(plan.markets[index]);
+  const fields = { venue: 1, manager: zeroAddress, factory: FACTORY, pool: address(0x100 + index), poolId: zeroHash, profileId: plan.markets[index].profileId, currency0, currency1, fee: config.fee ?? config.lpFeePips, tickSpacing: config.tickSpacing ?? ABYSS_FEE_TIERS.find(({ feePips }) => feePips === config.fee).tickSpacing, hook: zeroAddress, openingSqrtPriceX96: config.openingSqrtPriceX96 ?? config.sqrtPriceX96 };
   const canonicalId = keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "uint8" }, { type: "address" }, { type: "address" }, { type: "address" }, { type: "bytes32" }, { type: "bytes32" }], [plan.chainId, fields.venue, fields.manager, fields.factory, fields.pool, fields.poolId, fields.profileId]));
   return { ...fields, canonicalId };
 }
@@ -204,16 +228,16 @@ function clientFor(plan, settings = {}) {
         }
         let returnData = "0x", logs = [];
         if (functionName === "approve") { allowance = args[1]; returnData = output(abi, functionName, true); }
-        else if (functionName === "beginLaunch") { assert.equal(phase, LifecyclePhase.None); assert.ok(allowance >= 10n || plan.funding[0].kind === 1); phase = LifecyclePhase.Preparing; returnData = output(launchLifecycleAbi, functionName, progress(executingPlan, phase)); }
+        else if (functionName === "beginLaunch") { assert.equal(phase, LifecyclePhase.None); assert.ok(executingPlan.funding.length === 0 || allowance >= 10n || plan.funding[0].kind === 1); phase = LifecyclePhase.Preparing; returnData = output(launchLifecycleAbi, functionName, progress(executingPlan, phase)); }
         else if (functionName === "prepareMarkets") {
           assert.equal(phase, LifecyclePhase.Preparing); assert.equal(args[1], prepared);
-          for (let index = args[1]; index < args[1] + args[2]; index++) logs.push(log("MarketPrepared", { launchId: hashLaunchIdentity(executingPlan), marketIndex: index, canonicalId: identity(executingPlan, index).canonicalId, adapter: ADAPTER, feeSource: address(0xf6), positionCount: decodeAbyssLifecycleMarketConfig(executingPlan.markets[index].config).positions.length }));
+          for (let index = args[1]; index < args[1] + args[2]; index++) logs.push(log("MarketPrepared", { launchId: hashLaunchIdentity(executingPlan), marketIndex: index, canonicalId: identity(executingPlan, index).canonicalId, adapter: ADAPTER, feeSource: address(0xf6), positionCount: marketConfig(executingPlan.markets[index]).positions.length }));
           prepared += args[2]; if (prepared === plan.markets.length) phase = LifecyclePhase.Ready;
         } else if (["launchAtomic", "activateLaunch"].includes(functionName)) {
           if (functionName === "activateLaunch") { assert.equal(phase, LifecyclePhase.Ready); assert.equal(prepared, plan.markets.length); }
-          else { assert.equal(phase, LifecyclePhase.None); assert.ok(allowance >= 10n || plan.funding[0].kind === 1); }
+          else { assert.equal(phase, LifecyclePhase.None); assert.ok(executingPlan.funding.length === 0 || allowance >= 10n || plan.funding[0].kind === 1); }
           phase = LifecyclePhase.Active;
-          const positionCount = executingPlan.markets.reduce((total, market) => total + decodeAbyssLifecycleMarketConfig(market.config).positions.length, 0);
+          const positionCount = executingPlan.markets.reduce((total, market) => total + marketConfig(market).positions.length, 0);
           const receiptPositions = state.receiptPositionCount ?? positionCount;
           const tokenOut = typeof state.tokenOut === "function" ? state.tokenOut(executingPlan, request.validation) : executingPlan.buys.map(() => state.badOutput ? 4n : 7n);
           const quoteSpent = state.quoteSpent ?? executingPlan.buys.map(() => 8n);
@@ -221,7 +245,7 @@ function clientFor(plan, settings = {}) {
           logs = [log("LaunchActivated", { launchId: hashLaunchIdentity(executingPlan), planHash: hashLaunchPlan(executingPlan), token: TOKEN, marketCount: state.eventMarketCount ?? executingPlan.markets.length, positionCount: state.eventPositionCount ?? positionCount })];
         } else if (functionName === "cancelLaunch") { assert.ok([LifecyclePhase.Preparing, LifecyclePhase.Ready].includes(phase)); phase = LifecyclePhase.Cancelled; logs = [log("LaunchCancelled", { launchId: hashLaunchIdentity(plan), creator: ACCOUNT, inventoryBurned: false })]; }
         else assert.fail(`Unexpected execution ${functionName}`);
-        return { calls: [{ status: "0x1", gasUsed: toHex(fullUsed), maxUsedGas: toHex(fullUsed), returnData, logs }] };
+        return { calls: [{ status: "0x1", gasUsed: toHex(fullUsed), maxUsedGas: state.maxUsedGas === null ? undefined : toHex(state.maxUsedGas ?? fullUsed), returnData, logs }] };
       });
       if (state.reorg && request.validation) reorged = true;
       if (state.sourceChainDrift && request.validation) chainShifted = true;
@@ -349,7 +373,7 @@ test("private continuing build-next preserves stored commitment and deployment b
 test("supplied caps only tighten and missing provenance is not a mandatory backend dependency", async () => {
   const plan = makePlan();
   const tightened = await review(clientFor(plan), plan, { limits: { rpcGasLimit: 1_100_000n } });
-  assert.equal(tightened.simulation.admitted, false); assert.equal(tightened.simulation.protocolFit, "failed");
+  assert.equal(tightened.simulation.admitted, true); assert.equal(tightened.transactions[0].gas, 1_100_000n, "Optional padding clamps to the supplied ceiling");
   const calldata = await review(clientFor(plan), plan, { limits: { maxCalldataBytes: 4 } });
   assert.equal(calldata.simulation.admitted, false); assert.match(calldata.simulation.reason, /calldata/);
   const known = await review(clientFor(plan), plan, { limits: { chainGasLimit: 2_000_000n, accountGasLimit: 2_000_000n, headroomBps: 0 } });
@@ -653,7 +677,7 @@ test("Nitro huge header never replaces changing pinned compute getters or ArbOS5
   assert.equal(first.transactions[0].gas, 11_500_002n);
   client.state.txCompute = 11_000_000n;
   const changed = await simulateLaunchPlan({ client, planned: first });
-  assert.equal(changed.admitted, false); assert.equal(changed.limits.executionGasCeiling, 11_000_000n);
+  assert.equal(changed.admitted, true); assert.equal(changed.steps[0].estimate.gasLimit, 11_000_000n); assert.equal(changed.limits.executionGasCeiling, 11_000_000n);
   for (const settings of [{ rawVersion: 104n }, { getterFailure: true }, { getterResponse: "0x" }, { versionResponse: toHex(105n, { size: 64 }) }, { txCompute: 0n }, { txCompute: 1n << 64n }]) {
     await assert.rejects(review(clientFor(plan, settings), plan), { code: "NITRO_LIMITS_UNAVAILABLE" });
   }
@@ -757,8 +781,8 @@ test("complete Nitro measurement envelope separates poster budget from the uncha
     assert.equal(request.blockStateCalls[0].calls[0].gasPrice, "0x2");
   }
   const headroom = await review(clientFor(plan, { computeUsed: 28_000_000n, poster: 6_000_000n, measurementPosterHold: true }), plan);
-  assert.equal(headroom.simulation.admitted, false);
-  assert.equal(headroom.simulation.protocolFit, "failed", "Poster gas cannot raise the independent compute/headroom ceiling");
+  assert.equal(headroom.simulation.admitted, true);
+  assert.equal(headroom.transactions[0].gas, 38_900_000n, "Compute padding clamps to32M without discarding poster budget");
   const bounded = clientFor(plan, { computeUsed: 27_000_000n, poster: 6_000_000n, measurementPosterHold: true });
   const capped = await review(bounded, plan, { limits: { accountGasLimit: 32_000_000n } });
   assert.equal(capped.simulation.admitted, false);
@@ -766,67 +790,74 @@ test("complete Nitro measurement envelope separates poster budget from the uncha
   assert.equal(economicRequests(bounded).length, 1, "Failed measurement cannot be bypassed by exact replay");
 });
 
-test("complete Nitro envelope still enforces aggregate and uint64 caps before economic dispatch", async () => {
+test("aggregate gas-used budgets prove the longest estimated prefix rather than summing legal envelopes", async () => {
   const plan = makePlan({ chainId: 4663n, markets: 2 });
-  const aggregate = clientFor(plan, { poster: 2_000_000n });
-  const refused = await review(aggregate, plan, { mode: "staged", limits: { maxSimulationGas: 100_000_000n } });
-  assert.equal(refused.simulation.admitted, false);
-  assert.equal(refused.simulation.confidence, "provisional");
-  assert.equal(refused.simulation.executionProof, "unavailable");
-  assert.equal(refused.simulation.protocolFit, "unknown");
-  assert.equal(refused.simulation.limits.maxSimulationGas, 100_000_000n);
-  assert.deepEqual(refused.transactions.map((transaction) => transaction.kind), ["begin", "prepare", "activate"]);
-  assert.equal(capabilityRequests(aggregate).length, 1);
-  assert.equal(economicRequests(aggregate).length, 0, "Three complete34.3M envelopes cannot fit a100M aggregate request");
-  const probeCapped = clientFor(plan);
-  const noCapability = await review(probeCapped, plan, { limits: { maxSimulationGas: 299_999n } });
-  assert.equal(noCapability.simulation.admitted, false);
-  assert.equal(noCapability.simulation.confidence, "provisional");
-  assert.equal(noCapability.simulation.executionProof, "unavailable");
-  assert.equal(noCapability.simulation.limits.maxSimulationGas, 299_999n);
-  assert.equal(capabilityRequests(probeCapped).length, 0);
-  assert.equal(economicRequests(probeCapped).length, 0);
-  assert.equal(probeCapped.state.posterRequests?.length ?? 0, 0, "A known impossible discovery budget cannot queue parallel poster quotes");
+  for (const [cap, deferred] of [[100_000_000n, []], [50_000_000n, ["activate"]], [9_500_000n, ["prepare:0:2", "activate"]]]) {
+    const client = clientFor(plan, { poster: 2_000_000n });
+    const planned = await review(client, plan, { mode: "staged", limits: { maxSimulationGas: cap } });
+    assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+    assert.equal(planned.simulation.executionProof, "proved");
+    assert.equal(planned.simulation.protocolFit, "proved");
+    assert.deepEqual(planned.simulation.deferredTransactionIds, deferred);
+    const proven = planned.transactions.length - deferred.length;
+    assert.deepEqual(economicRequests(client).map((row) => row.params[0].blockStateCalls.length), [proven, proven]);
+    for (const tx of planned.transactions.slice(proven)) {
+      assert.equal(tx.gas, undefined); assert.equal(tx.gasPrice, undefined);
+      assert.equal(tx.estimate, undefined); assert.equal(tx.admission, undefined);
+    }
+  }
+  const defaulted = await review(clientFor(plan), plan, { mode: "staged" });
+  assert.equal(defaulted.simulation.limits.maxSimulationGas, 50_000_000n);
+  assert.deepEqual(defaulted.simulation.deferredTransactionIds, ["activate"]);
+  const capped = clientFor(plan);
+  const unavailable = await review(capped, plan, { mode: "staged", limits: { maxSimulationGas: 9_499_999n } });
+  assert.equal(unavailable.simulation.admitted, false);
+  assert.equal(unavailable.simulation.executionProof, "unavailable");
+  assert.equal(capabilityRequests(capped).length, 0);
+  assert.equal(economicRequests(capped).length, 0);
   const overflow = clientFor(plan, { poster: (1n << 64n) - 1n });
-  await assert.rejects(review(overflow, plan), { code: "INVALID_GAS_ENVELOPE" });
+  await assert.rejects(review(overflow, plan, { mode: "staged" }), { code: "INVALID_GAS_ENVELOPE" });
   assert.equal(economicRequests(overflow).length, 0);
 });
 
-test("only a strict known impossible discovery lower bound bypasses native capability and poster work", async () => {
-  for (const supportsReadBatching of [false, true]) {
-    const plan = makePlan({ chainId: 4663n, markets: 2 });
-    for (const [limits, poster, admitted, capability, economic, discoveryGas] of [
-      [{ maxSimulationGas: 95_999_999n }, 2_000_000n, false, 0, 0],
-      [{ maxSimulationGas: 96_000_000n }, 0n, true, 1, 2, 32_000_000n],
-      [{ maxSimulationGas: 96_000_000n }, 2_000_000n, false, 1, 0],
-      [{ maxSimulationGas: 59_999_999n, accountGasLimit: 20_000_000n }, 2_000_000n, false, 0, 0],
-      [{ maxSimulationGas: 60_000_000n, accountGasLimit: 20_000_000n }, 2_000_000n, true, 1, 2, 20_000_000n],
-      [{ maxSimulationGas: 96_000_000n, accountGasLimit: 40_000_000n }, 0n, true, 1, 2, 32_000_000n],
-      [{}, 2_000_000n, true, 1, 2, 34_300_000n],
-    ]) {
-      const client = clientFor(plan, { poster });
-      client.supportsReadBatching = supportsReadBatching;
-      const planned = await review(client, plan, { mode: "staged", limits });
-      assert.equal(planned.simulation.admitted, admitted, planned.simulation.reason);
-      assert.equal(capabilityRequests(client).length, capability);
-      assert.equal(economicRequests(client).length, economic);
-      assert.equal(client.state.posterRequests?.length ?? 0, capability === 0 ? 0 : 3);
-      assert.deepEqual(planned.transactions.map((transaction) => transaction.kind), ["begin", "prepare", "activate"]);
-      assert.equal(planned.simulation.limits.maxSimulationGas, limits.maxSimulationGas);
-      if (!admitted) {
-        assert.equal(planned.simulation.confidence, "provisional");
-        assert.equal(planned.simulation.executionProof, "unavailable");
-        assert.equal(planned.simulation.protocolFit, "unknown");
-        assert.equal(planned.simulation.backend, "unavailable");
-        assert.deepEqual(planned.simulation.steps, []);
-        assert.equal(planned.simulation.failedTransactionId, undefined);
-      } else {
-        const measurement = economicRequests(client)[0].params[0];
-        assert.equal(measurement.validation, false);
-        assert.ok(measurement.blockStateCalls.every((block) => BigInt(block.calls[0].gas) === discoveryGas));
-        assert.equal(planned.simulation.executionProof, "proved");
-        assert.equal(planned.simulation.protocolFit, "proved");
-      }
+test("no-prefix refusal reports immediate compute overflow before the RPC aggregate budget", async () => {
+  const two = makeHmmPlan(2), impossible = clientFor(two);
+  const refused = await review(impossible, two);
+  assert.equal(refused.simulation.admitted, false);
+  assert.equal(refused.simulation.failureCategory, "capacity");
+  assert.equal(refused.simulation.capacityConstraint, "compute");
+  assert.equal(refused.simulation.reason, "Atomic launch needs about 55.3M gas, above the 32.0M per-transaction limit; use staged");
+  assert.equal(economicRequests(impossible).length, 0);
+  const one = makePlan({ chainId: 4663n });
+  const budget = await review(clientFor(one), one, { limits: { maxSimulationGas: 30_000_000n } });
+  assert.equal(budget.simulation.admitted, false);
+  assert.equal(budget.simulation.capacityConstraint, "simulation-gas");
+  assert.match(budget.simulation.reason, /RPC aggregate simulation gas cap/);
+  const fitting = makeHmmPlan();
+  assert.equal((await review(clientFor(fitting, { computeUsed: 27_360_000n }), fitting)).simulation.admitted, true,
+    "Conservative estimates alone must not reject a provable single-HMM atomic envelope");
+});
+
+test("measurement transport exhaustion truncates only at the observed aggregate ceiling", async () => {
+  const plan = makePlan({ chainId: 4663n });
+  for (const exhausted of [true, false]) {
+    const client = clientFor(plan, {
+      gasFor: (name) => name === "beginLaunch" ? 9_000_000n : 29_000_000n,
+      failureFor(name, _args, validation) {
+        return !validation && name === "activateLaunch" ? { gasUsed: exhausted ? 10_000_000n : 1_000_000n,
+          error: { code: 3, message: "execution reverted", data: "0x" } } : undefined;
+      },
+    });
+    const planned = await review(client, plan, { mode: "staged" });
+    assert.equal(planned.simulation.admitted, exhausted, planned.simulation.reason);
+    assert.deepEqual(planned.simulation.deferredTransactionIds, exhausted ? ["activate"] : []);
+    if (exhausted) {
+      assert.deepEqual(economicRequests(client).map((row) => row.params[0].blockStateCalls.length), [3, 2]);
+      assert.equal(planned.simulation.executionProof, "proved");
+    } else {
+      assert.equal(planned.simulation.failedTransactionId, "activate");
+      assert.equal(planned.simulation.executionProof, "failed");
+      assert.equal(economicRequests(client).length, 1, "An in-prefix semantic/opaque refusal is not transport exhaustion");
     }
   }
 });
@@ -836,13 +867,13 @@ test("known impossible discovery still observes context and final canonical chai
   const planned = await review(seed, plan, { mode: "staged" });
   const block = await readLifecycleBlock(seed);
   for (const [change, code] of [["chain", "CHAIN_MISMATCH"], ["hash", "STATE_REORGED"], ["policy", "LIMIT_CONTEXT_MISMATCH"]]) {
-    const source = clientFor(plan), limits = { maxSimulationGas: 95_999_999n };
+    const source = clientFor(plan), limits = { maxSimulationGas: 1n };
     let chains = 0;
     const client = { supportsReadBatching: true, async request(args) {
       const value = await source.request(args);
       if (args.method === "eth_chainId" && ++chains > 1 && change === "chain") return toHex(plan.chainId + 1n);
       if (args.method === "eth_getBlockByNumber" && args.params[0] === "0x2a" && change === "hash") return { ...value, hash: FOREIGN_HASH };
-      if (args.method === "eth_gasPrice" && change === "policy") limits.maxSimulationGas = 96_000_000n;
+      if (args.method === "eth_gasPrice" && change === "policy") limits.maxSimulationGas = 2n;
       return value;
     } };
     await assert.rejects(simulateLaunchTransactions({ client, planned, limits }, planned.transactions, block), { code });
@@ -936,7 +967,7 @@ test("failed legal-envelope replay retains its actual prefix, first failure and 
       ["prepareMarkets", "prepare", 2, { data: encodeErrorResult({ abi: fixedFeePoolHookV1Abi, errorName: "InvalidConfiguration" }) }],
       ["activateLaunch", "activate", 3, "0x"],
     ]) {
-      const plan = makePlan({ chainId: 4663n, markets: 4 });
+      const plan = makePlan({ chainId: 4663n, markets: 2 });
       const finalError = { code: 3, message: `Primary ${kind} replay refusal`, data };
       const source = clientFor(plan, { computeUsed: 400_000n, downstreamFailureData: "0x9a36fd9c",
         failureFor(name, _args, validation, transaction) {
@@ -949,12 +980,11 @@ test("failed legal-envelope replay retains its actual prefix, first failure and 
           return undefined;
         },
       });
-      const planned = await review(source, plan, { mode: "staged" });
+      const planned = await review(source, plan, { mode: "staged", limits: { maxSimulationGas: 100_000_000n } });
       assert.equal(planned.simulation.admitted, false);
       assert.equal(planned.simulation.confidence, "stateful");
       assert.equal(planned.simulation.executionProof, "failed");
       assert.equal(planned.simulation.protocolFit, "unknown");
-      assert.equal(planned.preparationBatchSize, 4, "A begin/activation root or diagnosed preparation invariant cannot justify another partition");
       assert.deepEqual(planned.simulation.steps.map((step) => step.transactionId), planned.transactions.slice(0, prefixLength).map((transaction) => transaction.id));
       assert.deepEqual(planned.simulation.steps.map((step) => step.success), Array.from({ length: prefixLength }, (_, index) => index < prefixLength - 1));
       const failed = planned.simulation.steps.at(-1);
@@ -995,7 +1025,7 @@ test("a no-results legal-envelope error cannot borrow the buffered preparation f
     [Object.assign(new Error("Native source request failed"), { status: 429 }), "unavailable", "provisional"],
     [Object.assign(new Error("Native RPC returned no results"), { code: -38013 }), "unavailable", "provisional"],
   ]) {
-    const plan = makePlan({ chainId: 4663n, markets: 4 });
+    const plan = makePlan({ chainId: 4663n, markets: 2 });
     const source = clientFor(plan, { computeUsed: 400_000n,
       failureFor(name, _args, validation, transaction) {
         if (!validation) return undefined;
@@ -1011,8 +1041,7 @@ test("a no-results legal-envelope error cannot borrow the buffered preparation f
     assert.equal(planned.simulation.confidence, confidence);
     assert.equal(planned.simulation.failedTransactionId, undefined);
     assert.ok(planned.simulation.steps.every((step) => step.success && step.estimate === undefined));
-    assert.equal(planned.simulation.limits.maxSimulationGas, undefined, "A provider error does not establish an aggregate gas ceiling");
-    assert.equal(planned.preparationBatchSize, 4);
+    assert.equal(planned.simulation.limits.maxSimulationGas, 50_000_000n, "A provider error does not change the configured aggregate budget");
     assert.equal(economicRequests(source).length, 3, "No returned failure location exists to authorize more schedule discovery");
     assert.equal(capabilityRequests(source).length, 1);
   }
@@ -1034,7 +1063,7 @@ test("nonzero Nitro poster envelope may exceed compute cutoff and affordability 
   const poor = await review(clientFor(plan, { computeUsed: 27_000_000n, poster: 2_000_000n, balance: balance - 1n }), plan);
   assert.equal(poor.simulation.admitted, false); assert.equal(poor.simulation.executionProof, "proved"); assert.equal(poor.simulation.protocolFit, "proved");
   const capped = await review(clientFor(plan, { computeUsed: 27_000_000n, poster: 2_000_000n }), plan, { limits: { accountGasLimit: 33_000_000n } });
-  assert.equal(capped.simulation.admitted, false); assert.equal(capped.simulation.protocolFit, "failed");
+  assert.equal(capped.simulation.admitted, true); assert.equal(capped.transactions[0].gas, 33_000_000n);
   await assert.rejects(review(clientFor(plan), plan, { limits: { estimateDataFee: async () => 1n } }), { code: "INVALID_LIMITS" });
 });
 
@@ -1107,15 +1136,15 @@ test("reviewed native envelope survives the observed upward advisory drift at ex
   assert.equal(next.admission.transportPreflight, "passed");
   assert.equal(next.admission.blockHash, HASH);
   const economic = economicRequests(client).map((row) => row.params[0]);
-  assert.deepEqual(economic.map((request) => request.validation), [false, true]);
-  assert.equal(BigInt(economic[1].blockStateCalls[0].calls[0].gas), 23_973_273n);
+  assert.deepEqual(economic.map((request) => request.validation), [true]);
+  assert.equal(BigInt(economic[0].blockStateCalls[0].calls[0].gas), 23_973_273n);
   for (const request of economic) for (const block of request.blockStateCalls) {
     assert.equal(BigInt(block.calls[0].gasPrice), 40_040_000n);
     assert.equal(block.blockOverrides.baseFeePerGas, undefined);
     assert.equal(block.stateOverrides, undefined);
   }
   assert.equal(capabilityRequests(client).length, 1);
-  assert.equal(client.captured.filter((row) => row.method === "eth_gasPrice").length, 1);
+  assert.equal(client.captured.filter((row) => row.method === "eth_gasPrice").length, 0);
   assert.equal(client.captured.filter((row) => row.method === "eth_getBalance").length, 1);
   assert.deepEqual(submissionClient.captured[1].params, [{ from: ACCOUNT, to: CORE, data: reviewedTransaction.data,
     value: toHex(100_000_000_000_000n), gas: toHex(23_973_273n), gasPrice: toHex(40_040_000n) }, "latest"]);
@@ -1123,7 +1152,7 @@ test("reviewed native envelope survives the observed upward advisory drift at ex
     "An ordinary new envelope at the larger recommendation is not affordable at the held exact balance");
 });
 
-test("reviewed atomic, approval, staged preparation, activation and cancellation all retain fresh complete proof", async () => {
+test("reviewed atomic, approval, staged preparation, activation and cancellation replay only the immediate exact envelope", async () => {
   const vectors = [
     { mode: "atomic", settings: {}, kind: "atomic", sequence: ["launchAtomic"] },
     { mode: "atomic", settings: { allowance: 0n }, kind: "approve", sequence: ["approve", "launchAtomic"] },
@@ -1155,10 +1184,13 @@ test("reviewed atomic, approval, staged preparation, activation and cancellation
     const replay = economicRequests(client).find((row) => row.params[0].validation).params[0];
     assert.deepEqual(replay.blockStateCalls.map((block) => decodeFunctionData({
       abi: block.calls[0].to === CORE ? launchLifecycleAbi : lifecycleErc20Abi, data: block.calls[0].data,
-    }).functionName), vector.sequence);
+    }).functionName), [vector.sequence[0]]);
     assert.equal(BigInt(replay.blockStateCalls[0].calls[0].gas), reviewedTransaction.gas);
     assert.ok(replay.blockStateCalls.every((block) => BigInt(block.calls[0].gasPrice) === 2n &&
       block.stateOverrides === undefined && block.blockOverrides.baseFeePerGas === undefined));
+    assert.deepEqual(economicRequests(client).map((row) => row.params[0].validation), [true]);
+    assert.equal(client.captured.filter((row) => row.method === "eth_gasPrice").length, 0);
+    assert.equal(client.captured.filter((row) => row.method === "eth_call" && row.params[0].to === NODE_INTERFACE).length, 0);
     if (vector.action === "cancel") assert.equal(client.captured.some((row) => row.method === "eth_call" && row.params[0].to === REGISTRY), false);
   }
 });
@@ -1255,8 +1287,8 @@ test("held envelopes still enforce actual compute, poster, transaction ceilings 
     });
     if (vector.replay) {
       const requests = economicRequests(source);
-      assert.deepEqual(requests.map((row) => row.params[0].validation), [false, true]);
-      assert.equal(BigInt(requests[1].params[0].blockStateCalls[0].calls[0].gas), reviewedTransaction.gas,
+      assert.deepEqual(requests.map((row) => row.params[0].validation), [true]);
+      assert.equal(BigInt(requests[0].params[0].blockStateCalls[0].calls[0].gas), reviewedTransaction.gas,
         "An exhausted held envelope is never enlarged or retried");
     }
     assert.equal(submissionClient.captured.length, 0);
@@ -1273,14 +1305,14 @@ test("below-natural-base held fees and exact native gas exhaustion cannot silent
     const source = clientFor(plan, settings), submissionClient = submissionFor(plan);
     await assert.rejects(buildNextTransaction({ client: source, planned, reviewedTransaction, submissionClient }), { code: "PLAN_NOT_ADMITTED" });
     const economic = economicRequests(source);
-    assert.deepEqual(economic.map((row) => row.params[0].validation), [false, true], "No retry can increase the failed immediate held gas");
-    assert.equal(BigInt(economic[1].params[0].blockStateCalls[0].calls[0].gas), reviewedTransaction.gas);
-    assert.equal(BigInt(economic[1].params[0].blockStateCalls[0].calls[0].gasPrice), 2n);
+    assert.deepEqual(economic.map((row) => row.params[0].validation), [true], "No measurement or retry can increase the failed immediate held gas");
+    assert.equal(BigInt(economic[0].params[0].blockStateCalls[0].calls[0].gas), reviewedTransaction.gas);
+    assert.equal(BigInt(economic[0].params[0].blockStateCalls[0].calls[0].gasPrice), 2n);
     assert.equal(submissionClient.captured.length, 0);
   }
 });
 
-test("future native envelope discovery preserves the held immediate gas and exact price through the entire sequence", async () => {
+test("held immediate proof does not rediscover or execute future envelopes", async () => {
   const plan = makePlan({ chainId: 4663n });
   const planned = await review(clientFor(plan), plan, { mode: "staged" });
   const reviewedTransaction = planned.transactions[0];
@@ -1290,14 +1322,14 @@ test("future native envelope discovery preserves the held immediate gas and exac
   assert.equal(next.gas, 1_150_000n);
   assert.equal(next.gasPrice, 2n);
   const replays = economicRequests(source).filter((row) => row.params[0].validation);
-  assert.equal(replays.length, 2);
+  assert.equal(replays.length, 1);
   for (const replay of replays) {
     const blocks = replay.params[0].blockStateCalls;
-    assert.equal(blocks.length, 3);
+    assert.equal(blocks.length, 1);
     assert.equal(BigInt(blocks[0].calls[0].gas), 1_150_000n);
     assert.ok(blocks.every((block) => BigInt(block.calls[0].gasPrice) === 2n));
   }
-  assert.equal(BigInt(replays[1].params[0].blockStateCalls[1].calls[0].gas), 32_000_000n);
+  assert.deepEqual(economicRequests(source).map((row) => row.params[0].validation), [true]);
 });
 
 test("reviewed input never imports cached proofs or skips source, nonce, receipt, account or reorg guards", async () => {
@@ -1311,7 +1343,6 @@ test("reviewed input never imports cached proofs or skips source, nonce, receipt
     { settings: { failActivation: true }, code: "PLAN_NOT_ADMITTED" },
     { settings: { simulationUnavailable: true }, code: "PLAN_NOT_ADMITTED" },
     { settings: { probeFailure: true }, code: "PLAN_NOT_ADMITTED" },
-    { settings: { posterResponse: "0x" }, code: "PLAN_NOT_ADMITTED" },
     { settings: { accountCode: CODE }, code: "PLAN_NOT_ADMITTED" },
     { settings: { reorg: true }, code: "STATE_REORGED" },
     { settings: { sourceChainDrift: true }, code: "CHAIN_MISMATCH" },
@@ -1361,47 +1392,38 @@ test("reviewed exact submission refusal and asynchronous reviewed mutation canno
 });
 
 
-test("reviewed preparation is matched to fresh SDK-discovered batching, not stored batch authority", async () => {
+test("reviewed preparation preserves its canonical exact span without rediscovering the suffix", async () => {
   const plan = makePlan({ chainId: 4663n, markets: 4 });
   const source = clientFor(plan, { phase: LifecyclePhase.Preparing,
     gasFor: (name, args) => name === "prepareMarkets" ? BigInt(args[2]) * 18_000_000n : 400_000n });
   const planned = await review(source, plan, { mode: "staged" });
-  assert.equal(planned.preparationBatchSize, 1);
   const reviewedTransaction = await buildNextTransaction({ client: source, planned });
   assert.equal(reviewedTransaction.id, "prepare:0:1");
   source.state.gasPrice = 3n;
   source.captured.length = 0;
-  const next = await buildNextTransaction({ client: source, planned: { ...planned, preparationBatchSize: 4 },
+  const next = await buildNextTransaction({ client: source, planned,
     reviewedTransaction, submissionClient: submissionFor(plan, { estimate: 18_000_000n }) });
   assert.equal(next.data, reviewedTransaction.data);
   assert.equal(next.gas, 20_700_000n);
   assert.equal(next.gasPrice, 2n);
   const requests = economicRequests(source).map((row) => row.params[0]);
-  assert.deepEqual(requests.map((request) => request.blockStateCalls.length), [2, 3, 5, 5]);
-  const final = requests.at(-1);
-  assert.equal(final.validation, true);
-  assert.deepEqual(final.blockStateCalls.map((block) => decodeFunctionData({ abi: launchLifecycleAbi, data: block.calls[0].data }).functionName),
-    ["prepareMarkets", "prepareMarkets", "prepareMarkets", "prepareMarkets", "activateLaunch"]);
-  assert.equal(BigInt(final.blockStateCalls[0].calls[0].gas), 20_700_000n);
-  assert.ok(final.blockStateCalls.every((block) => BigInt(block.calls[0].gasPrice) === 2n));
+  assert.deepEqual(requests.map((request) => request.validation), [true]);
+  assert.deepEqual(requests.map((request) => request.blockStateCalls.length), [1]);
   source.state.gasFor = () => 400_000n;
-  const submissionClient = submissionFor(plan);
-  await assert.rejects(buildNextTransaction({ client: source, planned, reviewedTransaction, submissionClient }), { code: "REVIEWED_TRANSACTION_MISMATCH" });
-  assert.equal(submissionClient.captured.length, 0, "A changed fresh preparation batch requires a new user review");
+  const unchanged = await buildNextTransaction({ client: source, planned, reviewedTransaction });
+  assert.equal(unchanged.id, reviewedTransaction.id, "A lower current cost does not invalidate the canonical held span");
+  assert.equal(unchanged.gas, reviewedTransaction.gas);
 });
 
 test("held native source failures, deployment binding changes and post-provider reorg or chain changes stay refusals", async () => {
   const plan = makePlan({ chainId: 4663n }), planned = await review(clientFor(plan), plan);
   const reviewedTransaction = planned.transactions[0];
-  for (const [stage, code] of [["quote", "INVALID_RPC_RESPONSE"], ["balance", "INVALID_RPC_RESPONSE"], ["getter", "NITRO_LIMITS_UNAVAILABLE"],
-    ["poster", "PLAN_NOT_ADMITTED"], ["measurement", "PLAN_NOT_ADMITTED"], ["replay", "PLAN_NOT_ADMITTED"]]) {
+  for (const [stage, code] of [["balance", "INVALID_RPC_RESPONSE"], ["getter", "NITRO_LIMITS_UNAVAILABLE"], ["replay", "PLAN_NOT_ADMITTED"]]) {
     const source = clientFor(plan), submissionClient = submissionFor(plan);
     const client = { request(args) {
-      if (stage === "quote" && args.method === "eth_gasPrice" || stage === "balance" && args.method === "eth_getBalance") return Promise.resolve("0x");
+      if (stage === "balance" && args.method === "eth_getBalance") return Promise.resolve("0x");
       if (stage === "getter" && args.method === "eth_call" && args.params[0].to === GAS_INFO) return Promise.resolve("0x");
-      if (stage === "poster" && args.method === "eth_call" && args.params[0].to === NODE_INTERFACE) return Promise.reject(Object.assign(new Error("Source unavailable"), { status: 503 }));
-      if (args.method === "eth_simulateV1" && args.params[0].blockStateCalls[0].calls[0].to !== ARB_SYS &&
-        (stage === "measurement" && !args.params[0].validation || stage === "replay" && args.params[0].validation)) {
+      if (args.method === "eth_simulateV1" && args.params[0].blockStateCalls[0].calls[0].to !== ARB_SYS && stage === "replay") {
         return Promise.reject(Object.assign(new Error("Source unavailable"), { status: 429 }));
       }
       return source.request(args);
@@ -1427,10 +1449,10 @@ test("held native source failures, deployment binding changes and post-provider 
   }
 });
 
-test("held generic fees use the exact current envelope and full remaining-sequence affordability", async () => {
+test("held generic fees use the exact immediate envelope and its affordability", async () => {
   const plan = makePlan(), planned = await review(clientFor(plan), plan, { mode: "staged" });
   const reviewedTransaction = planned.transactions[0];
-  for (const balance of [6_900_015n, 6_900_014n]) {
+  for (const balance of [2_300_005n, 2_300_004n]) {
     const source = clientFor(plan, { gasPrice: 3n, balance });
     const observed = [];
     const limits = { estimateDataFee: async (transaction, context) => {
@@ -1442,7 +1464,7 @@ test("held generic fees use the exact current envelope and full remaining-sequen
       return 5n;
     } };
     const pending = buildNextTransaction({ client: source, planned, reviewedTransaction, limits });
-    if (balance === 6_900_015n) {
+    if (balance === 2_300_005n) {
       const next = await pending;
       assert.equal(next.estimate.totalFee, 2_300_005n);
       assert.equal(next.gasPrice, 2n);
@@ -1452,7 +1474,7 @@ test("held generic fees use the exact current envelope and full remaining-sequen
       assert.equal(failure.simulation.failureCategory, "affordability");
       return true;
     });
-    assert.deepEqual(observed, ["begin", "prepare:0:1", "activate"], "The whole unfinished sequence, not just the held first step, must be payable");
+    assert.deepEqual(observed, ["begin"], "Only the immediate held envelope is proved and charged");
   }
 });
 
@@ -1578,7 +1600,7 @@ test("definitive failed resumed replay retains every verified-prefix fee without
     assert.equal(planned.simulation.executionProof, "failed");
     assert.equal(planned.simulation.protocolFit, "unknown");
     assert.equal(planned.simulation.failedTransactionId, "activate");
-    assert.deepEqual(planned.simulation.steps.map((step) => step.success), [true, false]);
+    assert.deepEqual(planned.simulation.steps.map((step) => step.success), chainId === 4663n ? [true, false] : [true, true, false]);
     assert.equal(planned.simulation.steps.at(-1).nativeErrorCode, 3);
     assert.equal(planned.simulation.steps.at(-1).nativeErrorKind, "execution-reverted");
     assert.equal(diagnosticJson(planned.simulation).includes(error.message), false);
@@ -1592,7 +1614,7 @@ test("definitive failed resumed replay retains every verified-prefix fee without
       assert.equal(step.estimate.dataFeeIncludedInGas, chainId === 4663n);
       assert.equal(step.estimate.feeConfidence, "execution-and-data");
     }
-    assert.equal(dataFeeCalls, chainId === 4663n ? 0 : 2);
+    assert.equal(dataFeeCalls, chainId === 4663n ? 0 : 3);
     assert.equal(source.captured.filter((row) => row.method === "eth_getBalance").length, 0);
     assert.equal(economicRequests(source).length, 2);
     assert.equal(planned.simulation.blockHash, HASH);
@@ -1719,7 +1741,7 @@ test("atomic remains explicit and staged partitions only empty preparations, nev
   const atomic = await review(client, plan, { limits: { chainGasLimit: 2_000_000n } });
   assert.equal(atomic.simulation.admitted, false); assert.equal(atomic.mode, "atomic"); assert.deepEqual(atomic.transactions.map((tx) => tx.kind), ["atomic"]);
   const staged = await review(client, plan, { mode: "staged", limits: { chainGasLimit: 2_000_000n } });
-  assert.equal(staged.simulation.admitted, true, staged.simulation.reason); assert.equal(staged.preparationBatchSize, 1);
+  assert.equal(staged.simulation.admitted, true, staged.simulation.reason);
   assert.deepEqual(staged.transactions.map((tx) => tx.kind), ["begin", "prepare", "prepare", "activate"]);
   assert.deepEqual(staged.transactions.filter((tx) => tx.kind === "prepare").map((tx) => [tx.marketStart, tx.marketCount]), [[0, 1], [1, 1]]);
   assert.equal(staged.transactions.filter((tx) => tx.kind === "activate").length, 1);
@@ -1735,14 +1757,14 @@ test("requested staged partitions share one capability but never splice prefix s
       gasFor: (name, args) => name === "prepareMarkets" ? BigInt(args[2]) * 18_000_000n : 400_000n,
     });
     client.supportsReadBatching = supportsReadBatching;
-    const planned = await review(client, plan, { mode: "staged" });
+    const planned = await review(client, plan, { mode: "staged", limits: { maxSimulationGas: 200_000_000n } });
     assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
-    assert.equal(planned.preparationBatchSize, 1);
+    assert.deepEqual(planned.transactions.filter((tx) => tx.kind === "prepare").map((tx) => tx.marketCount), [1, 1, 1, 1]);
     assert.equal(Object.hasOwn(planned, "atomicAttempt"), false);
     assert.equal(capabilityRequests(client).length, 1);
     const sequences = economicRequests(client).map((row) => row.params[0]);
-    assert.equal(sequences.length, 4, "Three complete candidate measurements and one exact full replay remain necessary");
-    assert.deepEqual(sequences.map((request) => request.blockStateCalls.length), [3, 4, 6, 6]);
+    assert.equal(sequences.length, 4, "Only under-estimated packed batches require another measurement");
+    assert.deepEqual(sequences.map((request) => request.blockStateCalls.length), [4, 5, 6, 6]);
     const capabilityChild = capabilityRequests(client)[0].params[0].blockStateCalls[0].blockOverrides;
     for (const request of sequences) {
       const calls = request.blockStateCalls.map((block, index) => {
@@ -1762,13 +1784,13 @@ test("requested staged partitions share one capability but never splice prefix s
     assert.equal(sequences.at(-1).validation, true);
     assert.equal(client.captured.filter((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "0x2a").length, 3);
     client.captured.length = 0;
-    const later = await review(client, plan, { mode: "staged" });
+    const later = await review(client, plan, { mode: "staged", limits: { maxSimulationGas: 200_000_000n } });
     assert.equal(later.simulation.admitted, true);
     assert.equal(capabilityRequests(client).length, 1, "A new review obtains fresh capability instead of inheriting proof");
   }
 });
 
-test("known preparation phase, order and constructor errors stop partition search; unknown near-cap failure stays unclassified", async () => {
+test("low-gas semantic preparation errors stop planning; near-ceiling failures split only packed batches", async () => {
   const known = ["0x78ca98e3", "0x9a36fd9c", encodeErrorResult({ abi: fixedFeePoolHookV1Abi, errorName: "InvalidConfiguration" }),
     encodeErrorResult({ abi: parseAbi(["error FeeBelowMinimum()"]), errorName: "FeeBelowMinimum" })];
   for (const prepareFailureData of known) {
@@ -1788,8 +1810,7 @@ test("known preparation phase, order and constructor errors stop partition searc
   assert.equal(refused.simulation.executionProof, "failed");
   assert.equal(refused.simulation.steps.at(-1).returnData, "0x");
   assert.equal(refused.simulation.failureCategory, "opaque");
-  assert.equal(refused.preparationBatchSize, 4);
-  assert.equal(economicRequests(client).length, 1, "Gas proximity alone cannot authorize schedule discovery");
+  assert.equal(economicRequests(client).length, 2, "The packed batch splits once; a failed singleton still refuses");
   assert.equal(capabilityRequests(client).length, 1);
   assert.doesNotMatch(refused.simulation.reason, /out.of.gas|OOG|capacity/i, "Near-cap gas does not diagnose the preparation root");
 });
@@ -1805,7 +1826,6 @@ test("actual native error.data-only first preparation invariants stop search wit
       });
       const planned = await review(source, plan, { mode: "staged" });
       assert.equal(planned.simulation.admitted, false);
-      assert.equal(planned.preparationBatchSize, 4);
       assert.equal(planned.simulation.steps.length, 2);
       assert.equal(planned.simulation.failedTransactionId, planned.transactions.find((transaction) => transaction.kind === "prepare").id);
       assert.equal(planned.simulation.steps[0].success, true);
@@ -1837,7 +1857,6 @@ test("a primary begin failure cannot be reclassified by a known downstream prepa
   assert.equal(planned.simulation.steps[0].nativeErrorCode, 3);
   assert.equal(planned.simulation.steps[0].failureCategory, "semantic");
   assert.equal(diagnosticJson(planned.simulation).includes(error.message), false);
-  assert.equal(planned.preparationBatchSize, 4);
   assert.equal(economicRequests(source).length, 1);
 });
 
@@ -1867,7 +1886,6 @@ test("unknown, malformed and generic native preparation roots ignore downstream 
     assert.equal(planned.simulation.admitted, false);
     assert.equal(planned.simulation.executionProof, "failed");
     assert.equal(planned.simulation.protocolFit, "unknown");
-    assert.equal(planned.preparationBatchSize, 4);
     assert.equal(planned.simulation.steps.length, 2, "Only the actual successful begin and first failed preparation belong to the returned prefix");
     assert.equal(planned.simulation.steps[1].returnData, "0x");
     assert.equal(planned.simulation.steps[1].nativeErrorCode, typeof error === "object" ? error.code : undefined);
@@ -1904,8 +1922,7 @@ test("non-invariant native returnData takes precedence over known error.data wit
     assert.equal(planned.simulation.protocolFit, "unknown");
     assert.equal(planned.simulation.transportPreflight, "not-requested");
     assert.equal(planned.simulation.failureCategory, expectedCategory);
-    assert.equal(planned.preparationBatchSize, 4);
-    assert.deepEqual(planned.transactions.filter((transaction) => transaction.kind === "prepare").map((transaction) => [transaction.marketStart, transaction.marketCount]), [[0, 4]]);
+    assert.deepEqual(planned.transactions.filter((transaction) => transaction.kind === "prepare").map((transaction) => [transaction.marketStart, transaction.marketCount]), [[0, 2], [2, 2]]);
     const firstPreparation = planned.transactions.find((transaction) => transaction.kind === "prepare");
     assert.equal(planned.simulation.failedTransactionId, firstPreparation.id);
     assert.deepEqual(planned.simulation.steps.map((step) => [step.transactionId, step.success]), [["begin", true], [firstPreparation.id, false]]);
@@ -1914,7 +1931,7 @@ test("non-invariant native returnData takes precedence over known error.data wit
     assert.equal(planned.simulation.steps.at(-1).nativeErrorDataBytes, 4);
     assert.equal(diagnosticJson(planned.simulation).includes(error.message), false);
     const requests = economicRequests(source).map((row) => row.params[0]);
-    assert.deepEqual(requests.map((request) => request.blockStateCalls.length), [3]);
+    assert.deepEqual(requests.map((request) => request.blockStateCalls.length), [2]);
     assert.ok(requests.every((request) => request.validation === false));
     assert.equal(capabilityRequests(source).length, 1);
   }
@@ -1957,7 +1974,7 @@ test("zero metering cannot admit a nonpositive reviewed gas envelope", async () 
     assert.equal(planned.simulation.admitted, false);
     assert.equal(planned.simulation.executionProof, "unavailable");
     assert.equal(planned.simulation.protocolFit, "failed");
-    assert.match(planned.simulation.reason, /positive uint64/);
+    assert.match(planned.simulation.reason, /compute\/complete transaction envelope/);
     await assert.rejects(buildNextTransaction({ client, planned }), { code: "PLAN_NOT_ADMITTED" });
   }
 });
@@ -2771,4 +2788,165 @@ test("retained static observations never bypass final canonical reorg checks", a
   client.state.reorg = true;
   await assert.rejects(planLaunch({ client, plan, account: ACCOUNT, mode: "staged" }), { code: "STATE_REORGED" });
   assert.equal(client.sessionCache.block, undefined, "Canonical failure clears retained static observations immediately");
+});
+
+test("HMM V2 forwarding reserve is applied once to activation/atomic, never to begin or prepare", async () => {
+  for (const [markets, used, reserve] of [[1, 5_850_000n, 4_250_000n], [2, 11_130_000n, 4_750_000n], [3, 16_540_000n, 5_250_000n]]) {
+    const plan = makeHmmPlan(markets);
+    const client = clientFor(plan, { gasFor(name, args) {
+      return name === "activateLaunch" ? used : name === "prepareMarkets" ? BigInt(args[2]) * 14_000_000n : 8_000_000n;
+    } });
+    const planned = await review(client, plan, { mode: "staged", limits: { headroomBps: 0, maxSimulationGas: 200_000_000n } });
+    assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+    assert.equal(planned.transactions[0].gas, 8_000_000n);
+    for (const tx of planned.transactions.filter((tx) => tx.kind === "prepare")) assert.equal(tx.gas, BigInt(tx.marketCount) * 14_000_000n);
+    assert.equal(planned.transactions.at(-1).gas, used + reserve, "Reserve scales once with total HMM markets, not once per market/callback");
+    assert.equal(economicRequests(client).length, 2, "Sizing adds no search or round trip");
+  }
+  const plan = makeHmmPlan(), atomic = clientFor(plan, { computeUsed: 27_360_000n,
+    failureFor(name, _args, validation, tx) {
+      return name === "launchAtomic" && validation && BigInt(tx.gas) < 31_320_000n
+        ? { error: { code: 3, data: encodeErrorResult({ abi: fixedFeePoolHookV1Abi, errorName: "InvalidConfiguration" }) } } : undefined;
+    } });
+  const planned = await review(atomic, plan);
+  assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+  assert.equal(planned.transactions[0].gas, 31_610_000n);
+  assert.equal(economicRequests(atomic).length, 2);
+  const nonHmm = makePlan({ chainId: 4663n });
+  const ordinary = await review(clientFor(nonHmm, { computeUsed: 5_850_000n }), nonHmm);
+  assert.equal(ordinary.transactions[0].gas, 6_727_500n);
+});
+
+test("greedy HMM preparation packs 1/2/3/5 markets before any simulation", async () => {
+  for (const [markets, batches] of [[1, [1]], [2, [2]], [3, [2, 1]], [5, [2, 2, 1]]]) {
+    const plan = makeHmmPlan(markets), client = clientFor(plan);
+    const planned = await review(client, plan, { mode: "staged" });
+    assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+    assert.deepEqual(planned.transactions.filter((tx) => tx.kind === "prepare").map((tx) => tx.marketCount), batches);
+    const coverage = markets === 1 ? 3 : 2;
+    assert.deepEqual(economicRequests(client).map((row) => row.params[0].blockStateCalls.length), [coverage, coverage]);
+    assert.deepEqual(planned.simulation.deferredTransactionIds, planned.transactions.slice(coverage).map((tx) => tx.id));
+    for (const tx of planned.transactions.slice(coverage)) assert.equal(tx.gas, undefined);
+    const next = await buildNextTransaction({ client, planned });
+    assert.equal(next.id, "begin"); assert.equal(next.admission.executionProof, "proved");
+  }
+});
+
+test("near-ceiling packed DeploymentFailed splits at95%, while lower-gas semantic failures do not", async () => {
+  const plan = makeHmmPlan(2);
+  for (const [used, split] of [[30_400_000n, true], [30_399_999n, false]]) {
+    const client = clientFor(plan, { failureFor(name, args, validation) {
+      return !validation && name === "prepareMarkets" && args[2] > 1
+        ? { gasUsed: used, returnData: encodeErrorResult({ abi: parseAbi(["error DeploymentFailed()"]), errorName: "DeploymentFailed" }) } : undefined;
+    } });
+    const planned = await review(client, plan, { mode: "staged", limits: { maxSimulationGas: 100_000_000n } });
+    assert.equal(planned.simulation.admitted, split, planned.simulation.reason);
+    assert.deepEqual(planned.transactions.filter((tx) => tx.kind === "prepare").map((tx) => tx.marketCount), split ? [1, 1] : [2]);
+    assert.equal(economicRequests(client).length, split ? 3 : 1);
+    if (!split) assert.equal(planned.simulation.steps.at(-1).decodedError, "DeploymentFailed");
+  }
+});
+
+test("clamped padding keeps28M preparation and31M atomic work within32M while true overflow refuses", async () => {
+  const plan = makePlan({ chainId: 4663n, markets: 2 });
+  const client = clientFor(plan, { gasFor: (name) => name === "prepareMarkets" ? 28_000_000n : 1_000_000n });
+  const staged = await review(client, plan, { mode: "staged" });
+  assert.equal(staged.simulation.admitted, true, staged.simulation.reason);
+  assert.equal(staged.transactions.find((tx) => tx.kind === "prepare").gas, 32_000_000n);
+  const one = makePlan({ chainId: 4663n });
+  const atomic = await review(clientFor(one, { computeUsed: 31_000_000n }), one);
+  assert.equal(atomic.simulation.admitted, true);
+  assert.equal(atomic.transactions[0].gas, 32_000_000n);
+  const over = await review(clientFor(one, { computeUsed: 32_000_001n }), one);
+  assert.equal(over.simulation.admitted, false);
+  const hmm = makeHmmPlan();
+  const reserveClamped = await review(clientFor(hmm, { computeUsed: 31_000_000n }), hmm);
+  assert.equal(reserveClamped.simulation.admitted, true, reserveClamped.simulation.reason);
+  assert.equal(reserveClamped.transactions[0].gas, 32_000_000n, "The HMM reserve is a clamped target, not a capacity refusal");
+});
+
+test("deferred activation cannot fabricate buy calibration outputs", async () => {
+  const plan = makePlan({ chainId: 4663n, markets: 2 });
+  await assert.rejects(prepareAndPlanLifecycleLaunch({ client: clientFor(plan), plan, account: ACCOUNT, mode: "staged", buySlippageBps: 100 }),
+    (failure) => failure.code === "LAUNCH_DIAGNOSTIC_FAILED" && /activation outputs beyond the proven RPC prefix/.test(failure.message));
+});
+
+test("gross maxUsedGas sizes HMM reserve, falling back to gasUsed only when absent", async () => {
+  const plan = makeHmmPlan(1, true);
+  for (const [gross, expected] of [[2_000_000n, 6_250_000n], [null, 5_250_000n]]) {
+    const client = clientFor(plan, { computeUsed: 1_000_000n, maxUsedGas: gross });
+    const planned = await review(client, plan);
+    assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+    assert.equal(planned.transactions[0].gas, expected);
+    assert.equal(economicRequests(client).length, 2);
+  }
+});
+
+test("mixed-profile packing preserves order and exact contiguous transaction spans", async () => {
+  const plan = makeHmmPlan(5);
+  const abyss = getKnownLifecycleProfile({ ...plan, key: KnownLifecycleProfile.Abyss3 });
+  for (const index of [1, 3]) {
+    const market = plan.markets[index];
+    plan.markets[index] = { ...market, adapterId: abyss.profile.registration.adapterId, profileId: abyss.profile.id, configVersion: 1,
+      config: encodeAbyssLifecycleMarketConfig({ profile: 3, fee: 3000, oracleConfigId: toHex(9n, { size: 32 }), openingSqrtPriceX96: 1n << 96n,
+        positions: [{ tickLower: 0, tickUpper: 887220, liquidity: 1n, tokenAmountMaximum: 1_000_000n }] }) };
+  }
+  const planned = await review(clientFor(plan), plan, { mode: "staged" });
+  assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+  const preparations = planned.transactions.filter((tx) => tx.kind === "prepare");
+  assert.deepEqual(preparations.map((tx) => [tx.marketStart, tx.marketCount]), [[0, 2], [2, 2], [4, 1]]);
+  for (const tx of preparations) {
+    const { args } = decodeFunctionData({ abi: launchLifecycleAbi, data: tx.data });
+    assert.deepEqual(args[0].markets.map((market) => market.profileId), plan.markets.map((market) => market.profileId));
+  }
+});
+
+test("deferred activation receives exact gas only after canonical progress brings it into the proof window", async () => {
+  const plan = makePlan({ chainId: 4663n, markets: 2 }), client = clientFor(plan);
+  const planned = await review(client, plan, { mode: "staged" });
+  assert.deepEqual(planned.simulation.deferredTransactionIds, ["activate"]);
+  assert.equal(planned.transactions.at(-1).gas, undefined);
+  client.state.phase = LifecyclePhase.Ready;
+  client.state.prepared = 2;
+  client.captured.length = 0;
+  const next = await buildNextTransaction({ client, planned });
+  assert.equal(next.id, "activate");
+  assert.equal(next.gas, 1_150_000n);
+  assert.equal(next.gasPrice, 2n);
+  assert.equal(next.admission.executionProof, "proved");
+  assert.deepEqual(economicRequests(client).map((row) => row.params[0].blockStateCalls.length), [1, 1]);
+});
+
+test("reviewed generic-EVM envelopes use an explicit isolated fork directly without measurement or backend switching", async () => {
+  const plan = makePlan(), source = clientFor(plan);
+  const planned = await review(source, plan, { mode: "staged" });
+  const reviewedTransaction = planned.transactions[0];
+  for (const succeeds of [true, false]) {
+    source.captured.length = 0;
+    const calls = [];
+    const fork = { isolation: "disposable", allowTransactions: true, sourceRpcUrl: "https://source.invalid", forkRpcUrl: "http://127.0.0.1:18545",
+      client: { async request({ method, params = [] }) {
+        calls.push(method);
+        if (method === "eth_getBlockByNumber") return { number: "0x2a", hash: HASH, timestamp: "0x64", gasLimit: toHex(30_000_000n) };
+        if (method === "eth_chainId") return toHex(plan.chainId);
+        if (method === "evm_snapshot") return "0x1";
+        if (method === "eth_sendTransaction") {
+          assert.equal(BigInt(params[0].gas), reviewedTransaction.gas);
+          assert.equal(BigInt(params[0].gasPrice), reviewedTransaction.gasPrice);
+          assert.equal(params[0].data, reviewedTransaction.data);
+          return HASH;
+        }
+        if (method === "eth_getTransactionReceipt") return { status: succeeds ? "0x1" : "0x0", gasUsed: toHex(1_000_000n) };
+        if (method === "eth_call") return encodeFunctionResult({ abi: launchLifecycleAbi, functionName: "readLaunchProgress", result: progress(plan, LifecyclePhase.Preparing) });
+        if (method === "evm_revert") return true;
+        assert.fail(`Unexpected reviewed-fork call${method}`);
+      } } };
+    const pending = buildNextTransaction({ client: source, planned, reviewedTransaction, fork });
+    if (succeeds) assert.equal((await pending).admission.executionProof, "proved");
+    else await assert.rejects(pending, { code: "PLAN_NOT_ADMITTED" });
+    assert.equal(economicRequests(source).length, 0, "An explicit held-fork replay never switches to native simulation");
+    assert.equal(calls.filter((method) => method === "eth_sendTransaction").length, 1);
+    assert.equal(calls.includes("eth_estimateGas"), false, "Held-fork replay has no measurement");
+    assert.equal(calls.at(-1), "evm_revert");
+  }
 });

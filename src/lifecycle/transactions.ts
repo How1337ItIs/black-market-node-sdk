@@ -1,8 +1,45 @@
 import { encodeFunctionData } from "viem";
 import { launchLifecycleAbi } from "./abi.js";
-import { LifecycleFundingKind, LifecycleMode } from "./schema.js";
+import { LifecycleFundingKind, LifecycleMode, type LaunchPlanV1 } from "./schema.js";
 import { LifecyclePlanningError, type BuildLaunchTransactionsOptions, type LifecycleTransaction } from "./types.js";
 import { assertLifecycleTokenAllocation } from "./allocations.js";
+import { HMM_V2_PREPARE_GAS, hmmV2ForwardingReserve } from "./presets.js";
+import { isHmmProfile } from "./hmm.js";
+
+const OTHER_MARKET_PREPARE_GAS = 16_000_000n;
+const BEGIN_GAS = 9_500_000n;
+const ACTIVATE_MARKET_GAS = 6_000_000n;
+
+export function preparationGasEstimate(plan: LaunchPlanV1, first: number, count: number): bigint {
+  let gas = 0n;
+  for (let index = first; index < first + count; index += 1) gas += isHmmProfile(plan.markets[index]!.profileId) ? HMM_V2_PREPARE_GAS : OTHER_MARKET_PREPARE_GAS;
+  return gas;
+}
+
+/** Contiguous cost packing preserves committed market order and recovery progress. */
+export function packPreparationBatches(plan: LaunchPlanV1, prepared: number, computeCap: bigint): number[] {
+  const batches = prepared > 0 ? [prepared] : [];
+  let count = 0, gas = 0n;
+  for (let index = prepared; index < plan.markets.length; index += 1) {
+    const estimate = preparationGasEstimate(plan, index, 1);
+    if (count > 0 && gas + estimate > computeCap) { batches.push(count); count = 0; gas = 0n; }
+    count += 1;
+    gas += estimate;
+  }
+  if (count > 0) batches.push(count);
+  return batches;
+}
+
+/** Estimates select RPC proof coverage only; measurement and exact replay size gas. */
+export function transactionGasEstimate(plan: LaunchPlanV1, transaction: LifecycleTransaction): bigint {
+  switch (transaction.kind) {
+    case "begin": return BEGIN_GAS;
+    case "prepare": return preparationGasEstimate(plan, transaction.marketStart!, transaction.marketCount!);
+    case "activate": return ACTIVATE_MARKET_GAS * BigInt(plan.markets.length) + hmmV2ForwardingReserve(plan);
+    case "atomic": return BEGIN_GAS + preparationGasEstimate(plan, 0, plan.markets.length) + ACTIVATE_MARKET_GAS * BigInt(plan.markets.length) + hmmV2ForwardingReserve(plan);
+    default: return 100_000n;
+  }
+}
 
 /** Pure unsigned launch commands. Every command carries the complete commitment;
  * preparation splits only empty markets, never positions, buys or public opening.

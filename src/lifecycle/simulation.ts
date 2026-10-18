@@ -4,6 +4,8 @@ import { hashLaunchIdentity, hashLaunchPlan, LifecyclePhase, type LaunchPlanV1, 
 import { assertLifecycleBlock, assertLifecycleReadClientOpen, lifecycleFailureReason, lifecyclePinnedRpc, lifecycleRpc, lifecycleSourceClient, lifecycleStage, nitroArbSys, nitroArbSysAbi, nitroGasInfo, nitroGasInfoAbi, readLifecycleBlock, readLifecycleChainId, readNitroPosterGas, resolveLifecycleLimits, rpcHex, rpcObject, rpcQuantity, type LifecycleLimitObservation } from "./rpc.js";
 import { LifecyclePlanningError, type ControlledLifecycleFork, type LifecycleBlock, type LifecycleLimitContext, type LifecyclePostcondition, type LifecycleRpcClient, type LifecycleSimulation, type LifecycleSimulationStep, type LifecycleTransaction, type PlannedLaunch, type ResolvedLifecycleLimits, type SimulateLaunchPlanOptions } from "./types.js";
 import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, isPoolBoundV4ConfigVersion } from "./markets.js";
+import { hmmV2ForwardingReserve } from "./presets.js";
+import { transactionGasEstimate } from "./transactions.js";
 
 function committedPositionCount(plan: LaunchPlanV1): number {
   let count = 0;
@@ -111,8 +113,6 @@ async function proveNitroBackend(client: LifecycleRpcClient, planned: PlannedLau
 }
 
 async function simulateRpcPass(client: LifecycleRpcClient, planned: PlannedLaunch, block: LifecycleBlock, transactions: readonly LifecycleTransaction[], gasLimits: readonly bigint[], limits: ResolvedLifecycleLimits, gasPrice: bigint, validation: boolean): Promise<LifecycleSimulationStep[]> {
-  const totalRequestedGas = gasLimits.reduce((total, gas) => total + gas, 0n);
-  if (limits.maxSimulationGas !== undefined && totalRequestedGas > limits.maxSimulationGas) throw new LifecyclePlanningError("SIMULATION_RPC_CAP", "Sequential request exceeds the current RPC aggregate simulation gas cap; use an isolated controlled fork");
   // Natural child-block fees must govern fee-bearing admission; overriding
   // baseFeePerGas with the parent's would fabricate a lower envelope and admit
   // calls that the actual chain would reject. eth_simulateV1 derives the child
@@ -315,7 +315,7 @@ function observedFields<T extends object>(value: T): () => boolean {
 
 /** Internal continuation owned by one SDK read invocation. Only its positive
  * capability proof is reused; every candidate executes its entire economic sequence. */
-export function prepareLaunchSimulation(options: SimulateLaunchPlanOptions, block: LifecycleBlock, hasTransactions = true): PreparedLaunchSimulation {
+export function prepareLaunchSimulation(options: SimulateLaunchPlanOptions, block: LifecycleBlock, hasTransactions = true, reviewedEnvelope?: NextTransactionEnvelope): PreparedLaunchSimulation {
   const { client, planned, fork } = options;
   const signal = options.signal;
   if (signal?.aborted) throw Object.assign(new Error("Lifecycle simulation cancelled"), { name: "AbortError" });
@@ -353,7 +353,7 @@ export function prepareLaunchSimulation(options: SimulateLaunchPlanOptions, bloc
       resolveLifecycleLimits(context, policy),
       readLifecycleChainId(client),
       lifecyclePinnedRpc(client, "eth_getCode", [context.account, toHex(context.block.number)], context.block),
-      hasTransactions ? lifecycleRpc(client, "eth_gasPrice") : undefined,
+      hasTransactions && reviewedEnvelope === undefined ? lifecycleRpc(client, "eth_gasPrice") : undefined,
     ]));
   })().then((observations) => ({ observations }), (failure: unknown) => ({ failure }));
   // Refused inputs may discard this read-only preparation before it settles.
@@ -439,7 +439,7 @@ export async function simulateLaunchTransactions(options: SimulateLaunchPlanOpti
   // Standalone calls always produce fresh context, including live chain and fees.
   if (options.fork !== undefined && lifecycleSourceClient(options.fork.client) === lifecycleSourceClient(options.client)) throw new LifecyclePlanningError("UNSAFE_FORK", "Source RPC must never receive controlled simulation transactions/snapshots/resets");
   const block = pinnedBlock ?? await readLifecycleBlock(options.client);
-  const prepared = prepareLaunchSimulation(options, block, transactions.length !== 0);
+  const prepared = prepareLaunchSimulation(options, block, transactions.length !== 0, nextEnvelope);
   try { return await prepared(transactions, nextEnvelope); }
   finally { prepared.close(); }
 }
@@ -458,7 +458,7 @@ async function simulateLaunchTransactionsWithContext(
   const sourceClient = lifecycleSourceClient(client);
   const { block } = context;
   const [{ limits, configuration }, chainId, accountCodeValue, gasPriceValue] = observations;
-  const base = { confidence: "stateful" as const, executionProof: "failed" as const, protocolFit: "unknown" as const, transportPreflight: "not-requested" as const, blockNumber: block.number, blockHash: block.hash, account: planned.account, chainId: planned.chainId, limits };
+  const base = { confidence: "stateful" as const, executionProof: "failed" as const, protocolFit: "unknown" as const, transportPreflight: "not-requested" as const, blockNumber: block.number, blockHash: block.hash, account: planned.account, chainId: planned.chainId, limits, deferredTransactionIds: [] as string[] };
   if (chainId !== planned.chainId) throw new LifecyclePlanningError("CHAIN_MISMATCH", "RPC chain changed before sequential simulation");
   const accountCode = rpcHex(accountCodeValue, "account code");
   if (accountCode !== "0x") {
@@ -473,36 +473,48 @@ async function simulateLaunchTransactionsWithContext(
     }
   }
   if (transactions.length === 0) { await assertLifecycleBlock(client, block, planned.chainId); return { ...base, executionProof: "proved", protocolFit: "proved", backend: "unavailable", admitted: true, steps: [] }; }
-  const recommendedGasPrice = rpcQuantity(gasPriceValue, "gas price");
-  if (recommendedGasPrice >= 1n << 256n) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Recommended gas price must be a uint256 quantity");
-  // Initial construction reserves twice the pinned base fee if the quote lags.
-  // Reviewed fees are not new recommendations: native replay must accept them
-  // under natural child fees, with no base-fee override or silent fee increase.
+  if (nextEnvelope !== undefined && (transactions.length !== 1 || typeof nextEnvelope.gas !== "bigint" || nextEnvelope.gas <= 0n || nextEnvelope.gas >= 1n << 64n ||
+    typeof nextEnvelope.gasPrice !== "bigint" || nextEnvelope.gasPrice < 0n || nextEnvelope.gasPrice >= 1n << 256n)) {
+    throw new LifecyclePlanningError("INVALID_GAS_ENVELOPE", "Reviewed replay requires one immediate transaction with exact uint64 gas and uint256 price");
+  }
+  const allTransactions = transactions;
+  if (limits.maxSimulationGas !== undefined && nextEnvelope === undefined) {
+    let estimatedGas = 0n, count = 0;
+    for (const transaction of transactions) {
+      estimatedGas += transactionGasEstimate(planned.plan, transaction);
+      if (estimatedGas > limits.maxSimulationGas) break;
+      count += 1;
+    }
+    transactions = transactions.slice(0, count);
+    base.deferredTransactionIds = allTransactions.slice(count).map((transaction) => transaction.id);
+    if (count === 0) {
+      const computeCap = limits.transactionGasCeiling !== undefined && limits.transactionGasCeiling < limits.executionGasCeiling ? limits.transactionGasCeiling : limits.executionGasCeiling;
+      const exceedsCompute = estimatedGas > computeCap;
+      const gasInMillions = (gas: bigint) => {
+        const tenths = (gas + 50_000n) / 100_000n;
+        return `${tenths / 10n}.${tenths % 10n}`;
+      };
+      const atomic = allTransactions[0]!.kind === "atomic";
+      const reason = exceedsCompute
+        ? `${atomic ? "Atomic launch" : "Immediate transaction"} needs about ${gasInMillions(estimatedGas)}M gas, above the ${gasInMillions(computeCap)}M per-transaction limit${atomic ? "; use staged" : ""}`
+        : "The immediate transaction estimate exceeds the RPC aggregate simulation gas cap; no prefix can be proved";
+      await assertLifecycleBlock(client, block, planned.chainId);
+      return { ...base, confidence: "provisional", executionProof: "unavailable", backend: "unavailable", admitted: false, steps: [], failureCategory: "capacity", capacityConstraint: exceedsCompute ? "compute" : "simulation-gas", reason };
+    }
+  }
+  const recommendedGasPrice = nextEnvelope === undefined ? rpcQuantity(gasPriceValue, "gas price") : nextEnvelope.gasPrice;
+  // New recommendations cover lagging quotes; reviewed fees are replayed unchanged
+  // under natural child fees, never refreshed or silently increased.
   const baseFeeEnvelope = (block.baseFeePerGas ?? 0n) * 2n;
   const gasPrice = nextEnvelope?.gasPrice ?? (recommendedGasPrice > baseFeeEnvelope ? recommendedGasPrice : baseFeeEnvelope);
   if (gasPrice >= 1n << 256n) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Gas price must be a uint256 quantity");
-  if (nextEnvelope !== undefined && (typeof nextEnvelope.gas !== "bigint" || nextEnvelope.gas <= 0n || nextEnvelope.gas >= 1n << 64n ||
-    typeof nextEnvelope.gasPrice !== "bigint" || nextEnvelope.gasPrice < 0n || nextEnvelope.gasPrice >= 1n << 256n)) {
-    throw new LifecyclePlanningError("INVALID_GAS_ENVELOPE", "Reviewed gas and gas price must be exact positive uint64 gas and nonnegative uint256 price");
-  }
   const buffer = (gas: bigint) => (gas * BigInt(10000 + limits.headroomBps) + 9999n) / 10000n;
-  const computeCeiling = limits.transactionGasCeiling !== undefined && limits.transactionGasCeiling < limits.executionGasCeiling ? limits.transactionGasCeiling : limits.executionGasCeiling;
-  // Nonnegative poster gas cannot make this complete discovery request smaller.
-  // A generic controlled fork retains the existing RPC-to-fork fallback.
-  if (limits.maxSimulationGas !== undefined && BigInt(transactions.length) * computeCeiling > limits.maxSimulationGas &&
-    (limits.protocol === "nitro" || options.fork === undefined)) {
-    assertCurrent();
-    await assertLifecycleBlock(client, block, planned.chainId);
-    return { ...base, confidence: "provisional", executionProof: "unavailable", backend: "unavailable", admitted: false, steps: [], failureCategory: "capacity", capacityConstraint: "simulation-gas", reason: `Stateful sequential RPC simulation unavailable: Sequential request exceeds the current RPC aggregate simulation gas cap; use an isolated controlled fork. ${limits.protocol === "nitro" ? "Generic Anvil/Hardhat forks cannot prove ArbOS compute/poster metering." : "Dependent eth_call estimates are not proof."}` };
-  }
   const posterGas: bigint[] = [];
   if (limits.protocol === "nitro") {
-    // Lightweight poster reads may overlap the isolated capability request.
-    // Economic work is not even queued until both prerequisites have succeeded.
     try {
       const [, estimates] = await Promise.all([
         proveBackend(limits, gasPrice),
-        lifecycleStage(client, "simulation.poster", () => Promise.all(transactions.map(async (transaction) => buffer((await readNitroPosterGas(transaction, context)).posterGas)))),
+        nextEnvelope === undefined ? lifecycleStage(client, "simulation.poster", () => Promise.all(transactions.map(async (transaction) => buffer((await readNitroPosterGas(transaction, context)).posterGas)))) : [],
       ]);
       posterGas.push(...estimates);
     } catch (failure) {
@@ -513,176 +525,110 @@ async function simulateLaunchTransactionsWithContext(
     }
   }
   assertCurrent();
-  // The poster quote allocates gas only. The native exact replay enforces actual
-  // compute hold; subtracting this approximate budget from gasUsed would not.
   const discoveryGas = transactions.map((_, index) => {
     const total = limits.executionGasCeiling + (posterGas[index] ?? 0n);
     const capped = limits.transactionGasCeiling !== undefined && limits.transactionGasCeiling < total ? limits.transactionGasCeiling : total;
     if (capped <= 0n || capped >= 1n << 64n) throw new LifecyclePlanningError("INVALID_GAS_ENVELOPE", "Compute/poster envelope exceeds uint64 gas");
     return capped;
   });
-  let backend: "eth_simulateV1" | "controlled-fork" = "eth_simulateV1";
-  let measured: LifecycleSimulationStep[];
-  // A permissive measurement needs the legal complete compute + poster envelope.
-  // It is not proof: fixed compute/headroom checks and exact validated replay still follow.
-  try {
-    measured = await lifecycleStage(client, "simulation.measure", () => simulateRpcPass(client, planned, block, transactions, discoveryGas, limits, gasPrice, false));
-  }
-  catch (failure) {
-    if (simulationFailureKind(failure) === "abort") throw failure;
-    assertCurrent();
-    if (options.fork === undefined || limits.protocol === "nitro") {
-      await assertLifecycleBlock(client, block, planned.chainId);
-      return { ...base, confidence: "provisional", executionProof: "unavailable", backend: "unavailable", admitted: false, steps: [], reason: `Stateful sequential RPC simulation unavailable: ${lifecycleFailureReason(failure)}. ${limits.protocol === "nitro" ? "Generic Anvil/Hardhat forks cannot prove ArbOS compute/poster metering." : "Dependent eth_call estimates are not proof."}` };
+  let backend: "eth_simulateV1" | "controlled-fork" = nextEnvelope !== undefined && limits.protocol === "evm" && options.fork !== undefined ? "controlled-fork" : "eth_simulateV1";
+  let measured: LifecycleSimulationStep[] = [];
+  if (nextEnvelope === undefined) {
+    try {
+      measured = await lifecycleStage(client, "simulation.measure", () => simulateRpcPass(client, planned, block, transactions, discoveryGas, limits, gasPrice, false));
+    } catch (failure) {
+      if (simulationFailureKind(failure) === "abort") throw failure;
+      assertCurrent();
+      if (options.fork === undefined || limits.protocol === "nitro") {
+        await assertLifecycleBlock(client, block, planned.chainId);
+        return { ...base, confidence: "provisional", executionProof: "unavailable", backend: "unavailable", admitted: false, steps: [], reason: `Stateful sequential RPC simulation unavailable: ${lifecycleFailureReason(failure)}. ${limits.protocol === "nitro" ? "Generic Anvil/Hardhat forks cannot prove ArbOS compute/poster metering." : "Dependent eth_call estimates are not proof."}` };
+      }
+      backend = "controlled-fork";
+      measured = await simulateForkPass(options.fork, planned, block, transactions, discoveryGas, gasPrice, true, limits.headroomBps);
     }
-    backend = "controlled-fork";
-    measured = await simulateForkPass(options.fork, planned, block, transactions, discoveryGas, gasPrice, true, limits.headroomBps);
+    assertCurrent();
+    const failedIndex = measured.findIndex((step) => !step.success);
+    if (failedIndex >= 0 && limits.maxSimulationGas !== undefined &&
+      measured.reduce((gas, step) => gas + (step.gasUsed ?? 0n), 0n) * 100n >= limits.maxSimulationGas * 95n) {
+      // The provider exhausted its aggregate used-gas budget, not the contract.
+      // Preserve only actual successful results; the failed call is deferred too.
+      measured = measured.slice(0, failedIndex);
+      transactions = transactions.slice(0, failedIndex);
+      base.deferredTransactionIds = allTransactions.slice(failedIndex).map((transaction) => transaction.id);
+      if (transactions.length === 0) {
+        await assertLifecycleBlock(client, block, planned.chainId);
+        return { ...base, confidence: "provisional", executionProof: "unavailable", backend, admitted: false, steps: [], failureCategory: "source", reason: "RPC aggregate simulation gas cap left no successful prefix to prove" };
+      }
+    }
+    const failed = measured.find((step) => !step.success);
+    if (failed !== undefined) { await assertLifecycleBlock(client, block, planned.chainId); return { ...base, backend, admitted: false, steps: measured, reason: failed.error, failedTransactionId: failed.transactionId, failureCategory: failed.failureCategory ?? "opaque", capacityConstraint: failed.failureCategory === "capacity" ? "compute" : undefined }; }
+    if (diagnostic) {
+      await assertLifecycleBlock(client, block, planned.chainId);
+      return { ...base, backend, admitted: false, executionProof: "unavailable", steps: measured };
+    }
   }
-  assertCurrent();
-  const failed = measured.find((step) => !step.success);
-  if (failed !== undefined) { await assertLifecycleBlock(client, block, planned.chainId); return { ...base, backend, admitted: false, steps: measured, reason: failed.error, failedTransactionId: failed.transactionId, failureCategory: failed.failureCategory ?? "opaque", capacityConstraint: failed.failureCategory === "capacity" ? "compute" : undefined }; }
-  if (diagnostic) {
-    await assertLifecycleBlock(client, block, planned.chainId);
-    return { ...base, backend, admitted: false, executionProof: "unavailable", steps: measured };
-  }
-  // Padding belongs to new envelopes. A reviewed envelope may consume its
-  // original margin; only exact replay at its held gas/price proves it still fits.
-  const computeGas = measured.map((step, index) => {
-    const required = step.gasRequired ?? step.gasUsed ?? computeCeiling;
-    return nextEnvelope !== undefined && index === 0 ? required : buffer(required);
-  });
-  const gasLimits = computeGas.map((gas, index) =>
-    nextEnvelope !== undefined && index === 0 ? nextEnvelope.gas : gas + (posterGas[index] ?? 0n));
-  const exceeds = gasLimits.findIndex((gas, index) => gas <= 0n || gas >= 1n << 64n || (computeGas[index] ?? 0n) > limits.executionGasCeiling || limits.transactionGasCeiling !== undefined && gas > limits.transactionGasCeiling);
+  const gasLimits = nextEnvelope === undefined ? measured.map((step, index) => {
+    const gross = step.gasRequired ?? step.gasUsed!;
+    const reserve = transactions[index]?.kind === "activate" || transactions[index]?.kind === "atomic" ? hmmV2ForwardingReserve(planned.plan) : 0n;
+    const desired = gross + reserve > buffer(gross) ? gross + reserve : buffer(gross);
+    const available = discoveryGas[index]! - (posterGas[index] ?? 0n);
+    return (desired < available ? desired : available) + (posterGas[index] ?? 0n);
+  }) : [nextEnvelope.gas];
+  const exceeds = gasLimits.findIndex((gas, index) =>
+    gas <= 0n || gas >= 1n << 64n || limits.transactionGasCeiling !== undefined && gas > limits.transactionGasCeiling ||
+    nextEnvelope === undefined && (measured[index]!.gasRequired ?? measured[index]!.gasUsed!) > gas - (posterGas[index] ?? 0n) ||
+    limits.protocol === "evm" && gas > limits.executionGasCeiling);
   if (exceeds >= 0) {
     await assertLifecycleBlock(client, block, planned.chainId);
-    return { ...base, executionProof: "unavailable", protocolFit: "failed", backend, admitted: false, steps: measured, failureCategory: "capacity", capacityConstraint: (computeGas[exceeds] ?? 0n) > limits.executionGasCeiling ? "compute" : "gas-envelope", reason: "Execution compute/headroom or complete poster gas envelope is outside positive uint64 gas and current protocol/known transaction limits", failedTransactionId: transactions[exceeds]?.id };
+    return { ...base, executionProof: "unavailable", protocolFit: "failed", backend, admitted: false, steps: measured, failureCategory: "capacity", capacityConstraint: "gas-envelope", reason: "Measured execution or reviewed gas exceeds the current compute/complete transaction envelope", failedTransactionId: transactions[exceeds]?.id };
   }
-  // Envelope discovery may enlarge future unfinished steps, never the reviewed
-  // immediate one. Every retry still executes the entire sequence at held price.
-  const envelopeDiscoveryGas = nextEnvelope === undefined ? discoveryGas : discoveryGas.map((gas, index) => index === 0 ? nextEnvelope.gas : gas);
-  // Replay the complete sequence from its original state at the exact buffered
-  // limits. Only explicit native OOG can discover one larger legal envelope;
-  // semantic, opaque and transport failures cannot authorize a capacity retry.
-  let verified: LifecycleSimulationStep[];
-  let validatedReplayError: string | undefined;
-  assertCurrent();
+  let verifiedSteps: LifecycleSimulationStep[] = [];
+  let admittedGasLimits = gasLimits;
+  let replayError: string | undefined;
+  const replay = (gas: readonly bigint[]) => backend === "eth_simulateV1"
+    ? simulateRpcPass(client, planned, block, transactions, gas, limits, gasPrice, true)
+    : simulateForkPass(options.fork!, planned, block, transactions, gas, gasPrice, false, limits.headroomBps);
   try {
-    if (backend === "eth_simulateV1") verified = await lifecycleStage(client, "simulation.replay", () => simulateRpcPass(client, planned, block, transactions, gasLimits, limits, gasPrice, true));
-    else {
-      if (options.fork === undefined) throw new LifecyclePlanningError("INVALID_SIMULATION", "Controlled fork is missing for the exact-gas replay");
-      verified = await simulateForkPass(options.fork, planned, block, transactions, gasLimits, gasPrice, false, limits.headroomBps);
-    }
+    verifiedSteps = await lifecycleStage(client, "simulation.replay", () => replay(gasLimits));
   } catch (failure) {
     const kind = simulationFailureKind(failure);
     if (kind === "abort") throw failure;
     assertCurrent();
-    const message = lifecycleFailureReason(failure);
-    if (backend !== "eth_simulateV1") {
+    if (kind !== "out-of-gas" || backend !== "eth_simulateV1" || nextEnvelope !== undefined) {
       await assertLifecycleBlock(client, block, planned.chainId);
-      return { ...base, backend, admitted: false, steps: [], reason: `Exact-gas validated replay failed: ${message}` };
+      return { ...base, backend: "unavailable", confidence: "provisional", executionProof: "unavailable", admitted: false, steps: measured, failureCategory: kind === "source" ? "source" : "opaque", reason: `Exact-gas validated replay unavailable: ${lifecycleFailureReason(failure)}` };
     }
-    if (kind !== "out-of-gas") {
-      await assertLifecycleBlock(client, block, planned.chainId);
-      return { ...base, backend: "unavailable", confidence: "provisional", executionProof: "unavailable", admitted: false, steps: measured, failureCategory: kind === "source" ? "source" : "opaque", reason: `Exact-gas validated replay unavailable: ${message}` };
-    }
-    validatedReplayError = message;
-    verified = [];
+    replayError = lifecycleFailureReason(failure);
   }
   assertCurrent();
-  let verifiedSteps = verified;
-  let admittedGasLimits = gasLimits;
   let finalFailure = verifiedSteps.find((step) => !step.success);
-  let finalFailureReason: string | undefined;
-  if (finalFailure === undefined && validatedReplayError !== undefined) {
-    if (!envelopeDiscoveryGas.some((gas, index) => gas > (gasLimits[index] ?? gas))) {
-      await assertLifecycleBlock(client, block, planned.chainId);
-      return { ...base, backend, admitted: false, steps: measured, reason: `Validated execution at the exact current gas ceiling failed: ${validatedReplayError}` };
-    }
-    // The buffered validated replay threw before yielding steps. Attempt one
-    // explicit envelope-discovery replay at the exact execution ceiling on the
-    // same pinned block; headroom is never silently raised — the carried gas is
-    // the validated envelope itself.
+  const failedIndex = verifiedSteps.findIndex((step) => !step.success);
+  const rescue = nextEnvelope === undefined && backend === "eth_simulateV1" &&
+    (replayError !== undefined && discoveryGas.some((gas, index) => index < transactions.length && gas > gasLimits[index]!) ||
+      finalFailure !== undefined && looksGasExhausted(finalFailure, gasLimits[failedIndex]!) && discoveryGas[failedIndex]! > gasLimits[failedIndex]!);
+  // One legal-envelope rescue covers thrown/returned genuine OOG. Never retry
+  // semantic errors, switch replay backends, or enlarge a held immediate envelope.
+  if (rescue) {
     assertCurrent();
     try {
-      const ceilingLimits = envelopeDiscoveryGas;
-      const retried = backend === "eth_simulateV1"
-        ? await lifecycleStage(client, "simulation.envelope", () => simulateRpcPass(client, planned, block, transactions, ceilingLimits, limits, gasPrice, true))
-        : options.fork === undefined ? undefined : await simulateForkPass(options.fork, planned, block, transactions, ceilingLimits, gasPrice, false, limits.headroomBps);
-      const retryFailureIndex = retried?.findIndex((step) => !step.success) ?? -1;
-      const retryFailure = retried?.[retryFailureIndex];
-      if (retried === undefined) {
-        await assertLifecycleBlock(client, block, planned.chainId);
-        return { ...base, backend, admitted: false, steps: measured, reason: `Validated execution at the exact current gas ceiling still failed: ${validatedReplayError}` };
-      }
-      admittedGasLimits = ceilingLimits;
-      verifiedSteps = retried;
-      finalFailure = retryFailure;
-      validatedReplayError = undefined;
-      if (retryFailure !== undefined) {
-        const kind = transactions[retryFailureIndex]?.kind;
-        const indivisible = kind === "activate" || kind === "atomic";
-        finalFailureReason = `Validated execution at the exact current gas ceiling still failed: ${retryFailure.error ?? "Execution reverted"}${indivisible ? "; final mint/lock/all-buys/public-opening is indivisible and will not be partitioned" : ""}`;
-      }
+      admittedGasLimits = discoveryGas.slice(0, transactions.length);
+      verifiedSteps = await lifecycleStage(client, "simulation.envelope", () => replay(admittedGasLimits));
+      finalFailure = verifiedSteps.find((step) => !step.success);
+      replayError = undefined;
     } catch (failure) {
       const kind = simulationFailureKind(failure);
       if (kind === "abort") throw failure;
       assertCurrent();
       await assertLifecycleBlock(client, block, planned.chainId);
-      if (kind !== "out-of-gas") return { ...base, backend: "unavailable", confidence: "provisional", executionProof: "unavailable", admitted: false, steps: measured, failureCategory: kind === "source" ? "source" : "opaque", reason: `Legal-envelope validated replay unavailable after buffered execution refusal: ${lifecycleFailureReason(failure)}` };
-      return { ...base, backend, admitted: false, steps: measured, reason: `Validated buffered replay failed (${validatedReplayError}) and execution at the exact gas ceiling still reverted; final mint/lock/all-buys/public-opening is indivisible` };
+      if (kind !== "out-of-gas") return { ...base, backend: "unavailable", confidence: "provisional", executionProof: "unavailable", admitted: false, steps: measured, failureCategory: kind === "source" ? "source" : "opaque", reason: `Legal-envelope validated replay unavailable: ${lifecycleFailureReason(failure)}` };
+      return { ...base, backend, admitted: false, steps: measured, reason: `Validated execution at the exact current gas ceiling still failed: ${lifecycleFailureReason(failure)}` };
     }
-  } else if (finalFailure !== undefined) {
-    const failedIndex = verifiedSteps.findIndex((step) => !step.success);
-    const bufferedLimit = gasLimits[failedIndex];
-    const failedTransaction = transactions[failedIndex];
-    if (bufferedLimit !== undefined && failedTransaction !== undefined && (nextEnvelope === undefined || failedIndex !== 0) &&
-      looksGasExhausted(finalFailure, bufferedLimit) && (envelopeDiscoveryGas[failedIndex] ?? 0n) > bufferedLimit) {
-      // Buffered replay returned an exhaustion-shaped failed step; learn the true
-      // validated envelope with one explicit replay at the exact execution ceiling.
-      assertCurrent();
-      try {
-        const ceilingLimits = envelopeDiscoveryGas;
-        const retried = backend === "eth_simulateV1"
-          ? await lifecycleStage(client, "simulation.envelope", () => simulateRpcPass(client, planned, block, transactions, ceilingLimits, limits, gasPrice, true))
-          : options.fork === undefined ? undefined : await simulateForkPass(options.fork, planned, block, transactions, ceilingLimits, gasPrice, false, limits.headroomBps);
-        if (retried === undefined) {
-          await assertLifecycleBlock(client, block, planned.chainId);
-          return { ...base, backend, admitted: false, steps: measured, reason: "Validated execution at the exact current gas ceiling omitted transaction results" };
-        }
-        const retryFailureIndex = retried.findIndex((step) => !step.success);
-        const retryFailure = retried[retryFailureIndex];
-        admittedGasLimits = ceilingLimits;
-        verifiedSteps = retried;
-        finalFailure = retryFailure;
-        if (retryFailure !== undefined) {
-          const kind = transactions[retryFailureIndex]?.kind;
-          const indivisible = kind === "activate" || kind === "atomic";
-          finalFailureReason = `Validated execution at the exact current gas ceiling still failed: ${retryFailure.error ?? "Execution reverted"}${indivisible ? "; final mint/lock/all-buys/public-opening is indivisible and will not be partitioned" : ""}`;
-        }
-      } catch (failure) {
-        const kind = simulationFailureKind(failure);
-        if (kind === "abort") throw failure;
-        assertCurrent();
-        if (kind !== "out-of-gas") {
-          await assertLifecycleBlock(client, block, planned.chainId);
-          return { ...base, backend: "unavailable", confidence: "provisional", executionProof: "unavailable", admitted: false, steps: measured, reason: `Legal-envelope validated replay unavailable: ${lifecycleFailureReason(failure)}` };
-        }
-        await assertLifecycleBlock(client, block, planned.chainId);
-        return { ...base, backend, admitted: false, steps: measured, reason: `Validated buffered replay failed (${finalFailure?.error ?? "Execution reverted"}) and execution at the exact gas ceiling still reverted: ${lifecycleFailureReason(failure)}` };
-      }
-    }
+  }
+  if (replayError !== undefined) {
+    await assertLifecycleBlock(client, block, planned.chainId);
+    return { ...base, backend, admitted: false, steps: measured, reason: `Validated execution at the exact current gas ceiling failed: ${replayError}` };
   }
   assertCurrent();
-  if (nextEnvelope !== undefined && finalFailure === undefined) {
-    const currentMinimum = verifiedSteps[0]?.gasRequired ?? verifiedSteps[0]?.gasUsed ?? nextEnvelope.gas;
-    if (nextEnvelope.gas < currentMinimum) {
-      await assertLifecycleBlock(client, block, planned.chainId);
-      return { ...base, backend, admitted: false, executionProof: "proved", protocolFit: "failed", steps: verifiedSteps,
-        failureCategory: "capacity", capacityConstraint: "gas-envelope", failedTransactionId: transactions[0]?.id,
-        reason: "Exact reviewed replay exceeds the held gas envelope" };
-    }
-  }
   const estimates: LifecycleSimulationStep[] = [];
   // A definitive returned replay failure already refuses execution. Retain its
   // fee observations without inventing a balance or doing redundant payer work.
@@ -708,6 +654,6 @@ async function simulateLaunchTransactionsWithContext(
     estimates.push({ ...step, estimate: { gasUsed: step.gasUsed ?? 0n, gasLimit, gasPrice, executionFee, dataFee, posterGas: poster, posterFee: poster === undefined ? undefined : poster * gasPrice, dataFeeIncludedInGas: limits.protocol === "nitro", totalFee: dataFee === undefined ? undefined : executionFee + dataFee, feeConfidence: dataFee === undefined ? "execution-only" : "execution-and-data" } });
   }
   await assertLifecycleBlock(client, block, planned.chainId);
-  return { ...base, backend, executionProof: finalFailure === undefined ? "proved" : "failed", protocolFit: finalFailure === undefined ? "proved" : "unknown", admitted: finalFailure === undefined && affordabilityFailure === undefined, steps: estimates, reason: finalFailureReason ?? finalFailure?.error ?? affordabilityFailure, failedTransactionId: finalFailure?.transactionId, failureCategory: finalFailure?.failureCategory ?? (affordabilityFailure === undefined ? undefined : "affordability"), capacityConstraint: finalFailure?.failureCategory === "capacity" ? "compute" : undefined };
+  return { ...base, backend, executionProof: finalFailure === undefined ? "proved" : "failed", protocolFit: finalFailure === undefined ? "proved" : "unknown", admitted: finalFailure === undefined && affordabilityFailure === undefined, steps: estimates, reason: finalFailure?.error ?? affordabilityFailure, failedTransactionId: finalFailure?.transactionId, failureCategory: finalFailure?.failureCategory ?? (affordabilityFailure === undefined ? undefined : "affordability"), capacityConstraint: finalFailure?.failureCategory === "capacity" ? "compute" : undefined };
 }
 
