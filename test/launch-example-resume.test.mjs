@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { encodeFunctionResult } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { typescriptNodeArgs } from "./register-typescript.mjs";
 import { economicReviewHash, RunArtifacts } from "../examples/launch-example-support.ts";
 import { apiTransport, readLaunchExampleArguments, refreshExampleUploadSession, resumeLaunchExample } from "../examples/launch-example.ts";
 const sdk = await import(process.env.SDK_SOURCE_TEST === "1" ? "../src/index.ts" : "../dist/index.js");
@@ -149,7 +150,7 @@ test("all eleven wrapper commands route --resume before configuration and never 
   const wrappers = readdirSync(examples).filter((name) => /^launch-erc(?:20|404)-.*\.ts$/.test(name));
   assert.equal(wrappers.length, 11);
   for (const wrapper of wrappers) {
-    const result = spawnSync(process.execPath, [join(examples, wrapper), "--resume", join(directory, "missing")], {
+    const result = spawnSync(process.execPath, [...typescriptNodeArgs, join(examples, wrapper), "--resume", join(directory, "missing")], {
       cwd: directory, encoding: "utf8", env: { PATH: process.env.PATH }, timeout: 15_000,
     });
     assert.equal(result.status, 1, wrapper); assert.equal(result.stdout, "", wrapper);

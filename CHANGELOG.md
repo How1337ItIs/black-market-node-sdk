@@ -7,6 +7,7 @@
 - Replace both HMM admission envelopes, adapters, full dependency graphs and creation code with preserved V2 evidence. Keep the 640-byte constructor and canonical zero-salt config6-prefix economics hash; the full plan hash binds the auxiliary tail.
 - Export full `hmmLiquidityManagerV2Abi`, `hmmFeeCollectorV2Abi`, `hmmFeeCollectorFactoryV2Abi`, `hmmFixedHookV2Abi` and `hmmDynamicHookV2Abi`, including all strategy configuration, pause and fee-owner/share controls. V2 funds the strategy per swap in both currencies after treasury, without an HMM burn.
 - Migrate documentation/examples and independent contract vectors; add old-tail/guard rejection, exact admission, two-chunk graph certification and constructor/mining coverage. SDK support removal does not deregister existing onchain HMM V1 markets.
+- Keep the full offline example-test and CLI-child coverage runnable on Node 20/22/24 with a test-only loader backed by the existing TypeScript dev dependency; no production dependency or example-runtime change.
 
 ## 0.9.1
 

@@ -37,7 +37,7 @@ jobs:
         run: pnpm build
 
       - name: Test
-        run: node --test test/*.test.mjs
+        run: node --import ./test/register-typescript.mjs --test test/*.test.mjs
 
   pack:
     name: Pack tarball
