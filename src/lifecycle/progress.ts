@@ -6,6 +6,8 @@ import { assertLifecycleBlock, assertLifecycleReadClientOpen, lifecycleFailureRe
 import { LifecyclePlanningError, type CanonicalLaunchProgress, type LifecycleBlock, type LifecycleMarketProgress, type LifecycleProfile, type LifecycleReceiptReference, type LifecycleReceiptStatus, type LifecycleRpcClient, type PoolBoundHookDeployment, type ReadLaunchProgressOptions } from "./types.js";
 import { deriveKnownPoolBoundHookDeployment } from "./calibration.js";
 import { getKnownLifecycleDeployment, getKnownLifecycleProfile } from "./presets.js";
+import { ufgLaunchProxyV1Abi } from "./ufg-abi.js";
+import { assertUfgLaunchAccount, hashUfgLaunchConfig, UFG_LAUNCH_PROXY_ADDRESS, type UfgLaunchConfig } from "./ufg-config.js";
 
 export const ABYSS_LIFECYCLE_CONFIG_SCHEMA = keccak256(stringToHex("(uint8,uint24,bytes32,uint160,(int24,int24,uint128,uint256)[])"));
 
@@ -460,12 +462,17 @@ async function transactionMatchesLaunch(transaction: Record<string, unknown>, op
   if (transaction.chainId !== undefined && rpcQuantity(transaction.chainId, "receipt transaction chain") !== planned.plan.chainId) throw new LifecyclePlanningError("RECEIPT_CHAIN", "Receipt transaction belongs to a different chain");
   const to = transaction.to === null ? zeroAddress : rpcHex(transaction.to, "receipt transaction target");
   const input = rpcHex(transaction.input ?? transaction.data, "receipt transaction calldata");
-  if (to.toLowerCase() === planned.plan.orchestrator.toLowerCase()) {
+  const target = planned.ufg === undefined ? planned.plan.orchestrator : UFG_LAUNCH_PROXY_ADDRESS;
+  if (to.toLowerCase() === target.toLowerCase()) {
     try {
-      const decoded = decodeFunctionData({ abi: launchLifecycleAbi, data: input });
+      const decoded = decodeFunctionData({ abi: planned.ufg === undefined ? launchLifecycleAbi : ufgLaunchProxyV1Abi, data: input });
       if (!["launchAtomic", "beginLaunch", "prepareMarkets", "activateLaunch", "cancelLaunch"].includes(decoded.functionName) || !Array.isArray(decoded.args)) return false;
       // Decoded plan layout is validated by the exact ABI, not trusted raw RPC JSON.
       const plan = decoded.args[0] as LaunchPlanV1;
+      if (planned.ufg !== undefined && (decoded.functionName === "launchAtomic" || decoded.functionName === "beginLaunch")) {
+        const config = decoded.args[decoded.functionName === "launchAtomic" ? 1 : 2] as UfgLaunchConfig;
+        if (hashUfgLaunchConfig(config) !== planned.ufg.configHash) return false;
+      }
       return hashLaunchPlan(plan).toLowerCase() === planned.planHash.toLowerCase();
     } catch { return false; }
   }
@@ -477,7 +484,7 @@ async function transactionMatchesLaunch(transaction: Record<string, unknown>, op
     if (decoded.functionName !== "approve" || rpcQuantity(transaction.value ?? "0x0", "approval native value") !== 0n) return false;
     spender = decoded.args[0];
   } catch { return false; }
-  const escrow = await readLifecycleContract<Address>(options.client, planned.plan.orchestrator, launchLifecycleAbi, "fundingEscrow", [], block);
+  const escrow = planned.ufg !== undefined ? UFG_LAUNCH_PROXY_ADDRESS : await readLifecycleContract<Address>(options.client, planned.plan.orchestrator, launchLifecycleAbi, "fundingEscrow", [], block);
   return spender.toLowerCase() === escrow.toLowerCase();
 }
 
@@ -542,7 +549,10 @@ async function readLaunchProgressAtBlock(options: ReadLaunchProgressOptions, cli
   assertActive();
   const chainId = chainIdValue;
   if (chainId !== planned.plan.chainId) throw new LifecyclePlanningError("CHAIN_MISMATCH", "RPC chain differs from the committed launch");
-  if (planned.account.toLowerCase() !== planned.plan.creator.toLowerCase()) throw new LifecyclePlanningError("ACCOUNT_MISMATCH", "Execution account must be the committed creator/payer/refund account");
+  if (planned.ufg !== undefined) {
+    assertUfgLaunchAccount(planned.plan, planned.account);
+    if (hashUfgLaunchConfig(planned.ufg.config) !== planned.ufg.configHash) throw new LifecyclePlanningError("PLAN_MUTATED", "UFG config differs from its finalized commitment");
+  } else if (planned.account.toLowerCase() !== planned.plan.creator.toLowerCase()) throw new LifecyclePlanningError("ACCOUNT_MISMATCH", "Execution account must be the committed creator/payer/refund account");
   if (hashLaunchPlan(planned.plan).toLowerCase() !== planned.planHash.toLowerCase() || hashLaunchIdentity(planned.plan).toLowerCase() !== planned.launchId.toLowerCase()) throw new LifecyclePlanningError("PLAN_MUTATED", "Stored economic plan no longer matches its commitment");
   const [head, confirmedProgress, token, confirmedNonce, headNonce, pendingNonce] = await Promise.all([
     readLifecycleContract<LaunchProgressV1>(client, planned.plan.orchestrator, launchLifecycleAbi, "readLaunchProgress", [planned.launchId], block, planned.account),
@@ -556,9 +566,16 @@ async function readLaunchProgressAtBlock(options: ReadLaunchProgressOptions, cli
   const canonical = confirmedProgress ?? head;
   if (token.toLowerCase() !== planned.predictedToken.toLowerCase()) throw new LifecyclePlanningError("TOKEN_IDENTITY", "Predicted token changed for the committed token configuration");
   for (const progress of [canonical, head]) if (progress.phase !== LifecyclePhase.None) {
-    if (progress.planHash.toLowerCase() !== planned.planHash.toLowerCase() || progress.launchId.toLowerCase() !== planned.launchId.toLowerCase() || progress.creator.toLowerCase() !== planned.account.toLowerCase() || progress.nonce !== planned.plan.nonce || progress.token.toLowerCase() !== token.toLowerCase() || progress.marketCount !== planned.plan.markets.length || progress.buyCount !== planned.plan.buys.length || progress.deadline !== planned.plan.deadline) throw new LifecyclePlanningError("PLAN_REPLAY", "This creator nonce is already bound to a different economic launch");
+    if (progress.planHash.toLowerCase() !== planned.planHash.toLowerCase() || progress.launchId.toLowerCase() !== planned.launchId.toLowerCase() || progress.creator.toLowerCase() !== planned.plan.creator.toLowerCase() || progress.nonce !== planned.plan.nonce || progress.token.toLowerCase() !== token.toLowerCase() || progress.marketCount !== planned.plan.markets.length || progress.buyCount !== planned.plan.buys.length || progress.deadline !== planned.plan.deadline) throw new LifecyclePlanningError("PLAN_REPLAY", "This creator nonce is already bound to a different economic launch");
     if (progress.mode !== (planned.mode === "atomic" ? LifecycleMode.Atomic : LifecycleMode.Staged)) throw new LifecyclePlanningError("MODE_MISMATCH", "Execution mode differs from the already recorded launch");
     if (progress.preparedMarkets > progress.marketCount || progress.phase === LifecyclePhase.Activating || (progress.phase === LifecyclePhase.Ready && progress.preparedMarkets !== progress.marketCount)) throw new LifecyclePlanningError("INVALID_PROGRESS", "Canonical progress violates the committed ordered state machine");
+  }
+  if (planned.ufg !== undefined && head.phase !== LifecyclePhase.None) {
+    const [principal, configHash] = await Promise.all([
+      readLifecycleContract<Address>(client, UFG_LAUNCH_PROXY_ADDRESS, ufgLaunchProxyV1Abi, "principalOf", [planned.launchId], block),
+      readLifecycleContract<Hash>(client, UFG_LAUNCH_PROXY_ADDRESS, ufgLaunchProxyV1Abi, "launchConfigHash", [planned.launchId], block),
+    ]);
+    if (principal.toLowerCase() !== planned.account.toLowerCase() || configHash.toLowerCase() !== planned.ufg.configHash.toLowerCase()) throw new LifecyclePlanningError("PLAN_REPLAY", "UFG proxy principal or launch config differs from the stored launch");
   }
   const confirmedAccountNonce = rpcQuantity(confirmedNonce, "confirmed account nonce");
   const headAccountNonce = headNonce === undefined ? confirmedAccountNonce : rpcQuantity(headNonce, "head account nonce");

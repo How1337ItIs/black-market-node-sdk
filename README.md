@@ -17,6 +17,23 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
+### UFG treasury launches (0.12.0)
+
+Opt in with `prepareAndPlanLifecycleLaunch({ ..., ufg: { config } })`. UFG supports
+reward-free ERC20 launches with native Abyss QUOTE/QUOTE_ORACLE markets and the
+new `KnownLifecycleProfile.V4UfgFixedPool` / `V4UfgDynamicPool` presets.
+All reserve fees fund the upstream treasury; launch-token fees are burned.
+These are separate offerings, not a change to existing fixed, dynamic or HMM launches.
+
+Set `plan.creator = UFG_LAUNCH_PROXY_ADDRESS` and
+`plan.nonce = ufgLaunchNonce(principal, nonce96)`, while the planning account and
+every transaction sender remain the principal. Use `buildUfgFeeAssetPolicies`
+with the core's predicted token; approve the **proxy**, not the escrow.
+`readUfgTreasury(client, token)` returns the upstream treasury or `undefined`.
+The [UFG lifecycle guide](docs/launch-lifecycle.md#0120-release-opt-in-ufg-treasuries)
+covers restrictions, tail encoding, unsigned builders and recovery.
+[`ufg-launch-config.ts`](examples/ufg-launch-config.ts) is a pure, no-wallet example.
+
 ### HMM V2 pool hooks (0.10.0)
 
 Robinhood mainnet has admitted **HMM Fixed V2** and **HMM Dynamic V2** presets:

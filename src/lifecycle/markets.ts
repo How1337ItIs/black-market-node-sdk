@@ -2,6 +2,7 @@ import { concatHex, decodeAbiParameters, encodeAbiParameters, getAddress, hexToB
 import type { MarketConfigV1 } from "./schema.js";
 import { LifecyclePlanningError, type LifecycleProfile, type PoolBoundHookSaltProgress } from "./types.js";
 import { decodeHmmLaunchTail, encodeHmmLaunchTail, isHmmProfile, type HmmLaunchConfig } from "./hmm.js";
+import { decodeUfgLaunchConfig, encodeUfgLaunchConfig, isUfgProfile, type UfgLaunchConfig } from "./ufg-config.js";
 
 export type V4LifecyclePositionConfig = {
   tickLower: number; tickUpper: number; liquidity: bigint; salt: Hex; maxTokenAmount: bigint;
@@ -44,6 +45,7 @@ export type V4PoolBoundLifecycleMarketConfigV5 = Omit<V4LifecycleMarketConfig, "
 export type V4PoolBoundLifecycleMarketConfigV6 = Omit<V4LifecycleMarketConfig, "version"> & {
   version: 6; minimumHookFeePips: number; feeSensitivityPipsSecondsPerTick: number; hookSalt: Hex;
   hmmLaunchConfig?: HmmLaunchConfig;
+  ufgLaunchConfig?: UfgLaunchConfig;
 };
 export type V4PoolBoundLifecycleMarketConfig = V4PoolBoundLifecycleMarketConfigV5 | V4PoolBoundLifecycleMarketConfigV6;
 export const V4_LIFECYCLE_CONFIG_SCHEMA = keccak256(stringToHex("(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,bytes32,bytes32,address,uint16,(int24,int24,uint128,bytes32,uint256)[])"));
@@ -90,9 +92,16 @@ function assertV1HookFeeShape(config: object): void {
   }
 }
 
-/** HMM profile selection requires a typed tail and appends it automatically. */
+/** Auxiliary launch profiles require their typed tail and append it automatically. */
 export function encodePoolBoundV4LifecycleMarketConfig(config: V4PoolBoundLifecycleMarketConfig): Hex {
   const prefix = encodePoolBoundV4Prefix(config);
+  if (isUfgProfile(config.profileId)) {
+    if (config.version !== 6 || config.ufgLaunchConfig === undefined) throw new LifecyclePlanningError("INVALID_UFG_CONFIG", "UFG profiles require config6 and an explicit ufgLaunchConfig");
+    if (config.hmmLaunchConfig !== undefined) throw new LifecyclePlanningError("INVALID_UFG_CONFIG", "UFG profiles cannot carry an HMM tail");
+    if (config.lpFeePips !== 0 || config.feeMode !== 1) throw new LifecyclePlanningError("INVALID_UFG_CONFIG", "UFG requires QuoteOnly feeMode 1 and zero LP fee");
+    return concatHex([prefix, encodeUfgLaunchConfig(config.ufgLaunchConfig)]);
+  }
+  if (config.version === 6 && config.ufgLaunchConfig !== undefined) throw new LifecyclePlanningError("INVALID_UFG_CONFIG", "A UFG launch tail requires a UFG profile");
   if (isHmmProfile(config.profileId)) {
     if (config.version !== 6 || config.hmmLaunchConfig === undefined) throw new LifecyclePlanningError("INVALID_HMM_CONFIG", "HMM profiles require config6 and an explicit hmmLaunchConfig");
     if (config.lpFeePips !== 0) throw new LifecyclePlanningError("INVALID_HOOK_FEES", "HMM profiles require zero LP fee");
@@ -125,6 +134,10 @@ export function decodePoolBoundV4LifecycleMarketConfig(encoded: Hex, expectedVer
     if (config.version !== 6) throw new LifecyclePlanningError("INVALID_HMM_CONFIG", "HMM profiles require config6");
     const prefixLength = encodePoolBoundV4Prefix(config).length;
     config.hmmLaunchConfig = decodeHmmLaunchTail(`0x${encoded.slice(prefixLength)}`);
+  }
+  if (isUfgProfile(config.profileId)) {
+    if (config.version !== 6) throw new LifecyclePlanningError("INVALID_UFG_CONFIG", "UFG profiles require config6");
+    config.ufgLaunchConfig = decodeUfgLaunchConfig(`0x${encoded.slice(encodePoolBoundV4Prefix(config).length)}`);
   }
   if (encodePoolBoundV4LifecycleMarketConfig(config).toLowerCase() !== encoded.toLowerCase()) throw new LifecyclePlanningError("INVALID_BOUND_MARKET", "Pool-bound config is not canonical for its explicit schema");
   return config;
@@ -245,8 +258,8 @@ export function hashPoolBoundV4MarketCommitment(options: { chainId: bigint; core
   if (!isPoolBoundV4ConfigVersion(market.configVersion)) throw new LifecyclePlanningError("INVALID_BOUND_MARKET", "Pool-bound V4 market requires explicit config version 5 or 6");
   const config = decodePoolBoundV4LifecycleMarketConfig(market.config, market.configVersion);
   if (config.profileId.toLowerCase() !== market.profileId.toLowerCase()) throw new LifecyclePlanningError("INVALID_BOUND_MARKET", "Config profile differs from the committed market profile");
-  // The collector factory commits the V6 prefix, not the auxiliary HMM tail.
-  // The full plan commitment separately binds every byte of that tail.
+  // Collector factories commit only the V6 prefix, not auxiliary launch tails.
+  // The full plan commitment separately binds every byte of those tails.
   const configHash = keccak256(encodePoolBoundV4Prefix({ ...config, hookSalt: zeroHash }));
   return keccak256(encodeAbiParameters([
     { type: "bytes32" }, { type: "uint256" }, { type: "address" }, { type: "address" }, { type: "address" },

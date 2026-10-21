@@ -6,6 +6,7 @@ import { LifecyclePlanningError, type ControlledLifecycleFork, type LifecycleBlo
 import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, isPoolBoundV4ConfigVersion } from "./markets.js";
 import { hmmV2ForwardingReserve } from "./presets.js";
 import { transactionGasEstimate } from "./transactions.js";
+import { hashUfgLaunchConfig } from "./ufg-config.js";
 
 function committedPositionCount(plan: LaunchPlanV1): number {
   let count = 0;
@@ -163,7 +164,7 @@ async function simulateRpcPass(client: LifecycleRpcClient, planned: PlannedLaunc
             const buy = planned.plan.buys[buyIndex];
             if (buy === undefined || (receipt.quoteSpent[buyIndex] ?? buy.quoteAmountIn + 1n) > buy.quoteAmountIn || (receipt.tokenOut[buyIndex] ?? 0n) < buy.minTokenOut) throw new LifecyclePlanningError("POSTCONDITION_FAILED", "Simulation did not satisfy every ordered buy's budget and output minimum");
           }
-        } else if (transaction.kind === "cancel" && !events.some((event) => event.eventName === "LaunchCancelled" && event.args.launchId.toLowerCase() === planned.launchId.toLowerCase() && event.args.creator.toLowerCase() === planned.account.toLowerCase())) throw new LifecyclePlanningError("POSTCONDITION_FAILED", "Simulation did not cancel the exact committed launch");
+        } else if (transaction.kind === "cancel" && !events.some((event) => event.eventName === "LaunchCancelled" && event.args.launchId.toLowerCase() === planned.launchId.toLowerCase() && event.args.creator.toLowerCase() === planned.plan.creator.toLowerCase())) throw new LifecyclePlanningError("POSTCONDITION_FAILED", "Simulation did not cancel the exact committed launch");
         else if ((transaction.kind === "approve" || transaction.kind === "approve-reset") && returnData !== "0x" && decodeFunctionResult({ abi: lifecycleErc20Abi, functionName: "approve", data: returnData }) !== true) throw new LifecyclePlanningError("POSTCONDITION_FAILED", "Funding approval returned failure");
       } catch (failure) { error = failure instanceof LifecyclePlanningError ? failure.message : "Simulation returned an invalid committed postcondition"; }
     }
@@ -346,6 +347,7 @@ export function prepareLaunchSimulation(options: SimulateLaunchPlanOptions, bloc
     if (hashLaunchPlan(plan).toLowerCase() !== planHash.toLowerCase() || hashLaunchIdentity(plan).toLowerCase() !== launchId.toLowerCase()) {
       throw new LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed after its simulation context was bound");
     }
+    if (planned.ufg !== undefined && hashUfgLaunchConfig(planned.ufg.config) !== planned.ufg.configHash) throw new LifecyclePlanningError("PLAN_MUTATED", "UFG treasury config changed after its simulation context was bound");
   };
   const pending = (async () => {
     if (fork !== undefined && lifecycleSourceClient(fork.client) === sourceClient) throw new LifecyclePlanningError("UNSAFE_FORK", "Source RPC must never receive controlled simulation transactions/snapshots/resets");
