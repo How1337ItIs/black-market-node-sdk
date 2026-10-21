@@ -9,6 +9,7 @@ const { prepareLaunchSimulation, simulateLaunchTransactions } = await import(sdk
 const { readLifecycleBlock, withLifecycleReadClient } = await import(sdkPath.replace("index.", "rpc."));
 const { ABYSS_FEE_TIERS, deriveLaunchPoolRecipe, deriveLaunchPositionRanges } = await import(sdkPath.replace("lifecycle/index.", "index."));
 const { decodePoolBoundV4LifecycleMarketConfig, defaultHmmLaunchConfig, encodePoolBoundV4LifecycleMarketConfig } = await import(sdkPath);
+const { buildUfgFeeAssetPolicies, UFG_LAUNCH_PROXY_ADDRESS, UFG_ORCHESTRATOR_ADDRESS, ufgLaunchNonce, ufgLaunchProxyV1Abi, hashUfgLaunchConfig, readLaunchProgress } = await import(sdkPath);
 const address = (n) => toHex(BigInt(n), { size: 20 });
 const ACCOUNT = address(0xa0), CORE = address(0xf0), REGISTRY = address(0xf1), ESCROW = address(0xf2), ADAPTER = address(0xf3), FACTORY = address(0xf4), TOKEN = address(0x10);
 const CODE = "0x600160005560016000f3";
@@ -61,7 +62,7 @@ function marketConfig(market) {
 }
 function progress(plan, phase = LifecyclePhase.None, prepared = 0) {
   if (phase === LifecyclePhase.None) return { launchId: zeroHash, planHash: zeroHash, creator: zeroAddress, nonce: 0n, mode: 0, phase, token: zeroAddress, feeHub: zeroAddress, rewards: zeroAddress, preparedMarkets: 0, marketCount: 0, buyCount: 0, positionCount: 0, deadline: 0n };
-  return { launchId: hashLaunchIdentity(plan), planHash: hashLaunchPlan(plan), creator: ACCOUNT, nonce: plan.nonce, mode: 1, phase, token: TOKEN, feeHub: address(0xf6), rewards: zeroAddress, preparedMarkets: prepared, marketCount: plan.markets.length, buyCount: plan.buys.length, positionCount: prepared, deadline: plan.deadline };
+  return { launchId: hashLaunchIdentity(plan), planHash: hashLaunchPlan(plan), creator: plan.creator, nonce: plan.nonce, mode: 1, phase, token: TOKEN, feeHub: address(0xf6), rewards: zeroAddress, preparedMarkets: prepared, marketCount: plan.markets.length, buyCount: plan.buys.length, positionCount: prepared, deadline: plan.deadline };
 }
 function identity(plan, index) {
   const [currency0, currency1] = BigInt(TOKEN) < BigInt(plan.markets[index].quoteAsset)
@@ -117,7 +118,7 @@ function clientFor(plan, settings = {}) {
         state.posterRequests.push({ request: params[0], args: call.args });
         return state.posterResponse ?? output(nodeInterfaceAbi, "gasEstimateL1Component", [state.poster, state.gasPrice, state.poster === 0n ? 0n : 3n]);
       }
-      const abis = target === CORE ? [launchLifecycleAbi] : target === REGISTRY ? [lifecycleRegistryAbi] : target === address(0xf7) ? [lifecycleDirectoryAbi] : target === ESCROW ? [lifecycleFundingEscrowAbi] : target === ADAPTER ? [abyssLifecycleAdapterAbi, lifecycleAdapterAbi] : [lifecycleErc20Abi];
+      const abis = target === UFG_LAUNCH_PROXY_ADDRESS.toLowerCase() ? [ufgLaunchProxyV1Abi] : target === CORE ? [launchLifecycleAbi] : target === REGISTRY ? [lifecycleRegistryAbi] : target === address(0xf7) ? [lifecycleDirectoryAbi] : target === ESCROW ? [lifecycleFundingEscrowAbi] : target === ADAPTER ? [abyssLifecycleAdapterAbi, lifecycleAdapterAbi] : [lifecycleErc20Abi];
       let abi, call;
       for (const candidate of abis) { try { call = decode(data, candidate); abi = candidate; break; } catch {} }
       assert.ok(call, `Unexpected contract calldata ${target} ${data.slice(0, 10)}`);
@@ -125,6 +126,8 @@ function clientFor(plan, settings = {}) {
         case "hashPlan": return output(abi, call.functionName, hashLaunchPlan(plan));
         case "launchIdOf": return output(abi, call.functionName, hashLaunchIdentity(plan));
         case "predictToken": return output(abi, call.functionName, TOKEN);
+        case "principalOf": return output(abi, call.functionName, state.ufgPrincipal ?? ACCOUNT);
+        case "launchConfigHash": return output(abi, call.functionName, state.ufgConfigHash ?? hashUfgLaunchConfig(ufgConfigFor(plan)));
         case "tokenFactory": return output(abi, call.functionName, ADAPTER);
         case "fundingEscrow": return output(abi, call.functionName, ESCROW);
         case "registry": return output(abi, call.functionName, REGISTRY);
@@ -192,7 +195,7 @@ function clientFor(plan, settings = {}) {
           return { calls: [{ status: "0x0", gasUsed: "0x0", returnData: "0x",
             error: { code: -32000, message: "gas price below natural child base fee", data: "0x" } }] };
         }
-        const abi = tx.to.toLowerCase() === CORE ? launchLifecycleAbi : lifecycleErc20Abi;
+        const abi = tx.to.toLowerCase() === UFG_LAUNCH_PROXY_ADDRESS.toLowerCase() ? ufgLaunchProxyV1Abi : tx.to.toLowerCase() === CORE ? launchLifecycleAbi : lifecycleErc20Abi;
         const { functionName, args = [] } = decode(tx.data, abi);
         const used = typeof state.gasFor === "function" ? state.gasFor(functionName, args, request.validation, tx) : state.computeUsed ?? 1_000_000n;
         const fullUsed = used + (request.validation && plan.chainId === 4663n ? state.actualPoster ?? state.poster : 0n);
@@ -243,7 +246,7 @@ function clientFor(plan, settings = {}) {
           const quoteSpent = state.quoteSpent ?? executingPlan.buys.map(() => 8n);
           returnData = output(launchLifecycleAbi, functionName, { launchId: hashLaunchIdentity(executingPlan), planHash: hashLaunchPlan(executingPlan), token: TOKEN, feeHub: address(0xf6), rewards: zeroAddress, marketCount: executingPlan.markets.length, positionCount: receiptPositions, quoteSpent, tokenOut });
           logs = [log("LaunchActivated", { launchId: hashLaunchIdentity(executingPlan), planHash: hashLaunchPlan(executingPlan), token: TOKEN, marketCount: state.eventMarketCount ?? executingPlan.markets.length, positionCount: state.eventPositionCount ?? positionCount })];
-        } else if (functionName === "cancelLaunch") { assert.ok([LifecyclePhase.Preparing, LifecyclePhase.Ready].includes(phase)); phase = LifecyclePhase.Cancelled; logs = [log("LaunchCancelled", { launchId: hashLaunchIdentity(plan), creator: ACCOUNT, inventoryBurned: false })]; }
+        } else if (functionName === "cancelLaunch") { assert.ok([LifecyclePhase.Preparing, LifecyclePhase.Ready].includes(phase)); phase = LifecyclePhase.Cancelled; logs = [log("LaunchCancelled", { launchId: hashLaunchIdentity(plan), creator: plan.creator, inventoryBurned: false })]; }
         else assert.fail(`Unexpected execution ${functionName}`);
         return { calls: [{ status: "0x1", gasUsed: toHex(fullUsed), maxUsedGas: state.maxUsedGas === null ? undefined : toHex(state.maxUsedGas ?? fullUsed), returnData, logs }] };
       });
@@ -2948,5 +2951,95 @@ test("reviewed generic-EVM envelopes use an explicit isolated fork directly with
     assert.equal(calls.filter((method) => method === "eth_sendTransaction").length, 1);
     assert.equal(calls.includes("eth_estimateGas"), false, "Held-fork replay has no measurement");
     assert.equal(calls.at(-1), "evm_revert");
+  }
+});
+
+function ufgConfigFor(plan) {
+  return { treasuryShareBps: 10000, exitFeeBps: 100, reserveAssets: [...new Set(plan.markets.map((market) => market.quoteAsset))].sort((a, b) => BigInt(a) < BigInt(b) ? -1 : 1) };
+}
+function makeUfgPlan() {
+  const plan = makePlan({ chainId: 4663n });
+  plan.orchestrator = UFG_ORCHESTRATOR_ADDRESS;
+  plan.creator = UFG_LAUNCH_PROXY_ADDRESS;
+  plan.nonce = ufgLaunchNonce(ACCOUNT, 7n);
+  const preset = getKnownLifecycleProfile({ ...plan, key: KnownLifecycleProfile.Abyss3 });
+  plan.markets[0].adapterId = preset.profile.registration.adapterId;
+  plan.markets[0].profileId = preset.profile.id;
+  plan.feeAssets = buildUfgFeeAssetPolicies(TOKEN, ufgConfigFor(plan).reserveAssets);
+  return plan;
+}
+test("UFG planner proves principal-funded proxy calls; simulation and build-next preserve opt-in routing", async () => {
+  const plan = makeUfgPlan(), client = clientFor(plan, { allowance: 0n });
+  const ufg = { config: ufgConfigFor(plan) };
+  const planned = await prepareAndPlanLifecycleLaunch({ client, plan, account: ACCOUNT, mode: "staged", ufg });
+  assert.equal(planned.simulation.admitted, true);
+  assert.equal(planned.ufg.configHash, hashUfgLaunchConfig(ufg.config));
+  assert.deepEqual(planned.transactions.map((tx) => tx.kind), ["approve", "begin", "prepare", "activate"]);
+  for (const tx of planned.transactions) {
+    assert.equal(tx.from.toLowerCase(), ACCOUNT.toLowerCase());
+    if (tx.kind === "approve") assert.equal(decodeFunctionData({ abi: lifecycleErc20Abi, data: tx.data }).args[0], UFG_LAUNCH_PROXY_ADDRESS);
+    else assert.equal(tx.to, UFG_LAUNCH_PROXY_ADDRESS);
+  }
+  const reads = client.captured.filter((call) => call.method === "eth_call").flatMap((call) => {
+    try { return [decodeFunctionData({ abi: lifecycleErc20Abi, data: call.params[0].data })]; } catch { return []; }
+  });
+  assert.ok(reads.some((call) => call.functionName === "allowance" && call.args[0].toLowerCase() === ACCOUNT.toLowerCase() && call.args[1] === UFG_LAUNCH_PROXY_ADDRESS));
+  assert.equal((await simulateLaunchPlan({ client, planned })).admitted, true);
+  client.state.allowance = 10n;
+  const next = await buildNextTransaction({ client, planned });
+  assert.equal(next.to, UFG_LAUNCH_PROXY_ADDRESS);
+  assert.equal(next.kind, "begin");
+  client.state.phase = LifecyclePhase.Preparing;
+  assert.equal((await readLaunchProgress({ client, planned })).canonical.creator, UFG_LAUNCH_PROXY_ADDRESS);
+  const cancel = await buildNextTransaction({ client, planned, action: "cancel" });
+  assert.equal(cancel.to, UFG_LAUNCH_PROXY_ADDRESS);
+  assert.equal(cancel.kind, "cancel");
+  assert.equal(cancel.from.toLowerCase(), ACCOUNT.toLowerCase());
+  client.state.ufgPrincipal = address(0xa1);
+  await assert.rejects(readLaunchProgress({ client, planned }), { code: "PLAN_REPLAY" });
+  client.state.ufgPrincipal = ACCOUNT;
+  client.state.ufgConfigHash = FOREIGN_HASH;
+  await assert.rejects(readLaunchProgress({ client, planned }), { code: "PLAN_REPLAY" });
+});
+test("UFG planning rejects account/nonce mismatch, opt-in omission and treasury config mutation", async () => {
+  const plan = makeUfgPlan(), ufg = { config: ufgConfigFor(plan) };
+  const client = clientFor(plan);
+  await assert.rejects(planLaunch({ client, plan, account: address(0xa1), mode: "atomic", ufg }), { code: "INVALID_UFG_PLAN" });
+  await assert.rejects(planLaunch({ client, plan, account: ACCOUNT, mode: "atomic" }), { code: "ACCOUNT_MISMATCH" });
+  const planned = await planLaunch({ client, plan, account: ACCOUNT, mode: "atomic", ufg });
+  assert.equal(planned.simulation.admitted, true);
+  planned.ufg.config.exitFeeBps += 1;
+  await assert.rejects(buildNextTransaction({ client, planned }), { code: "PLAN_MUTATED" });
+});
+
+test("UFG treasury config is bound before asynchronous domain reads", async () => {
+  const plan = makeUfgPlan(), ufg = { config: ufgConfigFor(plan) }, source = clientFor(plan);
+  let changed = false;
+  const client = { request(args) {
+    if (!changed && args.method === "eth_getBlockByNumber") { changed = true; ufg.config.exitFeeBps += 1; }
+    return source.request(args);
+  } };
+  await assert.rejects(planLaunch({ client, plan, account: ACCOUNT, mode: "staged", ufg }), { code: "PLAN_MUTATED" });
+});
+test("UFG canonical receipt attribution requires proxy target/config and proxy funding spender", async () => {
+  const plan = makeUfgPlan(), ufg = { config: ufgConfigFor(plan) }, source = clientFor(plan, { allowance: 0n });
+  const planned = await planLaunch({ client: source, plan, account: ACCOUNT, mode: "staged", ufg });
+  const begin = planned.transactions.find((tx) => tx.kind === "begin");
+  const approval = planned.transactions[0];
+  for (const [name, transaction, accepted] of [
+    ["proxy begin", begin, true],
+    ["proxy approval", approval, true],
+    ["core instead of proxy", { ...begin, to: plan.orchestrator }, false],
+    ["wrong treasury config", { ...begin, data: encodeFunctionData({ abi: ufgLaunchProxyV1Abi, functionName: "beginLaunch", args: [plan, 1, { ...ufg.config, exitFeeBps: 101 }] }) }, false],
+    ["escrow instead of proxy approval", { ...approval, data: encodeFunctionData({ abi: lifecycleErc20Abi, functionName: "approve", args: [getKnownLifecycleDeployment(plan).fundingEscrow, 10n] }) }, false],
+  ]) {
+    const client = { request(args) {
+      if (args.method === "eth_getTransactionReceipt") return Promise.resolve({ blockNumber: "0x2a", blockHash: HASH, status: "0x1" });
+      if (args.method === "eth_getTransactionByHash") return Promise.resolve({ from: ACCOUNT, to: transaction.to, input: transaction.data, value: toHex(transaction.value), chainId: toHex(plan.chainId) });
+      return source.request(args);
+    } };
+    const options = { client, planned, receipts: [{ transactionHash: FOREIGN_HASH }] };
+    if (accepted) assert.equal((await readLaunchProgress(options)).receipts[0].status, "confirmed", name);
+    else await assert.rejects(readLaunchProgress(options), { code: "RECEIPT_IDENTITY" }, name);
   }
 });

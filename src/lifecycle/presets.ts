@@ -8,6 +8,9 @@ import { dynamicFeePoolHookV1CreationCode } from "./deployments/dynamic-fee-pool
 import { hmmFixedEnvelope, hmmFixedAdapter, hmmFixedRegistration, hmmFixedCreationCode } from "./deployments/hmm-fixed-pool-hook-v2-20261017.js";
 import { hmmDynamicEnvelope, hmmDynamicAdapter, hmmDynamicRegistration, hmmDynamicCreationCode } from "./deployments/hmm-dynamic-pool-hook-v2-20261017.js";
 import { HMM_FIXED_PROFILE_ID, HMM_DYNAMIC_PROFILE_ID, isHmmProfile } from "./hmm.js";
+import { ufgFixedEnvelope, ufgFixedAdapter, ufgFixedRegistration } from "./deployments/ufg-fixed-pool-20261021.js";
+import { ufgDynamicEnvelope, ufgDynamicAdapter, ufgDynamicRegistration } from "./deployments/ufg-dynamic-pool-20261021.js";
+import { UFG_FIXED_PROFILE_ID, UFG_DYNAMIC_PROFILE_ID } from "./ufg-config.js";
 
 export enum KnownLifecycleProfile {
   Abyss0 = "abyss-0",
@@ -18,6 +21,8 @@ export enum KnownLifecycleProfile {
   V4DynamicFeePool = "v4-dynamic-fee-pool",
   V4HmmFixedPool = "v4-hmm-fixed-pool",
   V4HmmDynamicPool = "v4-hmm-dynamic-pool",
+  V4UfgFixedPool = "v4-ufg-fixed-pool",
+  V4UfgDynamicPool = "v4-ufg-dynamic-pool",
 }
 
 export enum KnownLifecycleHook {
@@ -294,7 +299,7 @@ export function hmmV2ForwardingReserve(plan: LaunchPlanV1): bigint {
   return count === 0 ? 0n : HMM_V2_FORWARDING_BASE_GAS + HMM_V2_FORWARDING_EXTRA_MARKET_GAS * BigInt(count - 1);
 }
 
-function hmmPreset(key: KnownLifecycleProfile, id: Hex, envelope: LaunchEnvelopeV2,
+function poolBoundPreset(key: KnownLifecycleProfile, id: Hex, envelope: LaunchEnvelopeV2,
   adapter: AdapterRegistrationV1, registration: ProfileRegistrationV1, creationCode: Hex): LifecycleProfilePreset {
   return Object.freeze({
     key, supported: true,
@@ -327,8 +332,10 @@ const knownDeployment: LifecycleDeploymentPreset = Object.freeze({
     abyssPreset(KnownLifecycleProfile.Abyss3, "0xe1bd95e086469e6afd9791ccc957e4d22b735012cb3db4a747f703673c62c306"),
     fixedFeePoolPreset,
     dynamicFeePoolPreset,
-    hmmPreset(KnownLifecycleProfile.V4HmmFixedPool, HMM_FIXED_PROFILE_ID, hmmFixedEnvelope, hmmFixedAdapter, hmmFixedRegistration, hmmFixedCreationCode),
-    hmmPreset(KnownLifecycleProfile.V4HmmDynamicPool, HMM_DYNAMIC_PROFILE_ID, hmmDynamicEnvelope, hmmDynamicAdapter, hmmDynamicRegistration, hmmDynamicCreationCode),
+    poolBoundPreset(KnownLifecycleProfile.V4HmmFixedPool, HMM_FIXED_PROFILE_ID, hmmFixedEnvelope, hmmFixedAdapter, hmmFixedRegistration, hmmFixedCreationCode),
+    poolBoundPreset(KnownLifecycleProfile.V4HmmDynamicPool, HMM_DYNAMIC_PROFILE_ID, hmmDynamicEnvelope, hmmDynamicAdapter, hmmDynamicRegistration, hmmDynamicCreationCode),
+    poolBoundPreset(KnownLifecycleProfile.V4UfgFixedPool, UFG_FIXED_PROFILE_ID, ufgFixedEnvelope, ufgFixedAdapter, ufgFixedRegistration, fixedFeePoolHookV1CreationCode),
+    poolBoundPreset(KnownLifecycleProfile.V4UfgDynamicPool, UFG_DYNAMIC_PROFILE_ID, ufgDynamicEnvelope, ufgDynamicAdapter, ufgDynamicRegistration, dynamicFeePoolHookV1CreationCode),
   ]),
   provenance: Object.freeze({ sourceCommit: "e174ce695c7010f50ca9211b07b9f178c990beac", deploymentBlock: 82880546n }),
 });
@@ -358,7 +365,7 @@ export function getKnownLifecycleProfile(options: KnownLifecycleDeploymentIdenti
   return undefined;
 }
 
-/** Stable, frozen order: Abyss variants 0 through 3, fixed/dynamic V4, then HMM fixed/dynamic. */
+/** Stable, frozen order: Abyss variants, fixed/dynamic V4, HMM, then UFG fixed/dynamic. */
 export function listKnownLifecycleProfiles(options: KnownLifecycleDeploymentIdentity): readonly LifecycleProfilePreset[] {
   return getKnownLifecycleDeployment(options)?.profiles ?? noProfiles;
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.0
+
+- Add opt-in UFG treasury launches through the pinned Robinhood proxy, including principal-namespaced nonces, exact proxy funding approvals, atomic/staged/cancel builders and proxy-aware planning, simulation and canonical recovery. Existing core launch paths and defaults are unchanged.
+- Add frozen `V4UfgFixedPool` / `V4UfgDynamicPool` presets generated from registry readback at block 94,551,140. Verify and reuse the existing byte-identical fixed and zero-royalty dynamic hook creation code.
+- Add `UfgLaunchConfig`, canonical dynamic-tuple codecs/hash, typed config6 `ufgLaunchConfig` tails, exact fee-asset policies and offline proxy-rule validation. Support native Abyss QUOTE/QUOTE_ORACLE and UFG quote-only V4 with zero LP fee.
+- Export complete proxy, treasury-factory and upstream factory/treasury ABIs plus `readUfgTreasury`. Include independent Foundry ABI vectors, registry evidence, public-API fork integration and an unsigned configuration example.
+
 ## 0.11.0
 
 - Size HMM V2 atomic/activation gas with one forwarding reserve (`4,250,000 + 500,000 × (HMM markets − 1)`) in addition to measured gross gas. Clamp reserve/headroom targets to legal compute and total-envelope caps instead of refusing optional padding; exact signed-envelope replay remains mandatory.

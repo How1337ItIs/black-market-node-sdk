@@ -6,6 +6,7 @@ import {
 } from "./schema.js";
 import { poolBoundHookParametersV1Components, poolBoundHookParametersV2Components, v4LifecycleMarketComponents } from "./markets.js";
 export { hmmLiquidityManagerV2Abi, hmmFeeCollectorV2Abi, hmmFeeCollectorFactoryV2Abi, hmmFixedHookV2Abi, hmmDynamicHookV2Abi } from "./hmm-abi.js";
+export { ufgLaunchProxyV1Abi, ufgTreasuryFactoryV1Abi, ufgBlackMarketFactoryAbi, ufgBlackMarketTreasuryAbi } from "./ufg-abi.js";
 
 const planInput = { name: "plan", type: "tuple", components: launchPlanV1Components } as const;
 export const launchLifecycleAbi = [

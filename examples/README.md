@@ -1,8 +1,8 @@
 # Examples
 
-The launch examples use the public `@black-market/sdk` 0.11.0 package and viem.
+The launch examples use the public `@black-market/sdk` 0.12.0 package and viem.
 Build this checkout before running its examples; in a consumer project install
-`@black-market/sdk@0.11.0` for current gas packing and proof-coverage semantics.
+`@black-market/sdk@0.12.0` for opt-in UFG treasuries and current proof semantics.
 The default chain-4663 launch cases retain
 the October8 mined fixed pool-bound V4 config6/V2 and canonical Abyss config1 deployment.
 The SDK additionally knows the October11 zero-author-royalty Dynamic Fee Hook;
@@ -25,10 +25,24 @@ examples; their relative support imports use explicit `.ts` extensions for Node 
 | --- | --- |
 | `quickstart.ts` | Reads the current mainnet orchestrator, checks its registry binding, and discovers admitted profiles. No wallet or writes. |
 | `hmm-launch-config.ts` | Pure HMM V2 fixed/dynamic config construction with caller-chosen bid/reference guards and an automatically appended 512-byte launch tail; no RPC, signatures or writes. |
+| `ufg-launch-config.ts` | Pure fixed/dynamic UFG quote-only config6 construction, canonical reserve tail and config hash; no RPC, wallet or writes. |
 | `launch.ts` | Reviews/reconstructs an explicit saved plan and selected atomic/staged mode; optional offchain config6/V2 salt mining. Prints simulation, progress, and an admitted unsigned next transaction when evidence permits. |
 | `generate-lifecycle-commitment-fixture.ts` | Frozen independent historical config4/Abyss ABI bytes/hash/identity vector. Its pre-cutover allocations are not an executable 0.7.1 plan. |
 | `launch-lifecycle-smoke.ts` | Actual SDK launch/recovery/custody/fee operations, only on an explicitly authorized owned disposable loopback graph. |
 | `launch-erc20-*.ts`, `launch-erc404-*.ts` | Eleven independent fixed cases: unsigned end-to-end planning by default; `--broadcast` adds guarded local signing, chain verification and mandatory API publication/indexing. |
+
+## UFG treasury configuration
+
+Run `pnpm build && node examples/ufg-launch-config.ts` for a pure consumer example.
+Real UFG plans use the proxy as creator and a principal-namespaced nonce, with
+`ufg: { config }` on `prepareAndPlanLifecycleLaunch`; the principal remains the
+planning/signing account. Use only reward-free ERC20, full treasury reserve share,
+launch-token burn policies, Abyss QUOTE/QUOTE_ORACLE or the UFG fixed/dynamic
+presets. Approvals go to the proxy. The existing eleven launch cases and their
+selected non-UFG offerings are intentionally unchanged.
+
+The opt-in owned-fork regression is `test/integration/ufg-launch.fork.mjs`; see the
+[lifecycle guide](../docs/launch-lifecycle.md#ufg-owned-fork-check).
 
 ## Deployed read-only discovery
 

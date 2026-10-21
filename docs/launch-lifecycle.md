@@ -7,6 +7,144 @@ The canonical authorities are the registry/certification/adapter/config contract
 in the protocol repository. Plan identity is `LaunchPlanV1`. Pool-bound V4 uses **config 6**,
 canonical Abyss uses **config 1**, and generic current shared-V4 support uses **config 4**.
 
+## 0.12.0 release: opt-in UFG treasuries
+
+UFG is an additive **proxy launch route**, not a new token kind or a replacement
+for the core path. Existing launch defaults, calldata, salts and HMM behavior are
+unchanged when `ufg` is omitted. The pinned Robinhood deployment (chain **4663**) is:
+
+| Export | Address |
+| --- | --- |
+| `UFG_LAUNCH_PROXY_ADDRESS` | `0xf6673d859DE03eB74A0b01696Edb97f941dFD0CA` |
+| `UFG_TREASURY_FACTORY_ADDRESS` | `0x26Aa5D52134c8E6c4C01E9fb53A7568c0C64901F` |
+| `UFG_UPSTREAM_FACTORY_ADDRESS` | `0xA170b5A58C111334A7237F2Ea2c428ec5022f68E` |
+| `UFG_ORCHESTRATOR_ADDRESS` | `0x91560876033d568d25CDe98C78c33ff8FC43962c` |
+
+`KnownLifecycleProfile.V4UfgFixedPool` (`v4-ufg-fixed-pool`) selects profile
+`0x5c6045af480814e469f3dba7c120d264047c9320b869c63a064536041a2dbae6`;
+`V4UfgDynamicPool` (`v4-ufg-dynamic-pool`) selects
+`0x03de8d5e38f2957d80ecb9f2e59d555601ff091dfb17bce84178956a2e8d9b41`.
+`isUfgProfile` recognizes only these IDs. Frozen envelopes, adapter/registration/
+topology and bound-hook metadata come from committed registry readback at block
+**94,551,140** (`test/fixtures/ufg-registry-readback.json`). Regenerate with
+`node --experimental-transform-types scripts/generate-ufg-presets.mjs /path/to/black-market`;
+add `--readback` only to recapture that exact block with read-only RPC.
+The fixed and zero-royalty dynamic creation bytes exactly match the existing
+`FixedFeePoolV1` / `DynamicFeePoolV1` artifacts, so no duplicate hook enum is needed.
+UFG deployers, lockers, collectors and adapters are nevertheless different graphs.
+Frozen presets are construction evidence, not live admission.
+
+### Configuration and supported markets
+
+`UfgLaunchConfig` is `{ treasuryShareBps, exitFeeBps, reserveAssets }`. The proxy
+requires treasury share **10000**, integer exit fee **0..2000 bps**, and **1..7**
+nonzero, unique, strictly ascending reserve addresses, excluding the predicted
+launch token. Reserves and market quotes must form exactly the same set.
+
+- ERC20 only, no staking/dividends, zero executor fee and at least one market.
+  Neither inventory nor initial-buy recipients may be the proxy.
+- Native Abyss uses the canonical adapter with config1 profile **2 (QUOTE)** or
+  **3 (QUOTE_ORACLE)** and the matching canonical profile ID. Its canonical
+  config has **no tail**.
+- V4 uses config6 and one of the two UFG profiles, `feeMode: 1` (QuoteOnly) and
+  `lpFeePips: 0`. Preset zero-royalty terms still apply. Supply/position budgets,
+  price/ranges, oracle registration and ordinary lifecycle bounds are unchanged.
+- Fee policies contain exactly the token plus reserves in ascending order:
+  token `{ ownerBps: 0, rewardsBps: 0, burnBps: 10000 }`, reserves
+  `{ ownerBps: 10000, rewardsBps: 0, burnBps: 0 }`.
+  `buildUfgFeeAssetPolicies(predictedToken, reserveAssets)` builds that exact set;
+  reserve ordering is validated, never silently repaired.
+
+`encodeUfgLaunchConfig` encodes **one dynamic tuple**:
+`abi.encode((uint16,uint16,address[]))`, including the leading `0x20` offset.
+`decodeUfgLaunchConfig` checks canonical re-encoding; trailing bytes, alternate
+offsets and dirty padding are rejected. `hashUfgLaunchConfig` is its keccak256.
+Config6's typed `ufgLaunchConfig` automatically appends that encoding after the
+canonical V6 prefix and decodes/splits it on read. Every UFG V4 tail must equal
+the proxy config. The constructor economics hash remains **prefix-only with zero
+hook salt**; the full plan hash binds the tail. No UFG tail is added to ordinary
+V4, HMM or Abyss configs. Independent `cast abi-encode` fixtures are regenerated
+with `node scripts/generate-ufg-fixtures.mjs`.
+
+### Principal funding, planning and recovery
+
+The economic plan's **creator is the proxy**. Its nonce is
+`ufgLaunchNonce(principal, nonce96) = (uint160(principal) << 96) | nonce96`.
+The `account` and every sender are the **same principal**, never the proxy.
+The core still derives launch ID/token from the committed core/proxy/nonce.
+
+```ts
+const config = {
+  treasuryShareBps: 10000, exitFeeBps: 100,
+  reserveAssets: [getAddresses(4663).weth],
+};
+// economicPlan already contains your full token/funding/market/buy economics;
+// every UFG V4 market was encoded with this same ufgLaunchConfig.
+const plan = { ...economicPlan, creator: UFG_LAUNCH_PROXY_ADDRESS,
+  nonce: ufgLaunchNonce(principal, 1n) };
+const token = await client.readContract({ address: plan.orchestrator,
+  abi: launchLifecycleAbi, functionName: "predictToken", args: [plan] });
+plan.feeAssets = buildUfgFeeAssetPolicies(token, config.reserveAssets);
+validateUfgLaunchPlan(plan, config, token); // pure/offline proxy rules
+const planned = await prepareAndPlanLifecycleLaunch({
+  client, account: principal, plan, mode: "staged", ufg: { config },
+});
+// No signing here. Obtain fresh admitted proxy envelopes before wallet execution:
+const next = await buildNextTransaction({ client, planned });
+```
+
+The opt-in works on `planLaunch` too. `PlannedLaunch.ufg` retains config and its
+hash; `simulateLaunchPlan`, `readLaunchProgress`, and `buildNextTransaction`
+(including `action: "cancel"`) retain the route and reject config mutation,
+wrong principal/nonce, wrong receipt target/config, or proxy binding mismatch.
+Salt mining and optional buy-minimum calibration use the existing machinery.
+Native Nitro metering/execution proofs remain mandatory on production chain4663.
+
+The proxy pulls summed non-native inputs from the principal: ERC20 asset/amount
+or swap inputAsset/inputAmount. **Approve the proxy, not the funding escrow**.
+`buildUfgApprovals(plan)` builds exact summed approvals; planning observes current
+allowances and includes zero-reset commands when needed. Native-wrap and native
+swap inputs are `msg.value` on atomic/begin only. Refunds return to the principal.
+
+Pure `buildUfgLaunchTransactions({ plan, config, mode, preparationBatches })`
+produces proxy `launchAtomic(plan, config)`, or `beginLaunch(plan, Staged, config)`,
+ordered `prepareMarkets` batches, then `activateLaunch`. The explicit batches
+must cover all markets. `buildUfgCancelTransaction({ plan, preparedMarkets })`
+targets the same proxy. These builders alone do not establish execution admission.
+`validateUfgLaunchPlan` checks offline proxy rules; live registry continuity,
+reserve/token code and supply bounds, transfers and treasury creation require RPC
+simulation. The existing non-UFG core transaction builder is intentionally unchanged.
+
+`readUfgTreasury(client, token)` reads the treasury factory's `treasuryOf(token)`
+and returns the upstream address, or `undefined` for zero. Complete
+`ufgLaunchProxyV1Abi`, `ufgTreasuryFactoryV1Abi`, `ufgBlackMarketFactoryAbi` and
+`ufgBlackMarketTreasuryAbi` expose proxy config hashes and upstream treasury
+collect/redeem/assets/backing/position/debt operations without inventing wrappers.
+The pure example is `node examples/ufg-launch-config.ts` after building.
+
+### UFG owned-fork check
+
+This explicitly authorized local-only integration uses the unlocked Anvil default
+account, no keys, and only public SDK launch APIs. In separate terminals:
+
+```sh
+anvil --fork-url https://rpc.mainnet.chain.robinhood.com/ \
+  --chain-id 4663 --port 8561 \
+  --gas-limit 100000000 --silent
+pnpm build
+UFG_FORK_RPC_URL=http://127.0.0.1:8561 node test/integration/ufg-launch.fork.mjs
+```
+
+It validates the tuple against the deployed factory, mines bound-hook salts,
+executes Abyss QUOTE atomic, mixed Abyss QUOTE + UFG fixed staged (ERC20 funding/
+proxy approval), and UFG dynamic atomic launches. It calls each exact proxy
+command from the principal first, then checks Active, a nonzero `readUfgTreasury`
+and `proxy.launchConfigHash == hashUfgLaunchConfig`. Snapshot restoration makes
+the check repeatable. Stop Anvil afterward. Generic Anvil proves EVM contract
+behavior here, **not ArbOS compute/poster admission**: construction/read/mining/
+unsigned APIs plus actual fork `eth_call`/receipts are used, not a fake native
+Nitro planner certificate. Ordinary `pnpm test` never runs this funded check.
+
 ## 0.11.0 release: gas sizing, packing and prefix proof
 
 New atomic/activation envelopes containing HMM V2 markets add one forwarding target:

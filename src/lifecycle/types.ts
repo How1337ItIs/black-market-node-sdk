@@ -1,4 +1,5 @@
 import type { Address, Hash, Hex } from "viem";
+import type { UfgLaunchConfig } from "./ufg-config.js";
 import type {
   AdapterRegistrationV1, AssetFundingV1, LaunchExecutionMode, LaunchPlanV1, LaunchProgressV1,
   MarketLiveStateV1, PreparedMarketV1, ProfileRegistrationV1, ProfileTopologyV1, LaunchEnvelopeV2, LifecycleDeveloperTerms,
@@ -161,6 +162,8 @@ export type PlannedLaunch = {
   plan: LaunchPlanV1; planHash: Hash; launchId: Hash; predictedToken: Address;
   tokenFactory: Address; tokenFactoryCodeHash: Hex;
   account: Address; chainId: bigint; mode: LaunchExecutionMode; confirmations: number;
+  /** Opt-in proxy routing; the committed creator remains the proxy, account is its principal. */
+  ufg?: { config: UfgLaunchConfig; configHash: Hash };
   transactions: readonly LifecycleTransaction[]; prerequisites: readonly LifecycleFundingPrerequisite[];
   /** Sum of exact calldata bytes across the returned remaining commands, including approvals. */
   totalCalldataBytes: number;
@@ -176,6 +179,8 @@ export type PlanLaunchOptions = {
   client: LifecycleRpcClient; account: Address; plan: LaunchPlanV1; mode: LaunchExecutionMode;
   limits?: LifecycleLimitSource; fork?: ControlledLifecycleFork; receipts?: readonly LifecycleReceiptReference[];
   confirmations?: number; signal?: AbortSignal;
+  /** Opt in to the pinned UFG proxy; sender must match the nonce's principal namespace. */
+  ufg?: { config: UfgLaunchConfig };
   /** Unstarted only: permit interior gaps; opening containment, aligned ticks and the tail remain required. */
   allowTopologyGaps?: boolean;
   /** Unstarted only: waive the funded boundary tail; all other topology checks remain required. */
@@ -201,7 +206,7 @@ export type SimulateLaunchPlanOptions = {
   signal?: AbortSignal;
 };
 export type ReadLaunchProgressOptions = {
-  client: LifecycleRpcClient; planned: Pick<PlannedLaunch, "plan" | "planHash" | "launchId" | "predictedToken" | "account" | "mode" | "confirmations">;
+  client: LifecycleRpcClient; planned: Pick<PlannedLaunch, "plan" | "planHash" | "launchId" | "predictedToken" | "account" | "mode" | "confirmations" | "ufg">;
   receipts?: readonly LifecycleReceiptReference[]; confirmations?: number;
   signal?: AbortSignal;
 };
