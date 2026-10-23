@@ -292,6 +292,8 @@ The draft's `minTokenOut: 1n` is diagnostic. The function calls
 `prepareAndPlanLifecycleLaunch` with `buySlippageBps: 50` and returns the final
 protected plan. Token prediction uses core/creator/nonce/token configuration, so
 the predicted token can enter sorted fee assets without a circular market-config hash.
+`executorFeeBps: 275` matches the example runner: 2.75% of newly collected fees
+goes to whoever calls `claimAndSplit()`. It is not charged to traders. Use 0 for none.
 
 <a id="pool-bound-v4-version-6"></a>
 For V4, use `encodePoolBoundV4LifecycleMarketConfig` with explicit `version: 6`,
