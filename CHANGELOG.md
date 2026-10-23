@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Rewrite launch guidance around pricing, execution, publication, and recovery; split detailed SDK reference from the launch tutorial. Correct WETH wrapping, conversion deadlines, and runner resume instructions.
+
 ## 0.12.0
 
 - Add opt-in UFG treasury launches through the pinned Robinhood proxy, including principal-namespaced nonces, exact proxy funding approvals, atomic/staged/cancel builders and proxy-aware planning, simulation and canonical recovery. Existing core launch paths and defaults are unchanged.
@@ -36,3 +40,37 @@
 - Add typed `HmmStrategyConfig` / `HmmLaunchConfig`, `encodeHmmLaunchTail`, `decodeHmmLaunchTail`, `validateHmmLaunchConfig` and calibrated `defaultHmmLaunchConfig` helpers.
 - Append the required 448-byte HMM launch tail automatically in the config6 codec; reject missing/invalid tails and preserve them through planning, salt mining and recovery. Match the collector factory's prefix-only hook economics commitment while binding the full tail in the launch-plan hash.
 - Add independent Foundry ABI fixtures, validation and fixed/dynamic plan tests, a pure configuration example and consumer documentation. Existing preset selections and fixed launch examples remain unchanged.
+
+## 0.8.1
+
+- Add the zero-author-royalty Dynamic Fee Hook preset (`V4DynamicFeePool`) with explicit config6 minimum, maximum, and sensitivity; require zero LP fee.
+
+## 0.8.0
+
+- Require continuous opening-to-boundary position coverage for unstarted plans; enable permanent tails by default. Replace `staircaseBoundaries` with `positionGaps`.
+- Default launch wrappers to unsigned dry-run; require `--broadcast` for writes and use `--resume` to retain the original plan, receipts, and metadata session.
+- Add opt-in `createLifecycleSessionCache` for static reads at one canonical block; financial state and execution proof stay live.
+
+## 0.7.1
+
+- Add frozen deployment/profile selectors and transaction-first construction. `prepareAndPlanLifecycleLaunch` prepares salts and proves the selected mode; `buildLaunchTransactions` compiles unsigned commands.
+- Add ordered-buy output calibration with `buySlippageBps`, budget-funded range presets, exact position/market allocation checks, and pre-buy burning of unused launch inventory.
+- Add immediate reviewed-envelope replay through `buildNextTransaction({ reviewedTransaction })`, retaining exact gas and gas price.
+
+## 0.6.3
+
+- Reduce profile-certification dependency rounds and duplicate RPC reads; overlap independent work on batching-capable clients while retaining registry and graph checks.
+
+## 0.6.2
+
+- Add opt-in `LifecycleRpcClient.onDiagnostic` timing events for planning, RPC queueing, certification, and simulation. Events omit request payloads and secrets.
+
+## 0.6.1
+
+- Add opt-in `supportsReadBatching`, bounded to eight concurrent SDK reads per invocation, and invocation-local reuse of identical pinned reads. Default clients remain serial.
+- Skip V4-only metadata reads for Abyss-only plans; preserve required reads for selected V4 profiles.
+
+## 0.6.0
+
+- Separate `executionProof`, `protocolFit`, and `transportPreflight`. Robinhood admission requires native Nitro compute/poster evidence and exact sequential replay.
+- Add read-only immediate transaction preflight through `buildNextTransaction({ submissionClient })`; optional caller limits tighten admission.
