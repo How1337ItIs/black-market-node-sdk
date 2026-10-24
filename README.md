@@ -2,13 +2,17 @@
 
 # Abyss TypeScript SDK
 
-TypeScript SDK for token launches, swaps, and lending with [viem](https://viem.sh).
-Import the public package as `@black-market/sdk`. Requires Node 24+ to run the examples.
+Use `@black-market/sdk` with [viem](https://viem.sh) to launch tokens, swap, and read lending markets.
+This guide targets SDK **0.12.0** on Robinhood Chain mainnet (**4663**).
+The package supports Node 20+; running the checkout's TypeScript examples requires **Node 24+**.
 
 ## Install
 
-Install the package with `pnpm add @black-market/sdk viem`, or use a checkout
-to run and customize the examples:
+```sh
+pnpm add @black-market/sdk@0.12.0 viem
+```
+
+To run the examples, use a checkout:
 
 ```sh
 git clone https://github.com/abysshopper/black-market-node-sdk.git
@@ -17,107 +21,103 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-### UFG treasury launches (0.12.0)
+## Check the deployment first
 
-Opt in with `prepareAndPlanLifecycleLaunch({ ..., ufg: { config } })`. UFG supports
-reward-free ERC20 launches with native Abyss QUOTE/QUOTE_ORACLE markets and the
-new `KnownLifecycleProfile.V4UfgFixedPool` / `V4UfgDynamicPool` presets.
-All reserve fees fund the upstream treasury; launch-token fees are burned.
-These are separate offerings, not a change to existing fixed, dynamic or HMM launches.
+```sh
+pnpm examples
+# To load configuration from an existing working-directory .env explicitly:
+node --env-file=.env examples/quickstart.ts
+```
 
-Set `plan.creator = UFG_LAUNCH_PROXY_ADDRESS` and
-`plan.nonce = ufgLaunchNonce(principal, nonce96)`, while the planning account and
-every transaction sender remain the principal. Use `buildUfgFeeAssetPolicies`
-with the core's predicted token; approve the **proxy**, not the escrow.
-`readUfgTreasury(client, token)` returns the upstream treasury or `undefined`.
-The [UFG lifecycle guide](docs/launch-lifecycle.md#0120-release-opt-in-ufg-treasuries)
-covers restrictions, tail encoding, unsigned builders and recovery.
-[`ufg-launch-config.ts`](examples/ufg-launch-config.ts) is a pure, no-wallet example.
+`pnpm examples` builds and runs [`examples/quickstart.ts`](examples/quickstart.ts).
+It reads chain identity, the orchestrator's registry, and current profile admission.
+It needs no wallet and makes no writes. It reads the process environment; it does **not** load `.env` itself.
+Export `RPC_URL` in your shell or use `--env-file` as shown. `CHAIN_ID` defaults to `4663`.
 
-### HMM V2 pool hooks (0.10.0)
+## Run a one-market ERC20 launch
 
-Robinhood mainnet has admitted **HMM Fixed V2** and **HMM Dynamic V2** presets:
-`KnownLifecycleProfile.V4HmmFixedPool` / `V4HmmDynamicPool`. The generic keys and
-`HmmLaunchConfig` now mean V2 only. Config6 appends an exact **512-byte** tail;
-old HMM profiles and 448-byte payloads are not supported by these helpers.
-Both require zero LP and developer fees.
-
-`defaultHmmLaunchConfig({ tokenBudget, quoteAsset, quoteDecimals, maxBidQuote,
-referenceDeviation })` preserves existing WETH/USDG calibration, but requires
-explicit bid-principal and oracle-reference guards. There are no guessed V2 risk
-defaults. Unknown quotes still require explicit raw quote thresholds.
-
-On each swap, the configured share of fees in **both currencies**, after treasury,
-funds the per-market HMM manager; the remainder follows normal fee distribution.
-HMM does not burn fees or touch locked launch positions. The current fee owner
-can change the share, all 15 strategy settings, and placement pause state using
-the exported V2 ABIs. See [HMM configuration and migration](docs/launch-lifecycle.md#0100-release-hmm-v2-only)
-and the [pure, unsigned example](examples/hmm-launch-config.ts).
-
-## Examples
-
-The most complete case is [`launch-erc20-dividends-multiquote-mixed.ts`](examples/launch-erc20-dividends-multiquote-mixed.ts).
-On Robinhood mainnet (**chain 4663**), it:
-
-1. Creates an ERC20 with 1,000,000 initial tokens and holder dividends.
-   Fee-asset allocations split 40% to rewards and 60% to the owner, not a 40% tax.
-2. Splits liquidity across V4/WETH (two positions), V4/USDG (two), and Abyss/WETH
-   (three), priced from the same whole-supply USD valuation (default $5,000).
-3. Funds one opening buy per market with 0.00001 ETH each by default. ETH wraps
-   into WETH; USDG uses an admitted Kyber conversion. ETH for gas is additional.
-4. Prepares and proves the staged plan, prints the economic review, and saves
-   artifacts. Activation outputs must fit the provider's proof budget; configure
-   `EXAMPLE_SIMULATION_GAS_CAP` only for a provider supporting that budget.
-   The default dry-run never signs or submits anything.
-5. With authorization, stages metadata, begins and prepares the markets, then
-   activates all seven positions and three buys together. It verifies chain
-   results and API publication; optional images are verified before submission.
-
-### Configure and run
-
-From the checkout root, create `.env` without overwriting existing configuration:
+Start with [`launch-erc20-abyss.ts`](examples/launch-erc20-abyss.ts): one Abyss/WETH market,
+one permanent position, one opening buy, no holder rewards, atomic execution.
 
 ```sh
 cp -n examples/.env.example .env
 chmod 600 .env
 ```
 
-Set `LAUNCH_API_URL` and exactly one key source: `PRIVATE_KEY`, or
-`EXAMPLE_KEYSTORE_PATH` to an owner-only V3 scrypt keystore (`EXAMPLE_KEYSTORE_PASSWORD`
-defaults to empty). Optional `RPC_URL` overrides the official chain4663 RPC.
-Remote endpoints require HTTPS; existing environment values override `.env`.
+Set `LAUNCH_API_URL=https://api.abyss.trading` and exactly one signer source:
+`PRIVATE_KEY`, or `EXAMPLE_KEYSTORE_PATH` with optional `EXAMPLE_KEYSTORE_PASSWORD`.
+Use your own funded account. Keep secrets and recovery files out of git.
+The launch wrappers load the working-directory `.env`; existing environment values win.
+Optional `RPC_URL` selects another Robinhood RPC. Remote endpoints require HTTPS.
 
 ```sh
-# Dry run: no signing, chain submission, image upload, or publication.
-node examples/launch-erc20-dividends-multiquote-mixed.ts
-# Explicitly authorize spending funds and publishing; no confirmation prompt.
-node examples/launch-erc20-dividends-multiquote-mixed.ts --broadcast
-# After partial execution, replace this path with the ORIGINAL run directory.
-node examples/launch-erc20-dividends-multiquote-mixed.ts --resume "launch-results/<original-run>"
+# Unsigned planning; no chain transactions, uploads, or publication.
+node examples/launch-erc20-abyss.ts
+# Authorizes spending and publication, with no further prompt.
+node examples/launch-erc20-abyss.ts --broadcast
+# After partial execution, use the ORIGINAL run directory.
+node examples/launch-erc20-abyss.ts --resume "launch-results/<original-run-dir>"
 ```
 
-Dry-run needs live RPC/API access, the creator key, funding, and admission.
-Review the saved `economic-review.json` in `launch-results/`. Broadcast builds a
-**fresh plan**; resume may spend/publish but retains the original plan and session.
-Keep recovery files; never commit or share keys, private artifacts, or signed bytes.
+**Broadcast builds a fresh plan**, including a new nonce and token identity; it does not sign the dry-run plan.
+Review the broadcast's printed economics too. `--resume` can spend funds and publish;
+it continues the saved identity and does not require `--broadcast`.
+A dry run still needs a signer source, sufficient funding, and live RPC/API access for admission.
 
-## Creating your own
+### Understand the defaults
 
-Copy the case wrapper beside its helpers, then customize it:
+- ERC20 supply: **1,000,000 tokens**. Target FDV: **$5,000**, or **$0.005/token** before tick alignment.
+- FDV is a valuation, not cash deposited. Initial positions contain launch tokens only.
+- Opening buy: **0.00001 ETH per buy**. ETH wraps into WETH; USDG cases convert through Kyber.
+- ETH for gas is extra. The buy's output depends on fees, ranges, and the aligned opening price.
+- `EXAMPLE_TARGET_MARKET_CAP_USD` and `EXAMPLE_BUY_AMOUNT_WEI` change the target and buy input.
+  These defaults are examples, not a recommended valuation or an anti-sniper guarantee.
 
-```sh
-cp examples/launch-erc20-dividends-multiquote-mixed.ts examples/launch-my-token.ts
-node examples/launch-my-token.ts
-```
+Use the [worked pricing guide](docs/launch-lifecycle.md#price-the-launch) before changing supply or ranges.
 
-Edit the object passed to `runLaunchExample`: unique `id`, `tokenKind`
-(0 ERC20 / 1 ERC404), `rewardMode` (0 none / 1 staking / 2 dividends),
-`mode` (`atomic` / `staged`), `markets` (`venue`, `quote`, `positions`), and
-`buysPerMarket`. Supported venues are `v4`/`abyss`, quotes `WETH`/`USDG`.
-Customize identity, valuation, and buy input with the `EXAMPLE_*` keys in
-[`.env.example`](examples/.env.example). For supply, fees, budgets, or ranges,
-adapt `constructPlan` in `launch-example.ts` and `deriveExampleMarketEconomics`
-in `launch-example-support.ts`. If copying elsewhere, include the Kyber helper too.
+## Choose an example
 
-See the [launch/API guide](docs/launch-lifecycle.md), [runner configuration](examples/README.md),
-and [MIT license](LICENSE) for deeper reference.
+Each filename below is in `examples/`. V4 cases use the fixed-fee pool-bound profile;
+quotes are WETH unless USDG is listed. Positions are permanently locked.
+
+| File | Token / rewards | Markets / position counts | Mode / buys |
+| --- | --- | --- | --- |
+| `launch-erc20-abyss.ts` | ERC20 / none | Abyss: 1 | atomic / 1 |
+| `launch-erc20-v4.ts` | ERC20 / none | V4: 1 | atomic / 1 |
+| `launch-erc404-v4.ts` | ERC404 / none | V4: 1 | staged / 1 |
+| `launch-erc404-abyss.ts` | ERC404 / none | Abyss: 1 | atomic / 1 |
+| `launch-erc20-staking-v4.ts` | ERC20 / staking | V4: 2 | staged / 2 |
+| `launch-erc20-dividends-abyss.ts` | ERC20 / dividends | Abyss: 3 | staged / 1 |
+| `launch-erc20-burn-mixed.ts` | ERC20 / 30% token-fee burn | V4: 2; Abyss: 1 | staged / 2 |
+| `launch-erc404-dividends-mixed.ts` | ERC404 / dividends | V4: 2; Abyss: 3 | staged / 2 |
+| `launch-erc20-multi-quote.ts` | ERC20 / none | V4 WETH: 1; V4 USDG: 1; Abyss WETH: 1 | staged / 3 |
+| `launch-erc20-depth-v4.ts` | ERC20 / none | V4: 4, Early Scarcity | staged / 1 |
+| `launch-erc20-dividends-multiquote-mixed.ts` | ERC20 / dividends | V4 WETH: 2; V4 USDG: 2; Abyss WETH: 3 | staged / 3 |
+
+## Choose an offering for your integration
+
+Run discovery before selecting a profile. Frozen SDK presets describe supported construction;
+`readLifecycleProfiles` reports current admission.
+
+| Offering | Choose it for | Guide |
+| --- | --- | --- |
+| Canonical Abyss | STANDARD / STANDARD_ORACLE / QUOTE / QUOTE_ORACLE pools | [Choose an offering](docs/launch-lifecycle.md#choose-an-offering) |
+| Fixed V4 | One hook per pool, fixed hook fee, optional LP fee | [Build the plan](docs/launch-lifecycle.md#build-the-plan) |
+| Dynamic V4 | Oracle-velocity hook fee between your minimum and maximum; LP fee 0 | [Fee configuration](docs/reference.md#pool-bound-v4-version-6) |
+| HMM V2 | Fee-funded auxiliary bids/asks; LP and developer fees 0 | [Configure HMM V2](docs/launch-lifecycle.md#configure-hmm-v2) |
+| UFG | Quote-fee treasury and holder redemption; reward-free ERC20 only | [Launch a UFG treasury](docs/launch-lifecycle.md#launch-a-ufg-treasury) |
+
+The eleven launch wrappers do not launch HMM or UFG. Start those integrations with
+[`hmm-launch-config.ts`](examples/hmm-launch-config.ts) or [`ufg-launch-config.ts`](examples/ufg-launch-config.ts)
+and the linked guide. They are pure configuration examples, not deployment commands.
+
+## Recover and integrate
+
+After an interrupted send, inspect the saved transaction hash and use `--resume` on the original directory.
+If markets are already active but publication failed, resume publication; do not deploy another token.
+The runner saves artifacts under `launch-results/`; retain its owner-only recovery file.
+
+- [Launch guide](docs/launch-lifecycle.md): pricing → planning → signing → publication → fees and recovery.
+- [Runner reference](examples/README.md): environment, eleven cases, artifacts, and resume behavior.
+- [SDK reference](docs/reference.md): addresses, codecs, limits, Nitro gas, and author APIs.
+- [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
