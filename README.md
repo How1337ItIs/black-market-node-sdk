@@ -3,13 +3,13 @@
 # Abyss TypeScript SDK
 
 Use `@black-market/sdk` with [viem](https://viem.sh) to launch tokens, swap, and read lending markets.
-This guide targets SDK **0.12.0** on Robinhood Chain mainnet (**4663**).
+This guide targets SDK **0.13.0** on Robinhood Chain mainnet (**4663**).
 The package supports Node 20+; running the checkout's TypeScript examples requires **Node 24+**.
 
 ## Install
 
 ```sh
-pnpm add @black-market/sdk@0.12.0 viem
+pnpm add @black-market/sdk@0.13.0 viem
 ```
 
 To run the examples, use a checkout:

@@ -2,7 +2,7 @@
 
 Use the [launch guide](launch-lifecycle.md) for the end-to-end flow and the
 [runner reference](../examples/README.md) for environment and recovery artifacts.
-This page covers SDK **0.12.0** addresses, limits, wire formats, fees, and diagnostics.
+This page covers SDK **0.13.0** addresses, limits, wire formats, fees, and diagnostics.
 
 ## Deployed infrastructure
 

@@ -76,7 +76,7 @@ export type LifecyclePostcondition =
 export type LifecycleTransaction = {
   id: string; kind: LifecycleTransactionKind; chainId: number; from: Address; to: Address; data: Hex; value: bigint;
   dependencies: readonly string[]; postconditions: readonly LifecyclePostcondition[];
-  marketStart?: number; marketCount?: number; gas?: bigint; gasPrice?: bigint;
+  marketStart?: number; marketCount?: number; gas?: bigint; gasPrice?: bigint; nonce?: bigint;
   /** Exact encoded byte count; populated on SDK-built commands, including approvals. */
   calldataBytes?: number;
   /** Exact current-state execution admission, not a wallet batch or future guarantee. */
@@ -164,6 +164,8 @@ export type PlannedLaunch = {
   account: Address; chainId: bigint; mode: LaunchExecutionMode; confirmations: number;
   /** Opt-in proxy routing; the committed creator remains the proxy, account is its principal. */
   ufg?: { config: UfgLaunchConfig; configHash: Hash };
+  /** With admitted exact proof, transactions[0] is the immediate reviewed envelope,
+   * including nonce, gas and gasPrice. Deferred commands have no execution admission. */
   transactions: readonly LifecycleTransaction[]; prerequisites: readonly LifecycleFundingPrerequisite[];
   /** Sum of exact calldata bytes across the returned remaining commands, including approvals. */
   totalCalldataBytes: number;
@@ -186,11 +188,17 @@ export type PlanLaunchOptions = {
   /** Unstarted only: waive the funded boundary tail; all other topology checks remain required. */
   allowMissingPermanentTail?: boolean;
 };
+/** Explicit atomic final gas. Omitted price freezes this invocation's recommendation;
+ * a supplied price is replayed exactly, never refreshed or silently increased. */
+export type LifecycleFinalEnvelope = Readonly<{ gas: bigint; gasPrice?: bigint }>;
 export type PrepareAndPlanLifecycleLaunchOptions = PlanLaunchOptions & {
   onProgress?: (progress: PoolBoundLifecyclePreparationProgress) => void;
   /** Protect every ordered buy from its actual diagnostic receipt output, rounded down.
    * Omitted preserves the caller's committed minima. Only an unstarted launch may be protected. */
   buySlippageBps?: number;
+  /** Atomic only, with no preceding approvals. Final calldata receives one exact
+   * validated replay, not a new gas recommendation or a larger rescue envelope. */
+  fixedFinalEnvelope?: LifecycleFinalEnvelope;
 };
 export type BuildLaunchTransactionsOptions = {
   plan: LaunchPlanV1; mode: LaunchExecutionMode;

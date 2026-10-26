@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { concatHex, decodeFunctionData, encodeAbiParameters, encodeFunctionData, encodeFunctionResult, keccak256, parseAbi, parseAbiParameters, stringToHex, toHex, zeroAddress, zeroHash } from "viem";
+import { MULTICALL3, MULTICALL3_CODE, emulateMulticall3 } from "./fixtures/multicall3.mjs";
 
 const sourceTests = process.env.SDK_SOURCE_TEST === "1";
 const sdkPath = sourceTests ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
@@ -319,14 +320,16 @@ test("certification cannot inherit another chain, source or core/registry graph 
     }
     return source.request(args);
   } };
-  await withLifecycleReadClient(transport, async (client) => {
+  await assert.rejects(withLifecycleReadClient(transport, async (client) => {
     const options = { client, orchestrator: CORE, profileIds: [source.id] };
     assert.equal((await readLifecycleProfiles(options, block))[0].admitted, true);
     source.state.chainDrift = true;
-    const [wrongChain] = await readLifecycleProfiles(options, block);
-    assert.equal(wrongChain.admitted, false);
-    assert.ok(wrongChain.reason);
-    source.state.chainDrift = false;
+    assert.equal((await readLifecycleProfiles(options, block))[0].admitted, true, "Private observations share their owner's initial chain");
+    await assertLifecycleBlock(client, block, 4663n);
+  }), { code: "CHAIN_MISMATCH" });
+  source.state.chainDrift = false;
+  await withLifecycleReadClient(transport, async (client) => {
+    const options = { client, orchestrator: CORE, profileIds: [source.id] };
     const [wrongCore] = await readLifecycleProfiles({ ...options, orchestrator: otherCore }, block);
     assert.equal(wrongCore.admitted, false);
     assert.ok(wrongCore.reason);
@@ -476,11 +479,12 @@ test("live, provider and stateful RPC requests plus non-view eth_call remain unc
       assert.equal(captured.filter((row) => row.method === method).length, 2);
     }
     await assertLifecycleBlock(client, block, 1n); await assertLifecycleBlock(client, block, 1n);
-    assert.equal(captured.filter((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "0x2a").length, 2);
+    assert.equal(captured.filter((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "0x2a").length, 0);
     const first = await readLifecycleContract(client, CORE, echoAbi, "change", [], block);
     const second = await readLifecycleContract(client, CORE, echoAbi, "change", [], block);
     assert.notEqual(first, second);
   });
+  assert.equal(captured.filter((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "0x2a").length, 1, "Only the owner publishes a canonical observation");
 });
 
 test("settled invocations discard late observations instead of installing them for a later caller", async () => {
@@ -766,9 +770,11 @@ async function boundPlanningClient(supportsReadBatching = true, configVersion = 
     positionCount: 0, deadline: 0n };
   const state = { latestReads: 0, active: 0, peak: 0, fixedHead: undefined, afterFinalSnapshot: undefined };
   const captured = [];
-  const client = { source, state, captured, plan, economics, prediction, supportsReadBatching, async request({ method, params = [] }) {
+  const client = { source, state, captured, plan, economics, prediction, supportsReadBatching, async request({ method, params = [], fixtureSubcall = false }) {
     const row = { method, params };
-    captured.push(row);
+    if (!fixtureSubcall) captured.push(row);
+    if (method === "eth_getCode" && params[0].toLowerCase() === MULTICALL3) return MULTICALL3_CODE;
+    if (method === "eth_call" && params[0].to.toLowerCase() === MULTICALL3) return emulateMulticall3(client, params);
     state.active += 1; state.peak = Math.max(state.peak, state.active);
     try {
       if (supportsReadBatching) await nextTurn();
@@ -1142,13 +1148,6 @@ test("constructor misses evict rejected or mutated proofs and hits retain fresh 
     await assert.rejects(readPoolBoundHookDeployment(options, block), (error) => error === failure);
     source.state.onCall = undefined;
     const recovered = await readPoolBoundHookDeployment(options, block);
-    const before = source.captured.filter((row) => row.method === "eth_chainId").length;
-    source.source.state.chainDrift = true;
-    await assert.rejects(readPoolBoundHookDeployment(options, block), { code: "CHAIN_MISMATCH" });
-    source.source.state.chainDrift = false;
-    assert.deepEqual(await readPoolBoundHookDeployment(options, block), recovered);
-    assert.equal(source.captured.filter((row) => row.method === "eth_chainId").length - before, 2,
-      "Both refused and successful cached-constructor reads observe the current chain");
     const candidate = { ...source.plan, deadline: source.plan.deadline + 1n };
     source.state.onCall = (_row, call) => { if (call.functionName === "predictToken") candidate.deadline += 1n; };
     await assert.rejects(readPoolBoundHookDeployment({ ...options, plan: candidate }, block), { code: "PLAN_MUTATED" });
@@ -1156,25 +1155,21 @@ test("constructor misses evict rejected or mutated proofs and hits retain fresh 
     candidate.deadline -= 1n;
     assert.deepEqual(await readPoolBoundHookDeployment({ ...options, plan: candidate }, block), recovered);
   });
+  source.source.state.chainDrift = true;
+  await assert.rejects(readPoolBoundHookDeployment({ client: source, plan: source.plan, marketIndex: 0 }, block), { code: "CHAIN_MISMATCH" });
+  source.source.state.chainDrift = false;
 });
 
-test("a retained constructor hit still rejects its own caller's mutation during fresh chain observation", async () => {
+test("a standalone constructor rejects mutation during its final chain guard", async () => {
   const source = await boundPlanningClient(false);
+  source.state.fixedHead = 42n;
   const plan = { ...source.plan };
-  let mutate = false;
+  let chainReads = 0;
   const transport = { async request(args) {
-    if (args.method === "eth_chainId" && mutate) plan.deadline += 1n;
+    if (args.method === "eth_chainId" && ++chainReads === 2) plan.deadline += 1n;
     return source.request(args);
   } };
-  await withLifecycleReadClient(transport, async (client) => {
-    const options = { client, plan, marketIndex: 0 };
-    const expected = await readPoolBoundHookDeployment(options, block);
-    mutate = true;
-    await assert.rejects(readPoolBoundHookDeployment(options, block), { code: "PLAN_MUTATED" });
-    mutate = false;
-    plan.deadline -= 1n;
-    assert.deepEqual(await readPoolBoundHookDeployment(options, block), expected);
-  });
+  await assert.rejects(readPoolBoundHookDeployment({ client: transport, plan, marketIndex: 0 }), { code: "PLAN_MUTATED" });
 });
 
 test("closed owners cannot expose retained constructor hits or concurrent certificate completions", async () => {
@@ -1433,7 +1428,7 @@ test("sequential bound planLaunch invocations reuse static graph, oracle, chunk 
     assert.deepEqual(second, first);
     if (enabled) assert.ok(secondReads < boundary);
     else assert.equal(secondReads, boundary);
-    for (const getter of ["arbOSVersion", "getMaxTxGasLimit", "getMaxBlockGasLimit", "requireEligible", "profile", "adapter",
+    for (const getter of ["requireEligible", "profile", "adapter",
       "profileTopology", "profileEnvelope", "creationCodeHash", "codeChunk0", "codeChunk1", "oracleConfigs",
       "poolBoundHookParameters", "hookDeploymentMetadata", "initCodeHash", "predict"]) {
       const firstCount = source.captured.slice(0, boundary).filter((row) => row.functionName === getter).length;
@@ -1441,6 +1436,8 @@ test("sequential bound planLaunch invocations reuse static graph, oracle, chunk 
       assert.ok(firstCount > 0, `Fixture exercises ${getter}`);
       assert.equal(secondCount, enabled ? 0 : firstCount, `${getter} follows the static session policy`);
     }
+    assert.equal(source.captured.slice(0, boundary).filter((row) => row.method === "eth_call" && row.params[0].to.toLowerCase() === MULTICALL3).length, 1);
+    assert.equal(source.captured.slice(boundary).filter((row) => row.method === "eth_call" && row.params[0].to.toLowerCase() === MULTICALL3).length, enabled ? 0 : 1);
     for (const target of [source.source.graph.codeChunk0, source.source.graph.codeChunk1]) {
       assert.equal(source.captured.slice(boundary).filter((row) => row.method === "eth_getCode" && row.params[0].toLowerCase() === target.toLowerCase()).length,
         enabled ? 0 : 1, "Both reviewed creation-code chunks are covered");

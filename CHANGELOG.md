@@ -4,6 +4,15 @@
 
 - Rewrite launch guidance around pricing, execution, publication, and recovery; split detailed SDK reference from the launch tutorial. Correct WETH wrapping, conversion deadlines, and runner resume instructions.
 
+## 0.13.0
+
+- Finalize each lifecycle invocation with one fresh source-chain guard and one canonical check per used proof pin, including after optional submission estimation. Reuse the initial chain observation for nested hook metadata/discovery, one fee recommendation per operation, and known immutable factory predictions across construction/execution pins.
+- Aggregate only caller-independent Nitro getters, known token prediction and known-core head progress on chain4663. Attest the pinned Multicall3 runtime before using it; poster quotes, funding, account state and execution simulations remain direct and pinned.
+- Coalesce receipt observed/inclusion headers across references after all asynchronous receipt-identity reads. Preserve replacement attribution, confirmation depth and reorg refusal.
+- Add `LifecycleFinalEnvelope` and `prepareAndPlanLifecycleLaunch({ fixedFinalEnvelope: { gas, gasPrice? } })` for one immediate atomic command without approvals. Freeze one operation fee if omitted and validate exact final protected calldata without gas rediscovery, fee increases or envelope rescue.
+- Return explicit nonces with proved commands and bind supplied reviewed nonces during replay/submission estimation. Document `planned.transactions[0]` as the exact reviewed envelope, not reusable admission. Preserve fresh pending nonce/balance and final source-chain guards in the example signer even when a held nonce is supplied.
+- Add per-entrypoint counting-transport budgets and exact-envelope/aggregation/canonical regressions. No signing, broadcast or publication behavior is added.
+
 ## 0.12.0
 
 - Add opt-in UFG treasury launches through the pinned Robinhood proxy, including principal-namespaced nonces, exact proxy funding approvals, atomic/staged/cancel builders and proxy-aware planning, simulation and canonical recovery. Existing core launch paths and defaults are unchanged.
