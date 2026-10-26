@@ -46,7 +46,7 @@ async function send(transaction) {
   const gasPrice = transaction.gasPrice ?? BigInt(await client.request({ method: "eth_gasPrice" }));
   const head = await client.request({ method: "eth_getBlockByNumber", params: ["latest", false] });
   const ceiling = [BigInt(head.gasLimit), BigInt(policy.chainTransactionGasLimit), BigInt(policy.rpcTransactionGasLimit), BigInt(policy.accountTransactionGasLimit)].reduce((a, b) => a < b ? a : b);
-  const wire = { from: transaction.from, to: transaction.to, data: transaction.data, value: toHex(transaction.value), gasPrice: toHex(gasPrice) };
+  const wire = { from: transaction.from, to: transaction.to, data: transaction.data, value: toHex(transaction.value), gasPrice: toHex(gasPrice), ...(transaction.nonce === undefined ? {} : { nonce: toHex(transaction.nonce) }) };
   const estimated = transaction.gas ?? ((BigInt(await client.request({ method: "eth_estimateGas", params: [{ ...wire, gas: toHex(ceiling) }] })) * BigInt(10000 + Number(policy.headroomBps)) + 9999n) / 10000n);
   assert.ok(estimated <= ceiling, "Unsigned helper must still fit explicit local execution admission");
   const transactionHash = await client.request({ method: "eth_sendTransaction", params: [{ ...wire, gas: toHex(estimated) }] });

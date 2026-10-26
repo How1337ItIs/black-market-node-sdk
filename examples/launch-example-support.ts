@@ -607,9 +607,7 @@ export function createLocalLaunchWallet({ privateKey, creator, chainId, orchestr
           if (request[field] < 0n) throw exampleError("INVALID_ENVELOPE", `${field} must be unsigned`);
         }
       }
-      request.nonce = envelope.nonce === undefined
-        ? exactNumber(await client.request({ method: "eth_getTransactionCount", params: [creator, "pending"] }), "nonce")
-        : exactNumber(envelope.nonce, "nonce");
+      if (envelope.nonce !== undefined) request.nonce = exactNumber(envelope.nonce, "nonce");
       if (request.type !== undefined) {
         request.type = transactionTypes[request.type];
         if (!request.type) throw exampleError("INVALID_ENVELOPE", "Only legacy/EIP-2930/EIP-1559 envelopes are supported");
@@ -622,6 +620,16 @@ export function createLocalLaunchWallet({ privateKey, creator, chainId, orchestr
         request.maxFeePerGas ??= fees.maxFeePerGas;
         request.maxPriorityFeePerGas ??= fees.maxPriorityFeePerGas;
       }
+      const [nonceValue, balanceValue] = await Promise.all([
+        client.request({ method: "eth_getTransactionCount", params: [creator, "pending"] }),
+        client.request({ method: "eth_getBalance", params: [creator, "pending"] }),
+      ]);
+      const pendingNonce = exactNumber(nonceValue, "pending nonce");
+      if (request.nonce !== undefined && request.nonce !== pendingNonce) throw exampleError("PENDING_NONCE_CHANGED", "Pending account nonce differs from the exact reviewed envelope");
+      request.nonce = pendingNonce;
+      const maximumFee = request.gas * (request.gasPrice ?? request.maxFeePerGas);
+      if (BigInt(balanceValue) < request.value + maximumFee) throw exampleError("INSUFFICIENT_PENDING_BALANCE", "Pending balance cannot fund the exact transaction value and maximum gas envelope");
+      await assertChain();
       const rawTransaction = await account.signTransaction(request);
       redactor.addSecret(rawTransaction);
       const wire = { ...envelope, chainId: toHex(id), nonce: toHex(request.nonce) };

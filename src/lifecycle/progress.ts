@@ -2,7 +2,7 @@ import { concatHex, decodeFunctionData, encodeAbiParameters, encodeFunctionData,
 import { launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleOracleFactoryAbi, lifecycleRegistryAbi, poolFeeCollectorFactoryV1Abi, poolFeeCollectorFactoryConfigV6Abi, lifecycleV4HookAbi, lifecycleV4LockerAbi, poolHookDeployerV1Abi, poolHookDeployerConfigV6Abi, sharedHookDeployerV1Abi, fixedFeePoolHookV1Abi, fixedFeePoolHookConfigV6Abi, poolMarketAdapterV1Abi, sharedMarketAdapterV1Abi } from "./abi.js";
 import { buildPoolBoundHookParameters, decodePoolBoundV4LifecycleMarketConfig, encodePoolBoundHookParameters, hasLifecycleV4HookPermissions, isPoolBoundV4ConfigVersion, poolBoundHookInitCodeHash, predictPoolBoundHookAddress, validateV4LifecycleMarket, V4_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V5, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V6, type PoolBoundHookParameters, type PoolBoundLifecycleConfigVersion } from "./markets.js";
 import { hashLaunchIdentity, hashLaunchPlan, hashLaunchBounds, hashLaunchDependencies, hashLifecycleProfile, lifecycleTokenComponents, launchProgressV1Components, LifecycleMode, LifecyclePhase, LifecycleVenue, LIFECYCLE_REQUIRED_CAPABILITIES, LIFECYCLE_ERC404_CAPABILITY, LIFECYCLE_MULTI_POSITION_CAPABILITY, type AdapterRegistrationV1, type LaunchPlanV1, type LaunchProgressV1, type MarketIdentityV1, type MarketLiveStateV1, type PreparedMarketV1, type ProfileRegistrationV1, type ProfileTopologyV1, type LaunchEnvelopeV2, type LifecycleDeveloperTerms } from "./schema.js";
-import { assertLifecycleBlock, assertLifecycleReadClientOpen, lifecycleFailureReason, lifecyclePinnedRpc, lifecycleStaticRpc, lifecycleRpc, lifecycleStage, readLifecycleBlock, readLifecycleChainId, readLifecycleContract, readLifecycleStaticContract, readLifecycleProfileTopology, rpcHex, rpcObject, rpcQuantity, withLifecycleReadClient } from "./rpc.js";
+import { assertLifecycleBlock, assertLifecycleReadClientOpen, lifecycleFailureReason, lifecyclePinnedRpc, lifecycleStaticRpc, lifecycleRpc, lifecycleStage, readLifecycleBlock, readLifecycleChainId, readLifecycleContract, readLifecycleImmutable, readLifecycleStaticContract, readLifecycleProfileTopology, rpcHex, rpcObject, rpcQuantity, withLifecycleReadClient } from "./rpc.js";
 import { LifecyclePlanningError, type CanonicalLaunchProgress, type LifecycleBlock, type LifecycleMarketProgress, type LifecycleProfile, type LifecycleReceiptReference, type LifecycleReceiptStatus, type LifecycleRpcClient, type PoolBoundHookDeployment, type ReadLaunchProgressOptions } from "./types.js";
 import { deriveKnownPoolBoundHookDeployment } from "./calibration.js";
 import { getKnownLifecycleDeployment, getKnownLifecycleProfile } from "./presets.js";
@@ -21,9 +21,18 @@ const lifecycleTokenPredictionAbi = [{
  * avoiding full-plan prediction reads after salts or buy minima change. */
 export async function readLifecycleTokenAtBlock(client: LifecycleRpcClient, plan: LaunchPlanV1, block: LifecycleBlock): Promise<Address> {
   const deployment = getKnownLifecycleDeployment({ chainId: plan.chainId, orchestrator: plan.orchestrator });
-  return deployment === undefined
-    ? readLifecycleContract<Address>(client, plan.orchestrator, launchLifecycleAbi, "predictToken", [plan], block)
-    : readLifecycleContract<Address>(client, deployment.tokenFactory, lifecycleTokenPredictionAbi, "predictToken", [hashLaunchIdentity(plan), plan.token], block);
+  if (deployment === undefined) return readLifecycleContract<Address>(client, plan.orchestrator, launchLifecycleAbi, "predictToken", [plan], block);
+  const launchId = hashLaunchIdentity(plan);
+  const data = encodeFunctionData({ abi: lifecycleTokenPredictionAbi, functionName: "predictToken", args: [launchId, plan.token] });
+  const key = `${plan.chainId}:${plan.orchestrator.toLowerCase()}:${deployment.tokenFactory.toLowerCase()}:${deployment.tokenFactoryCodeHash}:${data}`;
+  return readLifecycleImmutable(client, key, () =>
+    readLifecycleContract<Address>(client, deployment.tokenFactory, lifecycleTokenPredictionAbi, "predictToken", [launchId, plan.token], block, undefined, false, true));
+}
+
+/** Internal pinned head observation. Known cores do not inspect msg.sender. */
+export function readLifecycleHeadProgress(client: LifecycleRpcClient, plan: LaunchPlanV1, account: Address, block: LifecycleBlock): Promise<LaunchProgressV1> {
+  const known = getKnownLifecycleDeployment({ chainId: plan.chainId, orchestrator: plan.orchestrator }) !== undefined;
+  return readLifecycleContract<LaunchProgressV1>(client, plan.orchestrator, launchLifecycleAbi, "readLaunchProgress", [hashLaunchIdentity(plan)], block, account, false, known);
 }
 
 export async function predictLifecycleToken(options: { client: LifecycleRpcClient; plan: LaunchPlanV1 }): Promise<Address> {
@@ -224,7 +233,7 @@ export async function validateV4LifecycleOracle(options: {
 
 export async function readLifecycleProfiles(options: { client: LifecycleRpcClient; orchestrator: Address; profileIds?: readonly Hex[]; offset?: bigint; limit?: bigint }, pinnedBlock?: LifecycleBlock): Promise<LifecycleProfile[]> {
   return withLifecycleReadClient(options.client, (client) => lifecycleStage(client, "profile.certification", async () => {
-    const chainIdPromise = lifecycleRpc(client, "eth_chainId").then((value) => rpcQuantity(value, "chain ID"));
+    const chainIdPromise = readLifecycleChainId(client);
     // Block-bound discovery does not depend on chain identity. Join both branches
     // immediately so a failed chain read cannot become detached or a profile refusal.
     const [chainId, { block, profiles }] = await Promise.all([
@@ -303,7 +312,7 @@ async function readPoolBoundHookDeploymentDetails(options: { client: LifecycleRp
   const market = plan.markets[marketIndex];
   if (market === undefined || !isPoolBoundV4ConfigVersion(market.configVersion)) throw new LifecyclePlanningError("INVALID_BOUND_MARKET", "Market index must select explicit pool-bound config version 5 or 6");
   let chainId: bigint;
-  try { chainId = rpcQuantity(await lifecycleRpc(client, "eth_chainId"), "chain ID"); }
+  try { chainId = await readLifecycleChainId(client); }
   finally { assertDerivedReadClientOpen(client); }
   if (hashLaunchPlan(plan) !== commitment) throw new LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed while observing the hook deployment chain");
   if (chainId !== plan.chainId) throw new LifecyclePlanningError("CHAIN_MISMATCH", "RPC chain differs from the committed plan");
@@ -419,19 +428,21 @@ async function readPoolBoundHookDeploymentDetailsFresh(options: { client: Lifecy
 export async function readPoolBoundHookDeployment(options: { client: LifecycleRpcClient; plan: LaunchPlanV1; marketIndex: number }, pinnedBlock?: LifecycleBlock): Promise<PoolBoundHookDeployment> {
   const commitment = hashLaunchPlan(options.plan);
   const block = pinnedBlock ?? await readLifecycleBlock(options.client);
-  return withLifecycleReadClient(options.client, async (client) => {
+  const result = await withLifecycleReadClient(options.client, async (client) => {
     const { deployment } = await readPoolBoundHookDeploymentDetails({ ...options, client }, block, commitment);
     if (hashLaunchPlan(options.plan) !== commitment) throw new LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed while reading hook deployment metadata");
     if (pinnedBlock === undefined) await assertLifecycleBlock(client, block, options.plan.chainId);
     return { ...deployment };
   });
+  if (hashLaunchPlan(options.plan) !== commitment) throw new LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed during the final hook deployment guard");
+  return result;
 }
 
 /** Optional permissionless predeployment calldata; no token deployment, pool registration or wallet broadcast. */
 export async function buildPoolBoundHookDeploymentTransaction(options: { client: LifecycleRpcClient; plan: LaunchPlanV1; marketIndex: number }): Promise<{ to: Address; data: Hex; value: bigint; deployment: PoolBoundHookDeployment }> {
   const commitment = hashLaunchPlan(options.plan);
   const block = await readLifecycleBlock(options.client);
-  return withLifecycleReadClient(options.client, async (client) => {
+  const result = await withLifecycleReadClient(options.client, async (client) => {
     const { deployment, parameters, configVersion } = await readPoolBoundHookDeploymentDetails({ ...options, client }, block, commitment);
     if (!hasLifecycleV4HookPermissions(deployment.predictedHook)) throw new LifecyclePlanningError("INVALID_HOOK_BITS", "Finalize a salt with the exact lifecycle hook permissions before predeployment");
     if (hashLaunchPlan(options.plan) !== commitment) throw new LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed while constructing hook deployment calldata");
@@ -439,6 +450,8 @@ export async function buildPoolBoundHookDeploymentTransaction(options: { client:
     const abi = configVersion === 5 ? poolHookDeployerV1Abi : poolHookDeployerConfigV6Abi;
     return { to: deployment.deployer, data: encodeFunctionData({ abi, functionName: "deploy", args: [parameters, deployment.salt] }), value: 0n, deployment: { ...deployment } };
   });
+  if (hashLaunchPlan(options.plan) !== commitment) throw new LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed during the final hook transaction guard");
+  return result;
 }
 
 export function validateLifecycleMarketIdentity(identity: MarketIdentityV1, plan: LaunchPlanV1, token: Address, marketIndex: number): void {
@@ -455,7 +468,7 @@ export function validateLifecycleMarketIdentity(identity: MarketIdentityV1, plan
   } else if (identity.venue !== LifecycleVenue.Abyss || identity.pool === zeroAddress || identity.factory === zeroAddress) throw new LifecyclePlanningError("MARKET_IDENTITY", "Abyss canonical factory/pool identity is missing");
 }
 
-async function transactionMatchesLaunch(transaction: Record<string, unknown>, options: ReadLaunchProgressOptions, block: LifecycleBlock): Promise<boolean> {
+async function transactionMatchesLaunch(transaction: Record<string, unknown>, options: ReadLaunchProgressOptions, readBlock: () => Promise<LifecycleBlock>): Promise<boolean> {
   const { planned } = options;
   const from = rpcHex(transaction.from, "receipt transaction account");
   if (from.toLowerCase() !== planned.account.toLowerCase()) throw new LifecyclePlanningError("RECEIPT_ACCOUNT", "Receipt transaction belongs to a different account");
@@ -484,53 +497,103 @@ async function transactionMatchesLaunch(transaction: Record<string, unknown>, op
     if (decoded.functionName !== "approve" || rpcQuantity(transaction.value ?? "0x0", "approval native value") !== 0n) return false;
     spender = decoded.args[0];
   } catch { return false; }
-  const escrow = planned.ufg !== undefined ? UFG_LAUNCH_PROXY_ADDRESS : await readLifecycleContract<Address>(options.client, planned.plan.orchestrator, launchLifecycleAbi, "fundingEscrow", [], block);
+  const known = getKnownLifecycleDeployment({ chainId: planned.plan.chainId, orchestrator: planned.plan.orchestrator });
+  const escrow = planned.ufg !== undefined ? UFG_LAUNCH_PROXY_ADDRESS : known?.fundingEscrow ??
+    await readLifecycleContract<Address>(options.client, planned.plan.orchestrator, launchLifecycleAbi, "fundingEscrow", [], await readBlock());
   return spender.toLowerCase() === escrow.toLowerCase();
 }
 
-async function readReceipt(reference: LifecycleReceiptReference, options: ReadLaunchProgressOptions, block: LifecycleBlock): Promise<LifecycleReceiptStatus> {
+type ReceiptObservation = {
+  pins: readonly { number: bigint; hash: Hex }[];
+  finish(headers: ReadonlyMap<bigint, Hex | undefined>): LifecycleReceiptStatus;
+};
+
+async function readReceipt(reference: LifecycleReceiptReference, options: ReadLaunchProgressOptions, block: LifecycleBlock, readIdentityBlock: (number: bigint) => Promise<LifecycleBlock>): Promise<ReceiptObservation> {
   const effectiveHash = reference.replacementHash ?? reference.transactionHash;
   const base = { transactionHash: reference.transactionHash, effectiveHash, replaced: reference.replacementHash !== undefined && reference.replacementHash.toLowerCase() !== reference.transactionHash.toLowerCase() };
-  const observedNumber = reference.observedBlockNumber;
-  if (observedNumber !== undefined && reference.observedBlockHash !== undefined) {
-    const observed = await lifecycleRpc(options.client, "eth_getBlockByNumber", [toHex(observedNumber), false]);
-    if (observed === null || rpcHex(rpcObject(observed, "observed receipt block").hash, "observed receipt block hash").toLowerCase() !== reference.observedBlockHash.toLowerCase()) return { ...base, status: "reorged", blockNumber: observedNumber, blockHash: reference.observedBlockHash };
+  const pins: { number: bigint; hash: Hex }[] = [];
+  const observedNumber = reference.observedBlockNumber, observedHash = reference.observedBlockHash;
+  if (observedNumber !== undefined && observedHash !== undefined) pins.push({ number: observedNumber, hash: observedHash });
+  const finish = (result: LifecycleReceiptStatus, failure?: { error: unknown }): ReceiptObservation => ({
+    pins,
+    finish(headers) {
+      for (const pin of pins) {
+        if (failure !== undefined && (pin.number !== observedNumber || pin.hash !== observedHash)) continue;
+        if (headers.get(pin.number)?.toLowerCase() !== pin.hash.toLowerCase()) return { ...base, status: "reorged", blockNumber: pin.number, blockHash: pin.hash };
+      }
+      if (failure !== undefined) throw failure.error;
+      return result;
+    },
+  });
+  try {
+    const [receiptValue, transactionValue] = await Promise.all([
+      lifecycleRpc(options.client, "eth_getTransactionReceipt", [effectiveHash]),
+      lifecycleRpc(options.client, "eth_getTransactionByHash", [effectiveHash]),
+    ]);
+    if (receiptValue === null) return finish({ ...base, status: "pending", blockNumber: observedNumber, blockHash: observedHash });
+    if (transactionValue === null) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Receipt exists without its canonical transaction");
+    const receipt = rpcObject(receiptValue, "receipt");
+    const blockNumber = rpcQuantity(receipt.blockNumber, "receipt block number");
+    const blockHash = rpcHex(receipt.blockHash, "receipt block hash");
+    pins.push({ number: blockNumber, hash: blockHash });
+    const matches = await transactionMatchesLaunch(rpcObject(transactionValue, "receipt transaction"), options,
+      () => readIdentityBlock(blockNumber));
+    const confirmations = block.number >= blockNumber ? block.number - blockNumber + 1n : 0n;
+    const required = reference.confirmations ?? 1;
+    if (!Number.isSafeInteger(required) || required < 1) throw new LifecyclePlanningError("INVALID_CONFIRMATIONS", "Receipt confirmations must be a positive integer");
+    const observation = finish({
+      ...base, blockNumber, blockHash, confirmations,
+      status: confirmations < BigInt(required) ? "unconfirmed" : !matches ? "replacement-cancelled" :
+        rpcQuantity(receipt.status, "receipt status") !== 1n ? "reverted" : "confirmed",
+    });
+    return {
+      pins,
+      finish(headers) {
+        const result = observation.finish(headers);
+        if (result.status !== "reorged" && !matches && !base.replaced) throw new LifecyclePlanningError("RECEIPT_IDENTITY", "Receipt calldata does not belong to the exact committed launch");
+        return result;
+      },
+    };
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") throw error;
+    // A changed retained observation is a reorg even if the orphan's transaction
+    // or identity read is now unavailable. Otherwise preserve the original error.
+    return finish({ ...base, status: "pending" }, { error });
   }
-  const [receiptValue, transactionValue] = await Promise.all([
-    lifecycleRpc(options.client, "eth_getTransactionReceipt", [effectiveHash]),
-    lifecycleRpc(options.client, "eth_getTransactionByHash", [effectiveHash]),
-  ]);
-  if (receiptValue === null) {
-    // An absent receipt with an unchanged canonical observed block is not a
-    // reorg: the transaction is simply not (yet) mined. A missing/changed
-    // canonical block above already reported the real reorg.
-    if (reference.observedBlockHash !== undefined) return { ...base, status: "pending", blockNumber: observedNumber, blockHash: reference.observedBlockHash };
-    return { ...base, status: "pending" };
-  }
-  if (transactionValue === null) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Receipt exists without its canonical transaction");
-  const transaction = rpcObject(transactionValue, "receipt transaction");
-  const receiptBlock = await readLifecycleBlock(options.client, toHex(rpcQuantity(rpcObject(receiptValue, "receipt").blockNumber, "receipt block number")));
-  const matches = await transactionMatchesLaunch(transaction, options, receiptBlock);
-  if (!matches && !base.replaced) throw new LifecyclePlanningError("RECEIPT_IDENTITY", "Receipt calldata does not belong to the exact committed launch");
-  const receipt = rpcObject(receiptValue, "receipt");
-  const blockNumber = rpcQuantity(receipt.blockNumber, "receipt block number");
-  const blockHash = rpcHex(receipt.blockHash, "receipt block hash");
-  const canonicalBlockValue = await lifecycleRpc(options.client, "eth_getBlockByNumber", [toHex(blockNumber), false]);
-  if (canonicalBlockValue === null || rpcHex(rpcObject(canonicalBlockValue, "receipt canonical block").hash, "receipt canonical hash").toLowerCase() !== blockHash.toLowerCase()) return { ...base, status: "reorged", blockNumber, blockHash };
-  const confirmations = block.number >= blockNumber ? block.number - blockNumber + 1n : 0n;
-  const required = reference.confirmations ?? 1;
-  if (!Number.isSafeInteger(required) || required < 1) throw new LifecyclePlanningError("INVALID_CONFIRMATIONS", "Receipt confirmations must be a positive integer");
-  if (confirmations < BigInt(required)) return { ...base, status: "unconfirmed", blockNumber, blockHash, confirmations };
-  if (!matches) return { ...base, status: "replacement-cancelled", blockNumber, blockHash, confirmations };
-  if (rpcQuantity(receipt.status, "receipt status") !== 1n) return { ...base, status: "reverted", blockNumber, blockHash, confirmations };
-  return { ...base, status: "confirmed", blockNumber, blockHash, confirmations };
+}
+
+async function readReceipts(options: ReadLaunchProgressOptions, block: LifecycleBlock, confirmationDepth: number): Promise<LifecycleReceiptStatus[]> {
+  if (options.receipts === undefined || options.receipts.length === 0) return [];
+  const identityBlocks = new Map<bigint, Promise<LifecycleBlock>>();
+  const readIdentityBlock = (number: bigint) => {
+    let pending = identityBlocks.get(number);
+    if (pending === undefined) { pending = readLifecycleBlock(options.client, toHex(number)); identityBlocks.set(number, pending); }
+    return pending;
+  };
+  const observations = await Promise.all((options.receipts ?? []).map((reference) =>
+    readReceipt({ ...reference, confirmations: Math.max(reference.confirmations ?? 1, confirmationDepth) }, options, block, readIdentityBlock)));
+  const headers = new Map<bigint, Hex | undefined>();
+  for (const observation of observations) for (const pin of observation.pins) headers.set(pin.number, undefined);
+  // All asynchronous identity reads have settled. Equal observed/inclusion blocks
+  // and multiple receipts now share one fresh canonical header, never a stale cache.
+  await Promise.all([...headers.keys()].map(async (number) => {
+    const value = await lifecycleRpc(options.client, "eth_getBlockByNumber", [toHex(number), false]);
+    const hash = value === null ? undefined : rpcHex(rpcObject(value, "receipt canonical block").hash, "receipt canonical hash");
+    if (hash !== undefined && hash.length !== 66) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Receipt canonical block hash must have 32 bytes");
+    headers.set(number, hash);
+  }));
+  return observations.map((observation) => observation.finish(headers));
 }
 
 /** Reads confirmation-bound canonical state and receipt provenance; local step counters are never used. */
 export async function readLaunchProgress(options: ReadLaunchProgressOptions, pinnedBlock?: LifecycleBlock): Promise<CanonicalLaunchProgress> {
   if (options.signal?.aborted) throw Object.assign(new Error("Lifecycle progress read cancelled"), { name: "AbortError" });
-  const block = pinnedBlock ?? await readLifecycleBlock(options.client);
-  return withLifecycleReadClient(options.client, (client) => readLaunchProgressAtBlock(options, client, block, pinnedBlock === undefined));
+  const planHash = options.planned.planHash, launchId = options.planned.launchId;
+  const result = await withLifecycleReadClient(options.client, async (client) =>
+    readLaunchProgressAtBlock(options, client, pinnedBlock ?? await readLifecycleBlock(client), pinnedBlock === undefined));
+  if (hashLaunchPlan(options.planned.plan) !== planHash || hashLaunchIdentity(options.planned.plan) !== launchId) throw new LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed during the final canonical progress guard");
+  if (options.signal?.aborted) throw Object.assign(new Error("Lifecycle progress read cancelled"), { name: "AbortError" });
+  return result;
 }
 
 async function readLaunchProgressAtBlock(options: ReadLaunchProgressOptions, client: LifecycleRpcClient, block: LifecycleBlock, checkBlock: boolean): Promise<CanonicalLaunchProgress> {
@@ -555,7 +618,7 @@ async function readLaunchProgressAtBlock(options: ReadLaunchProgressOptions, cli
   } else if (planned.account.toLowerCase() !== planned.plan.creator.toLowerCase()) throw new LifecyclePlanningError("ACCOUNT_MISMATCH", "Execution account must be the committed creator/payer/refund account");
   if (hashLaunchPlan(planned.plan).toLowerCase() !== planned.planHash.toLowerCase() || hashLaunchIdentity(planned.plan).toLowerCase() !== planned.launchId.toLowerCase()) throw new LifecyclePlanningError("PLAN_MUTATED", "Stored economic plan no longer matches its commitment");
   const [head, confirmedProgress, token, confirmedNonce, headNonce, pendingNonce] = await Promise.all([
-    readLifecycleContract<LaunchProgressV1>(client, planned.plan.orchestrator, launchLifecycleAbi, "readLaunchProgress", [planned.launchId], block, planned.account),
+    readLifecycleHeadProgress(client, planned.plan, planned.account, block),
     confirmedNumber === block.number ? undefined : readLifecycleContract<LaunchProgressV1>(client, planned.plan.orchestrator, launchLifecycleAbi, "readLaunchProgress", [planned.launchId], confirmedBlock, planned.account),
     readLifecycleTokenAtBlock(client, planned.plan, block),
     lifecycleRpc(client, "eth_getTransactionCount", [planned.account, toHex(confirmedBlock.number)]),
@@ -582,7 +645,7 @@ async function readLaunchProgressAtBlock(options: ReadLaunchProgressOptions, cli
   const pendingAccountNonce = rpcQuantity(pendingNonce, "pending account nonce");
   const progressParameters = [{ type: "tuple", components: launchProgressV1Components }] as const;
   const confirmationSafe = confirmedAccountNonce === headAccountNonce && pendingAccountNonce === headAccountNonce && keccak256(encodeAbiParameters(progressParameters, [canonical])) === keccak256(encodeAbiParameters(progressParameters, [head]));
-  const receipts = await Promise.all((options.receipts ?? []).map((reference) => readReceipt({ ...reference, confirmations: Math.max(reference.confirmations ?? 1, confirmationDepth) }, { ...options, client }, block)));
+  const receipts = await readReceipts({ ...options, client }, block, confirmationDepth);
   assertActive();
   let markets: LifecycleMarketProgress[] = [];
   if (canonical.preparedMarkets > 0) {

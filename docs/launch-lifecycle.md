@@ -1,6 +1,6 @@
 # Launch a token with the TypeScript SDK
 
-Use SDK **0.12.0** on Robinhood Chain mainnet (**4663**). For a first launch, run
+Use SDK **0.13.0** on Robinhood Chain mainnet (**4663**). For a first launch, run
 [`launch-erc20-abyss.ts`](../examples/launch-erc20-abyss.ts): one market, one position,
 one buy. [Runner setup](../examples/README.md) covers its environment and commands.
 This guide explains the economics and the public APIs for your own integration.
@@ -326,7 +326,7 @@ The SDK never switches your requested mode or removes markets to make it fit.
 
 | Operation | Options type / purpose |
 | --- | --- |
-| `prepareAndPlanLifecycleLaunch` | `PrepareAndPlanLifecycleLaunchOptions`: `client`, `account`, `plan`, `mode`; optional `ufg: { config }`, `buySlippageBps`, `limits`, `fork`, `receipts`, `confirmations`, `signal`, `onProgress`, topology opt-outs. |
+| `prepareAndPlanLifecycleLaunch` | `PrepareAndPlanLifecycleLaunchOptions`: `client`, `account`, `plan`, `mode`; optional `ufg: { config }`, `buySlippageBps`, `fixedFinalEnvelope`, `limits`, `fork`, `receipts`, `confirmations`, `signal`, `onProgress`, topology opt-outs. |
 | `planLaunch` | `PlanLaunchOptions`: same execution context, including optional `ufg: { config }` and `signal`; re-admits an already-finalized plan without changing salts/minima. |
 | `simulateLaunchPlan` | `client`, `planned`; optional `limits`, `fork`, `receipts`, `confirmations`, `signal`. |
 | `readLaunchProgress` | `client`, `planned`; optional `receipts`, `confirmations`, `signal`. |
@@ -350,11 +350,44 @@ ordered buy outputs/minima, funding, refunds, and complete gas envelope. A fresh
 `buildNextTransaction` proves the immediate next step as canonical progress advances.
 `submissionClient` adds read-only exact-envelope preflight on the sending RPC.
 
+`planned.transactions[0]` already contains the immediate exact `from/to/data/value`,
+`nonce`, `gas` and `gasPrice` when that step has admitted execution proof. There is
+no need for another unreviewed build just to discover its envelope. The envelope
+is reviewable and reusable; its block-bound admission is historical, not permission
+to sign later. Pass it as `reviewedTransaction` for fresh immediate admission after
+review or recovery. This is execution revalidation, not a second user review gate.
+Reuse `planned.progress` for the same result's display instead of reading progress
+independently beside the plan.
+
+For an atomic caller with a chosen final gas envelope, prepare with
+`fixedFinalEnvelope: { gas: 31_000_000n }`. This is an explicit chosen gas amount,
+not a universal gas recommendation. `limits.accountGasLimit` remains only a ceiling.
+The option accepts exactly one immediate atomic command with no approval prefix;
+staged mode and approval-first shapes refuse it. Diagnostic and final protection
+share one frozen fee recommendation. Supplying `gasPrice` holds that fee exactly;
+it is never bumped to obtain admission. The final protected calldata still receives
+one natural-child-fee validated replay at the exact chosen envelope. Failure never
+enlarges it or switches mode.
+
+On chain4663, independent Nitro getters, known factory prediction and known-core
+head progress can share one Multicall3 read after pinned runtime attestation.
+Poster estimates retain their original sender/value and are never aggregated.
+One invocation owns the final fresh chain check and every distinct canonical
+proof pin, including after optional sending-RPC estimation. Balances and economic
+proofs are not shared across invocations.
+
 ## Sign and confirm
 
 Call `buildNextTransaction` before **every signature**, including approvals and
-cancellation. Send its exact `from/to/data/value/gas/gasPrice` with a matching explicit
-viem chain. `confirmations` defaults to 1; choose and retain your policy before begin.
+cancellation. For a reviewed command, pass `reviewedTransaction` so the SDK replays
+the same gas/fee/nonce rather than rediscovering it. Send the exact returned
+`from/to/data/value/nonce/gas/gasPrice` with a matching explicit viem chain.
+`confirmations` defaults to 1; choose and retain your policy before begin.
+SDK affordability is observed at block B, not at the provider's pending state.
+Immediately before signing, the host must freshly compare pending nonce and
+balance with this exact envelope and verify the active provider account/chain
+after asynchronous work. Changed identity, nonce, intent or insufficient pending
+funds blocks the signature; never overwrite the reviewed nonce or replay a write.
 The following local-account loop signs only when explicitly called by your application.
 Use a new owner-only journal path inside a private directory; on reload, restore the
 original plan and receipt references before calling it. Journal records contain secrets.
@@ -396,6 +429,15 @@ export async function executeLaunch(
     if (!next.admission?.admitted || next.gas === undefined || next.gasPrice === undefined) {
       throw new Error("Immediate transaction is not admitted");
     }
+    const [nonce, pendingBalance] = await Promise.all([
+      client.getTransactionCount({ address: next.from, blockTag: "pending" }),
+      client.getBalance({ address: next.from, blockTag: "pending" }),
+    ]);
+    const dataFee = next.estimate?.dataFee;
+    if (next.nonce === undefined || BigInt(nonce) !== next.nonce || dataFee === undefined
+      || pendingBalance < next.value + next.gas * next.gasPrice + dataFee) {
+      throw new Error("Pending nonce or complete affordability changed; revalidate");
+    }
     const [address] = await wallet.getAddresses();
     if (wallet.chain.id !== next.chainId || await wallet.getChainId() !== next.chainId
       || await client.getChainId() !== next.chainId
@@ -403,7 +445,6 @@ export async function executeLaunch(
       || wallet.account.address.toLowerCase() !== planned.account.toLowerCase()) {
       throw new Error("Wallet account or chain changed");
     }
-    const nonce = await client.getTransactionCount({ address: next.from, blockTag: "pending" });
     const raw = await wallet.signTransaction({
       chain: wallet.chain, account: wallet.account, nonce,
       to: next.to, data: next.data, value: next.value, gas: next.gas, gasPrice: next.gasPrice,
@@ -431,7 +472,7 @@ A send timeout is ambiguous: the hash may already be mined. Stop, query the save
 hash, and reconcile pending nonce/receipt state; do not automatically resend.
 For an interactive review delay, pass the previously displayed command as
 `reviewedTransaction` to a fresh `buildNextTransaction` before signing.
-That directly replays the same immediate envelope at its held gas and gas price.
+That directly replays the same immediate envelope at its held nonce, gas and gas price.
 
 Completion has **four checks**: receipt confirmed → markets active → metadata
 published → API indexed. A successful transaction alone does not establish the last two.

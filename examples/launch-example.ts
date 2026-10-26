@@ -494,7 +494,7 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
     const next = await sdk.buildNextTransaction({ client, planned, receipts: references, limits, submissionClient: client, reviewedTransaction, signal });
     if (!next) return { references, activation };
     assert.ok(reviewedTransaction, "No transaction outside the saved review may be submitted");
-    for (const field of ["id", "kind", "chainId", "from", "to", "data", "value", "gas", "gasPrice"]) assert.equal(next[field], reviewedTransaction[field], `Fresh ${field} must match the saved review`);
+    for (const field of ["id", "kind", "chainId", "from", "to", "data", "value", "nonce", "gas", "gasPrice"]) assert.equal(next[field], reviewedTransaction[field], `Fresh ${field} must match the saved review`);
     if (retainedReferences.length) {
       const progress = await sdk.readLaunchProgress({ client, planned, receipts: references, confirmations: planned.confirmations, signal });
       assertRetainedExampleReceipts({ progress, references, artifacts });

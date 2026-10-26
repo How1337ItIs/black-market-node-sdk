@@ -1,7 +1,12 @@
-import { decodeFunctionResult, encodeFunctionData, isAddress, isHex, parseAbi, toHex, type Abi, type Address, type Hex } from "viem";
+import { decodeFunctionResult, encodeFunctionData, isAddress, isHex, keccak256, multicall3Abi, parseAbi, toHex, type Abi, type Address, type Hex } from "viem";
 import { LifecyclePlanningError, type LifecycleBlock, type LifecycleDiagnosticEvent, type LifecycleDiagnosticListener, type LifecycleDiagnosticStage, type LifecycleLimitContext, type LifecycleLimitSource, type LifecycleLimits, type LifecycleRpcClient, type LifecycleSessionCache, type LifecycleTransaction, type ResolvedLifecycleLimits } from "./types.js";
 import { lifecycleRegistryAbi } from "./abi.js";
 import type { ProfileTopologyV1 } from "./schema.js";
+import { robinhoodMainnet } from "../addresses.js";
+
+// Reviewed chain4663 deployment, independently observed at block 98,136,655.
+const multicall3CodeHash = "0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891";
+type IndependentRead = { params: readonly unknown[]; resolve: (value: unknown) => void; reject: (failure: unknown) => void };
 
 const lifecycleReadConcurrency = 8;
 const diagnosticRpcMethods: Record<string, true> = {
@@ -67,6 +72,11 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
   private readonly concurrency: number;
   private diagnosticSequence = 0;
   private chainId?: Promise<bigint>;
+  private gasPrice?: Promise<unknown>;
+  private readonly immutableReads = new Map<string, Promise<unknown>>();
+  private readonly canonicalPins = new Map<string, { block: Pick<LifecycleBlock, "number" | "hash">; chainId?: bigint }>();
+  private readonly independentReads = new Map<string, { block: LifecycleBlock; reads: IndependentRead[] }>();
+  readonly finalChecks = new Set<() => void>();
   private readonly limitObservations = new Map<LifecycleLimitSource | undefined, Map<string, Promise<LifecycleLimitObservation>>>();
   private readonly session?: SessionLifecycleCache;
   private sessionGroup?: SessionReadGroup;
@@ -145,6 +155,103 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
     return this.chainId ??= this.run("eth_chainId", []).then((value) => rpcQuantity(value, "chain ID"));
   }
 
+  observeGasPrice(): Promise<unknown> {
+    this.assertOpen();
+    return this.gasPrice ??= this.run("eth_gasPrice", []);
+  }
+
+  immutableRead(key: string, work: () => Promise<unknown>): Promise<unknown> {
+    this.assertOpen();
+    let pending = this.immutableReads.get(key);
+    if (pending === undefined) {
+      pending = work();
+      this.immutableReads.set(key, pending);
+      const owned = pending;
+      void pending.catch(() => { if (this.immutableReads.get(key) === owned) this.immutableReads.delete(key); });
+    }
+    return pending.then((value) => { this.assertOpen(); return value; });
+  }
+
+  deferCanonicalCheck(block: Pick<LifecycleBlock, "number" | "hash">, chainId?: bigint): void {
+    this.assertOpen();
+    const key = block.number.toString();
+    const existing = this.canonicalPins.get(key);
+    if (existing !== undefined && (existing.block.hash.toLowerCase() !== block.hash.toLowerCase() ||
+      existing.chainId !== undefined && chainId !== undefined && existing.chainId !== chainId)) {
+      this.invalidateSession();
+      throw new LifecyclePlanningError("STATE_REORGED", "One lifecycle invocation observed incompatible canonical pins");
+    }
+    this.canonicalPins.set(key, { block: { ...block }, chainId: chainId ?? existing?.chainId });
+  }
+
+  async finalize(): Promise<void> {
+    this.assertOpen();
+    const pins = [...this.canonicalPins.values()];
+    if (pins.length === 0) return;
+    const [chainId, current] = await Promise.all([
+      pins.some((pin) => pin.chainId !== undefined) ? this.run("eth_chainId", []).then((value) => rpcQuantity(value, "chain ID")) : undefined,
+      Promise.all(pins.map((pin) => readLifecycleBlock(this, toHex(pin.block.number)))),
+    ]);
+    for (let index = 0; index < pins.length; index += 1) {
+      const pin = pins[index]!;
+      if (pin.chainId !== undefined && chainId !== pin.chainId) {
+        this.invalidateSession();
+        throw new LifecyclePlanningError("CHAIN_MISMATCH", "Source RPC chain changed during the pinned operation");
+      }
+      if (current[index]!.hash.toLowerCase() !== pin.block.hash.toLowerCase()) {
+        this.invalidateSession();
+        throw new LifecyclePlanningError("STATE_REORGED", "Pinned launch state changed during the operation; read canonical progress again");
+      }
+    }
+    for (const check of this.finalChecks) check();
+  }
+
+  independentRead(params: readonly unknown[], block: LifecycleBlock, staticRead: boolean): Promise<unknown> {
+    return this.read("eth_call", params, block, staticRead, () => new Promise((resolve, reject) => {
+      const key = `${block.number}:${block.hash.toLowerCase()}`;
+      let group = this.independentReads.get(key);
+      if (group === undefined) {
+        group = { block, reads: [] };
+        this.independentReads.set(key, group);
+        queueMicrotask(() => {
+          this.independentReads.delete(key);
+          void this.flushIndependentReads(group!);
+        });
+      }
+      group.reads.push({ params, resolve, reject });
+    }));
+  }
+
+  private async flushIndependentReads(group: { block: LifecycleBlock; reads: IndependentRead[] }): Promise<void> {
+    const { block, reads } = group;
+    try {
+      // Two cold reads cannot beat two direct calls after code attestation.
+      if (reads.length < 3 || await this.observeChainId() !== 4663n) {
+        await Promise.all(reads.map(async (read) => {
+          try { read.resolve(await this.run("eth_call", read.params)); }
+          catch (failure) { read.reject(failure); }
+        }));
+        return;
+      }
+      const to = robinhoodMainnet.contracts.multicall3.address;
+      const code = rpcHex(await this.read("eth_getCode", [to, toHex(block.number)], block, true), "Multicall3 code");
+      if (keccak256(code) !== multicall3CodeHash) throw new LifecyclePlanningError("MULTICALL_CODE_MISMATCH", "Pinned Multicall3 runtime differs from the reviewed chain4663 deployment");
+      const calls = reads.map((read) => {
+        const request = read.params[0] as { to: Address; data: Hex };
+        return { target: request.to, allowFailure: true, callData: request.data };
+      });
+      const data = encodeFunctionData({ abi: multicall3Abi, functionName: "aggregate3", args: [calls] });
+      const raw = rpcHex(await this.run("eth_call", [{ to, data }, toHex(block.number)]), "Multicall3 result");
+      const results = decodeFunctionResult({ abi: multicall3Abi, functionName: "aggregate3", data: raw });
+      if (results.length !== reads.length) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Multicall3 omitted independent pinned results");
+      for (let index = 0; index < reads.length; index += 1) {
+        const result = results[index]!;
+        if (result.success) reads[index]!.resolve(result.returnData);
+        else reads[index]!.reject(new LifecyclePlanningError("MULTICALL_READ_FAILED", "An independent pinned getter reverted"));
+      }
+    } catch (failure) { for (const read of reads) read.reject(failure); }
+  }
+
   observeLimits(context: LifecycleLimitContext, source?: LifecycleLimitSource): Promise<LifecycleLimitObservation> {
     this.assertOpen();
     // A caller callback is live policy, not an immutable pinned observation.
@@ -168,7 +275,7 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
     return observation.then((result) => { this.assertOpen(); result.assertCurrent(); return result; });
   }
 
-  read(method: string, params: readonly unknown[], block: LifecycleBlock, staticRead = false): Promise<unknown> {
+  read(method: string, params: readonly unknown[], block: LifecycleBlock, staticRead = false, load?: () => Promise<unknown>): Promise<unknown> {
     this.assertOpen();
     // Source identity is this scope's original client. The complete wire call includes
     // caller, value, gas and any other call fields; no selector-only/ABI-name aliasing.
@@ -189,7 +296,7 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
       pending = Promise.resolve(cached);
     } else {
       if (staticRead && this.session !== undefined) this.sessionMisses += 1;
-      pending = this.run(method, params);
+      pending = load === undefined ? this.run(method, params) : load();
       if (group !== undefined) pending = pending.then((value) => {
         // Never share in-flight work or install late results after invalidation/closure.
         // Only wire hex is retained, so public decoded DTOs cannot mutate authority.
@@ -207,6 +314,11 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
     this.reads.clear();
     this.chainId = undefined;
     this.limitObservations.clear();
+    this.gasPrice = undefined;
+    this.immutableReads.clear();
+    this.canonicalPins.clear();
+    this.independentReads.clear();
+    this.finalChecks.clear();
     const listener = this.source.onDiagnostic;
     if (this.session !== undefined && listener !== undefined) emitLifecycleDiagnostic(listener, {
       stage: "session-cache", phase: success ? "success" : "failure",
@@ -221,7 +333,15 @@ export async function withLifecycleReadClient<T>(source: LifecycleRpcClient, wor
   const client = new InvocationLifecycleClient(source);
   let success = false;
   try {
-    const result = await work(client);
+    let result: T;
+    try { result = await work(client); }
+    catch (failure) {
+      // Refused simulations still report a changed canonical source, not a
+      // misleading economic refusal derived from an orphaned observation.
+      await client.finalize();
+      throw failure;
+    }
+    await client.finalize();
     success = true;
     return result;
   } finally { client.close(success); }
@@ -285,6 +405,28 @@ export function readLifecycleChainId(client: LifecycleRpcClient): Promise<bigint
     ? client.observeChainId()
     : lifecycleRpc(client, "eth_chainId").then((value) => rpcQuantity(value, "chain ID"));
 }
+
+/** A single operation-local recommendation, never a session or cross-head quote. */
+export function readLifecycleGasPrice(client: LifecycleRpcClient): Promise<unknown> {
+  return client instanceof InvocationLifecycleClient ? client.observeGasPrice() : lifecycleRpc(client, "eth_gasPrice");
+}
+
+/** Only the reviewed immutable factory identity may use an invocation-wide key. */
+export function readLifecycleImmutable<T>(client: LifecycleRpcClient, key: string, work: () => Promise<T>): Promise<T> {
+  return (client instanceof InvocationLifecycleClient ? client.immutableRead(key, work) : work()) as Promise<T>;
+}
+
+/** Recheck live policy after the owner's final asynchronous canonical guards. */
+export function registerLifecycleFinalCheck(client: LifecycleRpcClient, check: () => void): void {
+  if (client instanceof InvocationLifecycleClient) { client.assertOpen(); client.finalChecks.add(check); }
+}
+
+/** SDK-selected caller-independent getters only; never poster quotes or execution. */
+function lifecycleIndependentRpc(client: LifecycleRpcClient, params: readonly unknown[], block: LifecycleBlock, staticRead: boolean): Promise<unknown> {
+  return client instanceof InvocationLifecycleClient
+    ? client.independentRead(params, block, staticRead)
+    : lifecyclePinnedRpc(client, "eth_call", params, block, staticRead);
+}
 export function rpcObject(value: unknown, label: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", `${label} must be an object`);
   // The object guard establishes the RPC record boundary; fields remain untrusted unknowns.
@@ -325,7 +467,11 @@ export async function readLifecycleBlock(client: LifecycleRpcClient, tag: Hex | 
   if (client instanceof InvocationLifecycleClient) client.observeBlock(block, tag === "latest");
   return block;
 }
-export async function assertLifecycleBlock(client: LifecycleRpcClient, block: LifecycleBlock, expectedChainId?: bigint): Promise<void> {
+export async function assertLifecycleBlock(client: LifecycleRpcClient, block: Pick<LifecycleBlock, "number" | "hash">, expectedChainId?: bigint): Promise<void> {
+  if (client instanceof InvocationLifecycleClient) {
+    client.deferCanonicalCheck(block, expectedChainId);
+    return;
+  }
   const [chainId, current] = await Promise.all([
     expectedChainId === undefined ? undefined : lifecycleRpc(client, "eth_chainId"),
     readLifecycleBlock(client, toHex(block.number)),
@@ -339,13 +485,15 @@ export async function assertLifecycleBlock(client: LifecycleRpcClient, block: Li
     throw new LifecyclePlanningError("STATE_REORGED", "Pinned launch state changed during the operation; read canonical progress again");
   }
 }
-export async function readLifecycleContract<T>(client: LifecycleRpcClient, to: Address, abi: Abi, functionName: string, args: readonly unknown[], block: LifecycleBlock, from?: Address, staticRead = false): Promise<T> {
+export async function readLifecycleContract<T>(client: LifecycleRpcClient, to: Address, abi: Abi, functionName: string, args: readonly unknown[], block: LifecycleBlock, from?: Address, staticRead = false, independent = false): Promise<T> {
   const data = encodeFunctionData({ abi, functionName, args });
   const request = [{ to, from, data }, toHex(block.number)];
   const getter = abi.some((item) => item.type === "function" && item.name === functionName && (item.stateMutability === "view" || item.stateMutability === "pure"));
-  const result = rpcHex(await (getter && functionName !== "readLaunchProgress"
-    ? staticRead ? lifecycleStaticRpc(client, "eth_call", request, block) : lifecyclePinnedRpc(client, "eth_call", request, block)
-    : lifecycleRpc(client, "eth_call", request)), functionName);
+  const result = rpcHex(await (independent
+    ? lifecycleIndependentRpc(client, request, block, staticRead)
+    : getter
+      ? staticRead ? lifecycleStaticRpc(client, "eth_call", request, block) : lifecyclePinnedRpc(client, "eth_call", request, block)
+      : lifecycleRpc(client, "eth_call", request)), functionName);
   // ABI decoding validates scalar widths and tuple layout; T names that exact frozen ABI result.
   const decoded = decodeFunctionResult({ abi, functionName, data: result }) as T;
   return decoded;
@@ -382,7 +530,7 @@ export async function readNitroPosterGas(transaction: LifecycleTransaction, cont
 
 async function readNitroScalar(context: LifecycleLimitContext, to: Address, abi: Abi, functionName: string): Promise<bigint> {
   const data = encodeFunctionData({ abi, functionName });
-  const result = rpcHex(await lifecycleStaticRpc(context.client, "eth_call", [{ to, data }, toHex(context.block.number)], context.block), functionName);
+  const result = rpcHex(await lifecycleIndependentRpc(context.client, [{ to, data }, toHex(context.block.number)], context.block, true), functionName);
   if (result.length !== 66) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", `${functionName} must return exactly one ABI word`);
   return decodeFunctionResult({ abi, functionName, data: result }) as bigint;
 }

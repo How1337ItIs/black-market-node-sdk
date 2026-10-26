@@ -226,6 +226,8 @@ const signingKey = `0x${"42".repeat(32)}`;
 const signingCreator = privateKeyToAccount(signingKey).address;
 function localSigner(artifacts, request) {
   const client = { request: request ?? (async ({ method }) => {
+    if (method === "eth_getTransactionCount") return "0x0";
+    if (method === "eth_getBalance") return "0x100000000000000000000";
     assert.equal(method, "eth_chainId");
     return "0x1237";
   }) };
@@ -254,12 +256,16 @@ test("RPC URL credential path/query values are registered before public errors",
 
 test("local wallet signs exact legacy and EIP1559 fields without unlocked RPC", async (t) => {
   const artifacts = run(t);
-  const { wallet } = localSigner(artifacts);
   for (const wire of [
     signingTransaction.wire,
     { ...signingTransaction.wire, gasPrice: undefined, type: "eip1559", maxFeePerGas: "0x20", maxPriorityFeePerGas: "0x2", nonce: "0x7" },
   ]) {
     const envelope = Object.fromEntries(Object.entries(wire).filter(([, value]) => value !== undefined));
+    const { wallet } = localSigner(artifacts, async ({ method }) => {
+      if (method === "eth_getTransactionCount") return envelope.nonce;
+      if (method === "eth_getBalance") return "0x100000000000000000000";
+      assert.equal(method, "eth_chainId"); return "0x1237";
+    });
     const signed = await wallet.signTransaction(envelope);
     assert.equal(signed.transactionHash, keccak256(signed.rawTransaction));
     assert.equal((await recoverTransactionAddress({ serializedTransaction: signed.rawTransaction })).toLowerCase(), signingCreator.toLowerCase());
@@ -278,6 +284,7 @@ test("wallet prepares only absent nonce/legacy fee and retains exact supplied fi
     methods.push(method);
     if (method === "eth_chainId") return "0x1237";
     if (method === "eth_getTransactionCount") { assert.deepEqual(params, [signingCreator, "pending"]); return "0x5"; }
+    if (method === "eth_getBalance") { assert.deepEqual(params, [signingCreator, "pending"]); return "0x100000000000000000000"; }
     if (method === "eth_gasPrice") return "0x99";
     assert.fail(`Unexpected wallet RPC: ${method}`);
   });
@@ -285,7 +292,21 @@ test("wallet prepares only absent nonce/legacy fee and retains exact supplied fi
   const signed = await wallet.signTransaction(wire);
   assert.equal(signed.wire.nonce, "0x5"); assert.equal(signed.wire.gasPrice, "0x99");
   assert.equal(signed.wire.gas, wire.gas); assert.equal(signed.wire.data, wire.data);
-  assert.deepEqual(methods, ["eth_chainId", "eth_getTransactionCount", "eth_gasPrice"]);
+  assert.deepEqual(methods, ["eth_chainId", "eth_gasPrice", "eth_getTransactionCount", "eth_getBalance", "eth_chainId"]);
+});
+
+test("held nonce, pending affordability and final chain changes block the local example signature", async (t) => {
+  const artifacts = run(t);
+  for (const [change, code] of [["nonce", "PENDING_NONCE_CHANGED"], ["balance", "INSUFFICIENT_PENDING_BALANCE"], ["chain", "CHAIN_MISMATCH"]]) {
+    let chainReads = 0;
+    const { wallet } = localSigner(artifacts, async ({ method, params }) => {
+      if (method === "eth_chainId") return change === "chain" && ++chainReads === 2 ? "0x1" : "0x1237";
+      if (method === "eth_getTransactionCount") { assert.equal(params[1], "pending"); return change === "nonce" ? "0x1" : "0x0"; }
+      if (method === "eth_getBalance") { assert.equal(params[1], "pending"); return change === "balance" ? "0x0" : "0x100000000000000000000"; }
+      assert.fail(`Unexpected signing-boundary read ${method}`);
+    });
+    await assert.rejects(wallet.signTransaction(signingTransaction.wire), { code });
+  }
 });
 
 test("wallet refuses wrong creator, chain, gas and attribution domain", async (t) => {
@@ -310,6 +331,8 @@ test("ambiguous raw broadcast retains computed hash before send with no retry", 
   let sends = 0;
   const { wallet, client } = localSigner(artifacts, async ({ method, params }) => {
     if (method === "eth_chainId") return "0x1237";
+    if (method === "eth_getTransactionCount") return "0x0";
+    if (method === "eth_getBalance") return "0x100000000000000000000";
     assert.equal(method, "eth_sendRawTransaction"); sends += 1;
     const row = json(artifacts, "receipts.json").transactions[0];
     assert.equal(row.transactionHash, keccak256(params[0]));
@@ -330,7 +353,12 @@ test("ambiguous raw broadcast retains computed hash before send with no retry", 
 
 test("raw returned-hash mismatch keeps attempt hash and refuses polling", async (t) => {
   const artifacts = run(t);
-  const { wallet, client } = localSigner(artifacts, async ({ method }) => method === "eth_chainId" ? "0x1237" : hash);
+  const { wallet, client } = localSigner(artifacts, async ({ method }) => {
+    if (method === "eth_chainId") return "0x1237";
+    if (method === "eth_getTransactionCount") return "0x0";
+    if (method === "eth_getBalance") return "0x100000000000000000000";
+    assert.equal(method, "eth_sendRawTransaction"); return hash;
+  });
   await assert.rejects(submitSignedRecorded({ transaction: signingTransaction, wallet, client, artifacts, wait: async () => assert.fail("Hash mismatch must not poll") }), { code: "BROADCAST_HASH_MISMATCH" });
   assert.notEqual(json(artifacts, "receipts.json").transactions[0].transactionHash, hash);
   assert.equal(json(artifacts, "receipts.json").transactions[0].status, "broadcast-attempt");
@@ -385,6 +413,8 @@ test("signed broadcast interruption and reverted receipts retain durable evidenc
   const failure = exampleError("INTERRUPTED", "Retain the signed attempt");
   const { wallet, client } = localSigner(artifacts, async ({ method, params }) => {
     if (method === "eth_chainId") return "0x1237";
+    if (method === "eth_getTransactionCount") return "0x0";
+    if (method === "eth_getBalance") return "0x100000000000000000000";
     assert.equal(method, "eth_sendRawTransaction");
     controller.abort(failure);
     return keccak256(params[0]);
@@ -392,7 +422,12 @@ test("signed broadcast interruption and reverted receipts retain durable evidenc
   await assert.rejects(submitSignedRecorded({ transaction: signingTransaction, wallet, client, artifacts, signal: controller.signal, wait: async () => assert.fail("Interrupted send must not poll") }), failure);
   assert.equal(json(artifacts, "receipts.json").transactions[0].status, "submitted");
   const next = run(t);
-  const signer = localSigner(next, async ({ method, params }) => method === "eth_chainId" ? "0x1237" : keccak256(params[0]));
+  const signer = localSigner(next, async ({ method, params }) => {
+    if (method === "eth_chainId") return "0x1237";
+    if (method === "eth_getTransactionCount") return "0x0";
+    if (method === "eth_getBalance") return "0x100000000000000000000";
+    assert.equal(method, "eth_sendRawTransaction"); return keccak256(params[0]);
+  });
   const submitted = await submitSignedRecorded({ transaction: signingTransaction, ...signer, artifacts: next, wait: async (transactionHash) => ({ transactionHash, status: "0x0", logs: [] }) });
   next.finish("failed", exampleError("TRANSACTION_REVERTED", "Launch reverted", { revertData }));
   assert.equal(submitted.receipt.status, "0x0");
@@ -591,6 +626,8 @@ test("production economic guard refuses both signature paths on changed source/p
   let current = { ...quote };
   let signerChecks = 0;
   const { wallet: localWallet } = localSigner(artifacts, async ({ method }) => {
+    if (method === "eth_getTransactionCount") return "0x0";
+    if (method === "eth_getBalance") return "0x100000000000000000000";
     signerChecks++; assert.equal(method, "eth_chainId"); return "0x1237";
   });
   const wallet = guardEconomicReviewWallet(localWallet, async () => {
@@ -612,7 +649,7 @@ test("production economic guard refuses both signature paths on changed source/p
   assert.equal((await recoverTypedDataAddress({ ...typedData, signature })).toLowerCase(), signingCreator.toLowerCase());
   const signed = await wallet.signTransaction(signingTransaction.wire);
   assert.equal((await recoverTransactionAddress({ serializedTransaction: signed.rawTransaction })).toLowerCase(), signingCreator.toLowerCase());
-  assert.equal(signerChecks, 2);
+  assert.equal(signerChecks, 3);
   assert.equal(economicReviewHash(review), hash);
   assert.equal(json(artifacts, "private-recovery.json").economicReview.quote.sourceTimestamp, quote.sourceTimestamp.toString());
   assert.equal(json(artifacts, "private-recovery.json").economicReview.quote.priceUsdX18, quote.priceUsdX18.toString());
