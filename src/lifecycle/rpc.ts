@@ -3,6 +3,7 @@ import { LifecyclePlanningError, type LifecycleBlock, type LifecycleDiagnosticEv
 import { lifecycleRegistryAbi } from "./abi.js";
 import type { ProfileTopologyV1 } from "./schema.js";
 import { robinhoodMainnet } from "../addresses.js";
+import { ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT } from "./presets.js";
 
 // Reviewed chain4663 deployment, independently observed at block 98,136,655.
 const multicall3CodeHash = "0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891";
@@ -527,8 +528,7 @@ export const nitroArbSys = "0x0000000000000000000000000000000000000064";
 export const nitroGasInfo = "0x000000000000000000000000000000000000006c";
 export const nitroArbSysAbi = parseAbi(["function arbOSVersion() view returns (uint256)"]);
 export const nitroGasInfoAbi = parseAbi([
-  "function getMaxTxGasLimit() view returns (uint256)",
-  "function getMaxBlockGasLimit() view returns (uint64)",
+  // Transaction ceilings are release preset metadata, not guard-only getter reads.
   "function getPricesInWei() view returns (uint256,uint256,uint256,uint256,uint256,uint256)",
 ]);
 export type LifecycleNitroPrices = readonly [bigint, bigint, bigint, bigint, bigint, bigint];
@@ -605,32 +605,23 @@ async function resolveLifecycleLimitsFresh(context: LifecycleLimitContext, sourc
   }
   const protocol = context.chainId === 4663n ? "nitro" : "evm";
   const maxSimulationGas = configuration.maxSimulationGas;
-  let arbOSVersion: bigint | undefined; let maxTxComputeGas: bigint | undefined; let maxBlockComputeGas: bigint | undefined;
+  let arbOSVersion: bigint | undefined;
   if (protocol === "nitro") {
     try {
-      const [rawVersion, txComputeGas, blockComputeGas] = await Promise.all([
-        readNitroScalar(context, nitroArbSys, nitroArbSysAbi, "arbOSVersion"),
-        readNitroScalar(context, nitroGasInfo, nitroGasInfoAbi, "getMaxTxGasLimit"),
-        readNitroScalar(context, nitroGasInfo, nitroGasInfoAbi, "getMaxBlockGasLimit"),
-      ]);
+      const rawVersion = await readNitroScalar(context, nitroArbSys, nitroArbSysAbi, "arbOSVersion");
       // ArbSys alone adds 55 to the logical Nitro ArbOS version.
       if (typeof rawVersion !== "bigint" || rawVersion < 105n) throw new Error("ArbOS version 50 or newer is required (ArbSys raw version >= 105)");
       arbOSVersion = rawVersion - 55n;
-      maxTxComputeGas = txComputeGas;
-      maxBlockComputeGas = blockComputeGas;
-      if ([maxTxComputeGas, maxBlockComputeGas].some((limit) => typeof limit !== "bigint" || limit <= 0n || limit > maxUint64)) throw new Error("Nitro compute getters must be positive uint64 values");
     } catch (failure) {
       if (failure instanceof Error && failure.name === "AbortError") throw failure;
-      throw new LifecyclePlanningError("NITRO_LIMITS_UNAVAILABLE", `Pinned Nitro compute limits could not be established: ${lifecycleFailureReason(failure)}; header gasLimit is not a fallback`);
+      throw new LifecyclePlanningError("NITRO_LIMITS_UNAVAILABLE", `Pinned Nitro version could not be established: ${lifecycleFailureReason(failure)}`);
     }
     if (configuration.estimateDataFee !== undefined) throw new LifecyclePlanningError("INVALID_LIMITS", "Nitro poster fees are already included in gas; an external data-fee estimator would double-charge them");
   }
   const envelopeCaps = [configuration.chainGasLimit, configuration.rpcGasLimit, configuration.accountGasLimit].filter((limit): limit is bigint => limit !== undefined);
   if (protocol === "evm") envelopeCaps.push(context.block.gasLimit);
   const transactionGasCeiling = envelopeCaps.length === 0 ? undefined : envelopeCaps.reduce((minimum, limit) => limit < minimum ? limit : minimum);
-  const executionGasCeiling = maxTxComputeGas !== undefined && maxBlockComputeGas !== undefined
-    ? (maxTxComputeGas < maxBlockComputeGas ? maxTxComputeGas : maxBlockComputeGas)
-    : transactionGasCeiling ?? context.block.gasLimit;
+  const executionGasCeiling = protocol === "nitro" ? ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT : transactionGasCeiling ?? context.block.gasLimit;
   const unknownExecutionConstraints = [
     ...(protocol === "evm" && configuration.chainGasLimit === undefined ? ["Independent chain per-transaction execution cap is unknown; proof is bounded by the pinned header and validated backend"] : []),
     ...(configuration.rpcGasLimit === undefined ? ["RPC transaction gas-envelope cap is unknown"] : []),
@@ -642,7 +633,7 @@ async function resolveLifecycleLimitsFresh(context: LifecycleLimitContext, sourc
   return {
     configuration, assertCurrent,
     limits: Object.freeze({
-      protocol, executionGasCeiling, transactionGasCeiling, arbOSVersion, maxTxComputeGas, maxBlockComputeGas, headroomBps,
+      protocol, executionGasCeiling, transactionGasCeiling, arbOSVersion, headroomBps,
       maxCalldataBytes: configuration.maxCalldataBytes, maxSimulationGas,
       blockGasLimit: context.block.gasLimit, chainGasLimit: configuration.chainGasLimit,
       rpcGasLimit: configuration.rpcGasLimit, accountGasLimit: configuration.accountGasLimit,

@@ -38,22 +38,22 @@ description: Integrate the Abyss TypeScript SDK using the correct deployment gra
    explicit profiled-versus-executed evidence.
 6. `readLaunchProgress`, `simulateLaunchPlan` and `buildNextTransaction` support
    canonical recovery; explicit simulation always runs execution, while build-next
-   sizes/proves only the immediate command. Persist mode, confirmation policy and
+   admits only the immediate command. Persist returned `planned.mode`, confirmation policy and
    actual included/replacement hashes with optional wallet-observed nonce.
 
 Do not add a second application-owned mining/admission loop around these operations.
-Known presets supply construction wiring. Covered plan-determined steps use the
-versioned profile and exact local curve math; conversion-carrying commands and
-dependent activation require exact native execution. There is one pin, no planning
-nonce read and at most one chain observation per bound client. Recreate that client
+Known presets supply construction wiring and the native transaction ceiling.
+Covered plan-determined steps use capacity profiles and exact local curve math;
+conversions, consuming activation and uncertain activation require exact execution.
+There is one pin, no planning nonce read and at most one chain observation per bound client. Recreate that client
 on chain changes. The wallet owns nonce assignment and sending-RPC preparation.
 Do not resurrect `preparePoolBoundLifecyclePlan` or `PlannedLaunch.atomicAttempt`.
 
-Atomic/staged mode is explicit; refusal does not authorize fallback, smaller budgets,
-fewer positions, dropped buys or a different hook. Staging partitions preparation,
-not final activation. Native Nitro compute/poster-gas evidence is distinct from a
-generic local EVM gas measurement. Optional limits tighten policy; never invent a
-chain-wide 16M/32M cap from a historical fixture.
+Atomic is a preference that may select staged; explicit staged stays staged.
+Never remove positions, buys or hooks to rescue admission. Staging partitions
+preparation, not activation. Launch commands use the preset's total native ceiling
+(32M including poster on4663); approvals omit gas for the wallet. Caller caps
+tighten admission, never resize the envelope. Generic EVM proof is not Nitro proof.
 
 ## Representation and integration boundaries
 

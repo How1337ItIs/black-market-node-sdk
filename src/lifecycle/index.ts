@@ -17,4 +17,5 @@ export { launchLensAbi } from "./lens.js";
 export { hookSaltMinerAbi } from "./mining.js";
 export { planLaunch, simulateLaunchPlan, buildNextTransaction, prepareAndPlanLifecycleLaunch } from "./planner.js";
 export { computeLifecycleOpeningBuys } from "./opening-buys.js";
+export { computeLifecycleLaunchGasBounds } from "./gas-profile.js";
 export { assertLaunchTopologyCoverage, getTickAtSqrtRatio, type LaunchTopologyCoverageInput, type LaunchTopologyPosition } from "../launch.js";

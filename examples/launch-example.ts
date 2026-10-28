@@ -354,7 +354,7 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
   // Complete exact intent is owner-only and durable before attribution or chain signing.
   artifacts.privateRecovery({
     schema: "black-market.launch-example-recovery.v1", sdk: "node", caseId: artifacts.result.caseId,
-    plan: finalizedPlan, mode: scenario.mode, confirmations, executionLimits: fixture.executionLimits, economicReview: { ...economicReview, reviewHash },
+    plan: finalizedPlan, mode: planned.mode, confirmations, executionLimits: fixture.executionLimits, economicReview: { ...economicReview, reviewHash },
   });
   artifacts.save("plan.json", finalizedPlan);
   artifacts.save("hook-deployments.json", planned.hookDeployments);
@@ -499,7 +499,7 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
   for (let step = 0; step < 64; step += 1) {
     artifacts.stage("build-next", { step });
     const stored = planned.transactions[step];
-    const reviewedTransaction = stored?.gas === undefined ? undefined : stored;
+    const reviewedTransaction = stored?.gas === undefined || stored.gasPrice === undefined ? undefined : stored;
     const next = await sdk.buildNextTransaction({ client, planned, receipts: references, limits, reviewedTransaction, signal });
     if (!next) return { references, activation };
     if (reviewedTransaction) for (const field of ["id", "kind", "chainId", "from", "to", "data", "value", "gas", "gasPrice"]) assert.equal(next[field], reviewedTransaction[field], `Fresh ${field} must match the saved exact envelope`);
@@ -519,9 +519,9 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
     assert.equal(next.data.toLowerCase(), encodeFunctionData({ abi: sdk.launchLifecycleAbi, functionName, args }).toLowerCase(), "Exact finalized-plan calldata");
     assert.ok(next.gas !== undefined && (next.gasPrice !== undefined || next.maxFeePerGas !== undefined && next.maxPriorityFeePerGas !== undefined) && next.admission?.admitted === true, "Actual next transaction needs an admitted gas envelope");
     assert.ok(next.admission.executionProof === "proved" && next.admission.protocolFit === "proved" ||
-      next.admission.executionProof === "not-run" && next.admission.protocolFit === "profiled", "Distinguish exact execution from covered gas profiling");
+      next.admission.executionProof === "not-run" && next.admission.protocolFit === "profiled", "Distinguish exact execution from conditional capacity admission");
     const ceiling = next.admission.limits.transactionGasCeiling;
-    assert.ok(next.gas > 0n && (ceiling === undefined || next.gas <= ceiling), "Complete gas envelope must fit supplied restrictions; Nitro compute is separately proved");
+    assert.ok(next.gas === next.admission.limits.executionGasCeiling && (ceiling === undefined || next.gas <= ceiling), "Launch gas must equal the native ceiling and fit supplied restrictions");
     const calldataCap = next.admission.limits.maxCalldataBytes;
     assert.ok(calldataCap === undefined || (next.data.length - 2) / 2 <= calldataCap, "Exact calldata must fit any supplied cap");
     const envelope = transactionEnvelope(next);
@@ -891,7 +891,8 @@ async function executeExample({ fixture, privateKey, scenario, sdk, artifacts, s
   const { plan } = planned;
   artifacts.save("planning.json", planned);
   artifacts.event("execution-plan", { mode: planned.mode, simulation: planned.simulation, prerequisites: planned.prerequisites, transactions: planned.transactions });
-  assert.equal(planned.mode, scenario.mode, "Never silently change requested mode"); addressEqual(planned.predictedToken, predictedToken, "Planner token prediction");
+  if (scenario.mode === "staged") assert.equal(planned.mode, "staged", "Explicit staged mode is retained");
+  addressEqual(planned.predictedToken, predictedToken, "Planner token prediction");
   if (!planned.simulation.admitted) throw exampleError("PLAN_NOT_ADMITTED", planned.simulation.reason ?? "The actual SDK did not admit this exact launch", { simulation: planned.simulation });
   const usd = (value) => `${value / UNIT}.${(value % UNIT).toString().padStart(18, "0")}`;
   const fundingSummary = economicReview.quotes.every((quote) => quote.conversion.nativeWrap === true)

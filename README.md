@@ -97,7 +97,7 @@ quotes are WETH unless USDG is listed. Positions are permanently locked.
 ## Choose an offering for your integration
 
 Use `listKnownLifecycleProfiles` for the release's supported offerings and deployment wiring.
-Planning batches current state and uses covered template profiles or exact native execution; live registry discovery is optional.
+Planning batches current state and uses native-ceiling budgets, exact local curve quotes and required native execution; live registry discovery is optional. On4663 every launch step uses32M total gas, including poster; approvals leave gas preparation to the wallet. An atomic preference may select staged, so retain returned `planned.mode`.
 
 | Offering | Choose it for | Guide |
 | --- | --- | --- |
@@ -120,5 +120,5 @@ The runner saves artifacts under `launch-results/`; retain its owner-only recove
 - [Launch guide](docs/launch-lifecycle.md): pricing → planning → signing → publication → fees and recovery.
 - [Runner reference](examples/README.md): environment, eleven cases, artifacts, and resume behavior.
 - [SDK reference](docs/reference.md): addresses, codecs, limits, Nitro gas, and author APIs.
-- [Gas and RPC evidence](docs/lifecycle-gas-profiles.md): profile coverage, exact execution boundaries, measured budgets and 0.15.0 migration.
+- [Gas and RPC evidence](docs/lifecycle-gas-profiles.md): native ceilings, capacity bounds, exact execution boundaries, measured budgets and0.15.0 migration.
 - [Changelog](CHANGELOG.md) · [MIT license](LICENSE)

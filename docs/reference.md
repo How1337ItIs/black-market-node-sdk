@@ -158,45 +158,44 @@ splits are separate values. The example's 3000/60 is not the venue's sole fee ti
 
 ## Account for Nitro compute and poster gas
 
-On chain 4663, the SDK reads ArbSys (`0x64`) `arbOSVersion` and ArbGasInfo (`0x6c`)
-`getMaxTxGasLimit` / `getMaxBlockGasLimit` at the pinned block. ArbSys returns
-55 + logical version; raw must be at least 105. `limits.arbOSVersion` reports the
-logical version. The minimum validated compute getter is `executionGasCeiling`.
-Failed getters cannot fall back to the large header gas limit or a hard-coded 32M.
+On chain4663, `ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT` and the deployment preset's
+`nativeTransactionGasLimit` specify32M **total** gas for begin, prepare, activate,
+atomic and cancel. This includes poster gas. Guard-only maximum-gas getters are
+not read. Pinned ArbSys version selects capacity coverage/native capability, not
+a gas size. Other chains retain their resolved generic transaction ceiling.
 
-`transactionGasCeiling`, when set, is the minimum complete-envelope chain/RPC/account
-restriction. It is separate from compute. One `ArbGasInfo.getPricesInWei` leg in the
-initial same-block aggregate supplies L1 per-byte and L2 gas prices. A local
-serialization/Brotli bound reserves poster gas inside each envelope; there is no
-per-transaction NodeInterface oracle. See [profile and poster evidence](lifecycle-gas-profiles.md).
+`transactionGasCeiling`, when set, is a caller complete-envelope restriction.
+Below the native ceiling it refuses; it never shrinks a launch step. Approvals
+omit gas/fees and leave preparation to the wallet. One `ArbGasInfo.getPricesInWei`
+leg in the initial aggregate supplies L1 per-byte and L2 prices, with no per-tx
+NodeInterface oracle. See [capacity and poster evidence](lifecycle-gas-profiles.md).
 
-Covered plan-determined steps use versioned empirical compute profiles and exact
-local ordered buy math. They report `profiled` / `not-run`, not executed proof.
-Conversion-carrying begin/atomic and dependent activation retain exact native
-execution of the full sequence. Unknown coverage or an oversized conservative
-bound also uses actual execution rather than declaring a false capacity failure.
-Explicit `simulateLaunchPlan` always requests execution.
+`computeLifecycleLaunchGasBounds({ plan, predictedToken, ufg? })` returns conservative
+atomic/activation compute upper bounds, excluding poster, or undefined for unknown
+coverage. These select modes, not gas limits. Atomic is a preference that may select
+staged; persist returned `planned.mode`. A large upper bound is uncertain, not
+proof of overflow. Unknown activation gets full-sequence execution before begin.
+Conversion-carrying commands/consuming activation always retain exact execution.
 
-Only an immediate command receives a final executable gas/price/estimate/admission.
-Suffix steps remain `provisional: true`; build-next constructs and sizes only the
-canonical next command. Native sizing without a hint retains one unvalidated pass
-and one funds-only equal-budget retry; final validation never retries or enlarges
-a held envelope. A tight payer can receive `failureCategory: "affordability"` even
-if smaller exact envelopes could fit. Top-level refusal exposes no prefix results
-to synthesize. No invented 50M window or successful-prefix admission remains.
+Only an immediate launch command receives a final gas/price/estimate/admission.
+Suffix execution metrics stay provisional; build-next constructs only the canonical
+next command at the same native ceiling with fresh fees and required admission.
+There are no sizing passes or funds-only retries. Balance must cover value plus
+the entire ceiling fee even when actual execution uses less gas. Incomplete proof
+cannot authorize begin; explicit aggregate policies still refuse excessive work.
 
 On Nitro, `estimate.posterGas` / `posterFee` are buffered allocations **inside**
 `gasLimit`; `dataFeeIncludedInGas` is true, `dataFee` is zero, and `totalFee` equals
 `gasLimit × gasPrice`. Do not add poster fees a second time. Custom `estimateDataFee`
 is rejected on Nitro; generic EVM clients can use it for an external fee.
-`feeConfidence` distinguishes `execution-and-data` from `execution-only` estimates.
-Initial legacy gas price is the greater of fresh RPC recommendation and twice pinned
-base fee. Reviewed immediate envelopes retain their exact held gas/price.
+`feeConfidence` distinguishes actual execution evidence from the conditional
+`native-ceiling-and-data` budget. Fresh gas price is max(pinned price, twice base fee).
+Held Nitro price must meet max(ArbGasInfo L2 price, header base fee), without an
+automatic bump. Reviewed gas differing from the ceiling is stale and refuses.
 
-HMM atomic/activation sizing adds one forwarding target of
-`4,250,000 + 500,000 × (HMM markets - 1)` gas. Staged packing estimates 14.5M per HMM
-market and 16M per other market before measurement. These are sizing inputs, not
-fixed transaction fees or proof that every permitted topology fits.
+Capacity-only profiles account for route, position and HMM forwarding overhead.
+Staged packing retains conservative per-market grouping, but never changes the
+gas assigned to a launch transaction or splits its final activation.
 
 ## Cache static reads and inspect timing
 

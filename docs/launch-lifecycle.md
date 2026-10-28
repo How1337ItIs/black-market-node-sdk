@@ -319,62 +319,61 @@ saved deadline or replace committed conversion bytes after begin.
 
 Staging is not rollback. A begun plan remains begun after its deadline until cancelled.
 Activation cannot be split into separate position mints or buys.
-The SDK never switches your requested mode or removes markets to make it fit.
+An atomic request is a preference: conservative capacity bounds or an actual atomic capacity failure may select staged. Explicit staged stays staged. No markets or buys are removed. Review and persist returned `planned.mode`.
 
 | Operation | Options type / purpose |
 | --- | --- |
-| `prepareAndPlanLifecycleLaunch` | `PrepareAndPlanLifecycleLaunchOptions`: `client`, `account`, `plan`, `mode`; optional `ufg: { config }`, `buySlippageBps`, `fixedFinalEnvelope`, `limits`, `fork`, `receipts`, `confirmations`, `signal`, `onProgress`, topology opt-outs. |
+| `prepareAndPlanLifecycleLaunch` | `PrepareAndPlanLifecycleLaunchOptions`: `client`, `account`, `plan`, `mode`; optional `ufg: { config }`, `buySlippageBps`, `limits`, `fork`, `receipts`, `confirmations`, `signal`, `onProgress`, topology opt-outs. |
 | `planLaunch` | `PlanLaunchOptions`: same execution context, including optional `ufg: { config }` and `signal`; re-admits an already-finalized plan without changing salts/minima. |
 | `simulateLaunchPlan` | `client`, `planned`; optional `limits`, `fork`, `receipts`, `confirmations`, `signal`. |
 | `readLaunchProgress` | `client`, `planned`; optional `receipts`, `confirmations`, `signal`. |
 | `buildNextTransaction` | Progress options, plus optional `action`, `limits`, `fork`, `reviewedTransaction`. |
 
 `buildLaunchTransactions` compiles unsigned commands; it does not prove execution.
-Persist `serializeLaunchPlan(planned.plan)`, mode, confirmation policy, receipt
-references, and UFG config if applicable. `parseLaunchPlan` restores bigint values.
+Persist `serializeLaunchPlan(planned.plan)`, returned `planned.mode`, confirmation policy,
+receipt references, and UFG config if applicable. `parseLaunchPlan` restores bigint values.
 Do not serialize the entire `PlannedLaunch`, which can contain live limit callbacks.
 
-Covered Robinhood ArbOS61 template steps use versioned, generously margined gas
-profiles and exact local ordered opening-buy math. Their evidence is explicitly
-`profiled` / `not-run`, never a fabricated execution receipt. Conversion-carrying
-begin/atomic and activation consuming conversion funding require exact native
-`eth_simulateV1` execution. Unknown coverage or a conservative bound exceeding the
-available ceiling also uses real execution. Explicit `simulateLaunchPlan` always
-runs execution. A generic fork is not Nitro protocol proof.
+Every launch step uses the native total transaction ceiling:32M on4663, including
+poster gas. Approvals omit gas/fees for wallet preparation. Covered Robinhood
+ArbOS61 templates use capacity bounds and exact local ordered-buy math, never
+component-sized gas limits. Their evidence is `profiled` / `not-run`, not a receipt.
+Conversion-carrying begin/atomic and consuming activation require exact native
+execution. Unknown coverage or uncertain activation gets full-sequence execution
+before begin. Explicit `simulateLaunchPlan` always executes; a generic fork is not Nitro proof.
 
 Review checks the complete sequence, not just a successful prefix. There is no
 SDK-invented 50M aggregate cap. A caller `maxSimulationGas` still tightens policy;
 incomplete execution proof refuses admission. A refused full review cannot begin
 a new launch. Only the immediate command receives final gas/price/estimate/admission.
-Suffix steps remain provisional; build-next freshly sizes only the canonical next
-command, never reuses a provisional envelope as an estimate.
+Suffix metrics remain provisional; build-next admits only the canonical next command
+at its fresh native-ceiling budget, never reusing a provisional estimate.
 
-See [gas coverage, native/fork evidence and migration](lifecycle-gas-profiles.md)
-for the native discovery retry/affordability limitation and explicit proof fields.
+See [capacity, native/fork evidence and migration](lifecycle-gas-profiles.md)
+for exact proof fields, upfront affordability and the public capacity-bound helper.
 
 Review the returned final plan/hash, aligned price, burn, retained supply, fees,
 ordered buy outputs/minima, funding, refunds, and complete gas envelope. A fresh
 `buildNextTransaction` admits the immediate next step as canonical progress advances.
 The wallet owns sending-RPC preparation; `submissionClient` has been removed.
 
-`planned.transactions[0]` contains the immediate exact `from/to/data/value`,
-`gas` and `gasPrice` when admitted. It deliberately has no fixed wallet nonce.
-The wallet assigns that nonce when sending. The plan's identity nonce is unchanged.
+`planned.transactions[0]` contains exact immediate `from/to/data/value` and, for
+launch commands, native-ceiling `gas` and current `gasPrice`. Approvals omit both.
+There is no fixed wallet nonce; the wallet assigns it. The plan identity nonce is unchanged.
 The envelope is reusable, but its block-bound admission is historical, not permission
 to sign later. Pass it as `reviewedTransaction` for fresh immediate admission after
 review or recovery. This is not a second user review gate.
 Reuse `planned.progress` for the same result's display instead of reading progress
 independently beside the plan.
 
-For an atomic caller with a chosen final gas envelope, prepare with
-`fixedFinalEnvelope: { gas: 31_000_000n }`. This is an explicit chosen gas amount,
-not a universal gas recommendation. `limits.accountGasLimit` remains only a ceiling.
-The option accepts exactly one immediate atomic command with no approval prefix;
-staged mode and approval-first shapes refuse it. Diagnostic and final protection
-share one frozen fee recommendation. Supplying `gasPrice` holds that fee exactly;
-it is never bumped to obtain admission. The final protected calldata receives its
-required profile or exact native execution at the chosen envelope. Failure never
-enlarges it or switches mode.
+`fixedFinalEnvelope` and `LifecycleFinalEnvelope` are removed. A reviewed launch gas
+that differs from the native ceiling refuses with `STALE_REVIEWED_GAS`; re-review,
+never silently rewrite it. A lower caller complete-envelope cap refuses rather than
+shrinking gas. Held prices below the pinned fee floor also refuse without bumping.
+On Nitro the floor is max(ArbGasInfo L2 price, header base fee); twice base fee is
+fresh recommendation headroom only. Reserve value plus ceiling×price, without
+adding poster fees again. Actual activation capacity refusal asks the user to
+reduce positions/pools; a large conservative bound alone is not such a refusal.
 
 On chain4663, one RPC L2 header pins the invocation. Token prediction, native/token
 balances, allowances, launch progress, Nitro getters and prices share one Multicall3 call
@@ -446,7 +445,8 @@ export async function executeLaunch(
       }
       return { progress, activationHash };
     }
-    if (!next.admission?.admitted || next.gas === undefined || next.gasPrice === undefined) {
+    const approval = next.kind === "approve" || next.kind === "approve-reset";
+    if (!next.admission?.admitted || !approval && (next.gas === undefined || next.gasPrice === undefined)) {
       throw new Error("Immediate transaction is not admitted");
     }
     const request = await wallet.prepareTransactionRequest({

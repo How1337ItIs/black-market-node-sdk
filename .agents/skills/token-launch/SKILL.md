@@ -104,8 +104,8 @@ tick partitions as a source preset. See `references/audit-history.md`.
    allocation totals 10,000 bps). Kyber conversion belongs inside launch funding;
    do not silently submit a separate wallet swap.
 4. Freeze economics and ordered buys, then use `prepareAndPlanLifecycleLaunch`
-   with explicit mode and, for an unstarted launch, optional `buySlippageBps`.
-   Review only its final plan/hash, explicit profiled-or-executed evidence and immediate envelope.
+   with atomic preference or explicit staged and optional unstarted `buySlippageBps`.
+   Review final plan/hash, returned `planned.mode`, honest evidence and immediate envelope; persist the selected mode.
 5. Require explicit authorization for chain/API writes. Keep secrets in the
    existing environment; never overwrite `.env` or supply a development key.
 6. Sign/submit only the exact reviewed immediate command. Persist its signed hash

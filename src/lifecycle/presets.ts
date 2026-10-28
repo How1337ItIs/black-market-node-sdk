@@ -35,6 +35,9 @@ export enum KnownLifecycleHook {
 Object.freeze(KnownLifecycleProfile);
 Object.freeze(KnownLifecycleHook);
 
+/** Total launch-transaction gas limit, including Nitro poster gas; unused gas is refunded. */
+export const ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT = 32_000_000n;
+
 /** Frozen construction metadata, not a current eligibility or execution observation. */
 export type LifecycleProfilePreset = {
   readonly key: KnownLifecycleProfile;
@@ -61,6 +64,7 @@ export type LifecycleDeploymentPreset = {
   readonly tokenFactory: Address;
   readonly tokenFactoryCodeHash: Hex;
   readonly fundingEscrow: Address;
+  readonly nativeTransactionGasLimit?: bigint;
   /** Optional SDK-owned read-only acceleration contracts. */
   readonly hookSaltMiner?: Address;
   readonly launchLens?: Address;
@@ -330,6 +334,7 @@ const knownDeployment: LifecycleDeploymentPreset = Object.freeze({
   tokenFactory: "0xd3cE64E49224a9a96075633f63761FE6BE22FE30",
   tokenFactoryCodeHash: "0x6bbbdfe93ec615b7f1e70bac5e69aa890eba5e5f248f25e7022e866b4064d541",
   fundingEscrow: "0x7bc77946CeF52A178583FCe1EEB7751983cEC703",
+  nativeTransactionGasLimit: ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT,
   hookSaltMiner: "0x2f06176ba739b609b6a7334e2e6647558ba78ad5",
   // LaunchLens/871f9385, L2 deployment block 100095353.
   // tx 0xafdf35fa50d2c3fe08f1ab231a4e5d5e4dd5629c57f14dfe0a3aff5b0b8404ff
