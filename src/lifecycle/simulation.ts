@@ -552,6 +552,7 @@ async function simulateLaunchTransactionsWithContext(
       const capped = computeAndPoster < ceiling ? computeAndPoster : ceiling;
       return gasPrice === 0n || capped < available ? capped : available;
     });
+    let retriedForFunds = false;
     if (balance < value || sizingGas.some((gas) => gas <= 0n)) return { ...base, executionProof: "unavailable", backend, admitted: false, steps: [], failureCategory: "affordability", reason: "Creator native balance cannot fund transaction value and sizing fee budgets" };
     assertCurrent();
     try {
@@ -560,6 +561,7 @@ async function simulateLaunchTransactionsWithContext(
       } catch (failure) {
         if (!upfrontFundsFailure(failure)) throw failure;
         assertCurrent();
+        retriedForFunds = true;
         let remaining = available;
         const sharedGas = sizingGas.map((ceiling, index) => {
           if (gasPrice === 0n) return ceiling;
@@ -583,6 +585,11 @@ async function simulateLaunchTransactionsWithContext(
     }
     assertCurrent();
     const failedIndex = measured.findIndex((step) => !step.success);
+    const refusal = measured[failedIndex];
+    if (retriedForFunds && refusal?.failureCategory === "capacity" && refusal.gasLimit !== undefined && refusal.gasLimit < limits.executionGasCeiling) {
+      return { ...base, confidence: "provisional", executionProof: "unavailable", backend, admitted: false, steps: measured,
+        failedTransactionId: refusal.transactionId, failureCategory: "affordability", reason: "Native balance does not provide the sequential sizing margin; an exact transaction envelope was not proved" };
+    }
     if (failedIndex >= 0 && limits.maxSimulationGas !== undefined &&
       measured.reduce((gas, step) => gas + (step.gasUsed ?? 0n), 0n) * 100n >= limits.maxSimulationGas * 95n) {
       // The provider exhausted its aggregate used-gas budget, not the contract.

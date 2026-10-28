@@ -130,6 +130,8 @@ export type LifecycleSimulation = LifecycleProofOutcomes & {
   /** Unproved suffix. These transactions receive no gas, price, estimate or admission. */
   deferredTransactionIds: readonly string[];
   reason?: string; failedTransactionId?: string;
+  /** Affordability can mean insufficient sizing margin, even if smaller exact
+   * envelopes could fit. A refused RPC exposes no prefix results to refine them. */
   failureCategory?: LifecycleFailureCategory; capacityConstraint?: LifecycleCapacityConstraint;
 };
 export type LifecycleFundingPrerequisite = {

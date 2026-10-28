@@ -177,6 +177,12 @@ Sizing starts with per-call ceilings because unused gas is refunded between call
 Only a genuine upfront-funds refusal permits one second unvalidated sizing attempt
 with the budget shared across the sequence. Other failures do not retry; the final
 exact validated pass is never replayed.
+
+A tight payer balance can cover smaller exact staged envelopes yet not the
+discovery margin. This may return `failureCategory: "affordability"` even though
+the underlying launch could fit. The refused RPC exposes no successful-prefix
+results; the SDK does not invent them or add more metering attempts.
+
 Suffix steps are marked `provisional: true` and have no transaction estimate:
 their conservative complete budgets check sequence feasibility, bounded across
 the pinned affordable remaining balance. `buildNextTransaction` never reuses

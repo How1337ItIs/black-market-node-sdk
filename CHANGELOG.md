@@ -14,6 +14,7 @@
 - Bound unvalidated sizing/calibration envelopes by pinned affordability too: Nitro still checks upfront funds with `validation: false`. Retain separable `LifecycleSimulationStep.computeGasRequired` so build-next combines compute with the fresh poster quote, not a previous complete observation containing an old poster charge.
 - Size each discovery command against its per-transaction compute/complete ceiling and spendable balance, not an equal share of a sequence budget. Unused gas is refunded before the next call. An affordability-capped preparation failure cannot trigger an extra preparation transaction below the native ceiling.
 - Only a genuine upfront-funds refusal may retry unvalidated sizing once with a shared sequence budget, before the sole exact validated pass. Contract reverts, HTTP failures, cancellations and final validation never retry; repeated funds refusals cannot select another backend.
+- Sizing limitation (also present in 0.13.0): a payer may cover smaller exact staged envelopes but not the discovery ceiling margin. If the sole shared-budget retry exhausts its lower envelope, return `failureCategory: "affordability"` without claiming the transaction itself cannot execute. A top-level RPC refusal exposes no successful-prefix gas, so no prefix observations are synthesized and no extra metering calls are made.
 
 ## 0.13.0
 

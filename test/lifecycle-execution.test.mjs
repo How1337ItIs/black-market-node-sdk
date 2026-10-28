@@ -3185,3 +3185,16 @@ test("sizing retries only a genuine upfront-funds refusal and never more than on
     assert.ok(economicRequests(source).every((row) => !row.params[0].validation));
   }
 });
+
+test("tight9M/5M/5M sequence reports sizing affordability without inventing prefix observations", async () => {
+  const plan = makePlan({ chainId: 4663n, markets: 2, nativeFunding: true });
+  const client = clientFor(plan, { gasPrice: 2n, balance: 48_000_000n, enforceUpfrontBalance: true,
+    gasFor(name) { return name === "beginLaunch" ? 9_000_000n : 5_000_000n; } });
+  const planned = await review(client, plan, { mode: "staged", limits: { maxSimulationGas: 100_000_000n } });
+  assert.equal(planned.simulation.admitted, false);
+  assert.equal(planned.simulation.failureCategory, "affordability");
+  assert.equal(planned.simulation.executionProof, "unavailable");
+  assert.deepEqual(planned.transactions.map((transaction) => transaction.id), ["begin", "prepare:0:2", "activate"]);
+  assert.deepEqual(economicRequests(client).map((row) => row.params[0].validation), [false, false]);
+  assert.match(planned.simulation.reason, /sizing margin/);
+});
