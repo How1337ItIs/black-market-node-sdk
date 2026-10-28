@@ -8,16 +8,16 @@ const { readLifecyclePlanningBlock } = await import(sdkPath.replace("index.", "s
 const { withLifecycleReadClient, readLifecycleContract } = await import(sdkPath.replace("index.", "rpc."));
 import { MULTICALL3, MULTICALL3_CODE } from "./fixtures/multicall3.mjs";
 const multicall3Abi = [...aggregateAbi, ...parseAbi(["function getBlockNumber() view returns (uint256)", "function getLastBlockHash() view returns (bytes32)", "function getCurrentBlockGasLimit() view returns (uint256)", "function getBasefee() view returns (uint256)"])];
-const lens = "0x00000000000000000000000000000000000000aa";
+const lens = getKnownLifecycleDeployment({ chainId: 4663n, orchestrator: "0x91560876033d568d25CDe98C78c33ff8FC43962c" }).launchLens;
 const token = "0x0000000000000000000000000000000000000010";
 const factory = "0x00000000000000000000000000000000000000bb";
 const adapter = "0x00000000000000000000000000000000000000cc";
 const parentHash = toHex(41n, { size: 32 });
 
-async function fixture(liveStateSuccess = true) {
+async function fixture(liveStateSuccess = true, lensFailure = false) {
   const json = JSON.parse(await readFile(new URL("./fixtures/launch-lifecycle-v1.json", import.meta.url)));
   const plan = { ...parseLaunchPlan(JSON.stringify(json.plan)), chainId: 4663n, orchestrator: "0x91560876033d568d25CDe98C78c33ff8FC43962c" };
-  const preset = { ...getKnownLifecycleDeployment(plan), launchLens: lens };
+  const preset = getKnownLifecycleDeployment(plan);
   const launchId = hashLaunchIdentity(plan), planHash = hashLaunchPlan(plan);
   const progress = { launchId, planHash, creator: plan.creator, nonce: plan.nonce, mode: 1, phase: LifecyclePhase.Preparing, token, feeHub: factory, rewards: zeroAddress, preparedMarkets: 1, marketCount: plan.markets.length, buyCount: plan.buys.length, positionCount: 1, deadline: plan.deadline };
   const identity = { venue: 1, manager: zeroAddress, factory, pool: lens, poolId: zeroHash, profileId: plan.markets[0].profileId, currency0: token, currency1: plan.markets[0].quoteAsset, fee: 3000, tickSpacing: 60, hook: zeroAddress, openingSqrtPriceX96: 1n << 96n };
@@ -38,7 +38,7 @@ async function fixture(liveStateSuccess = true) {
     assert.equal(request.params[1], "0x2a", "Every aggregate uses the explicit RPC L2 pin");
     const { args } = decodeFunctionData({ abi: multicall3Abi, data: request.params[0].data });
     const results = args[0].map((call) => {
-      if (call.target.toLowerCase() === lens) return { success: true, returnData: encodeFunctionResult({ abi: launchLensAbi, functionName: "snapshot", result: snapshot }) };
+      if (call.target.toLowerCase() === lens) return { success: !lensFailure, returnData: lensFailure ? "0x" : encodeFunctionResult({ abi: launchLensAbi, functionName: "snapshot", result: snapshot }) };
       if (call.target.toLowerCase() === MULTICALL3) {
         const { functionName } = decodeFunctionData({ abi: multicall3Abi, data: call.callData });
         const result = { getBlockNumber: 900n, getLastBlockHash: toHex(899n, { size: 32 }), getCurrentBlockTimestamp: 100n, getCurrentBlockGasLimit: 1n << 50n, getBasefee: 2n, getEthBalance: snapshot.nativeBalance }[functionName];
@@ -51,10 +51,10 @@ async function fixture(liveStateSuccess = true) {
   return { plan, preset, snapshot, calls, client, planned: { plan, planHash, launchId, predictedToken: token, account: plan.creator, mode: "staged", confirmations: 1 } };
 }
 
-for (const liveStateSuccess of [true, false]) test(`ABI-encoded lens snapshot replaces prediction, progress, funding and dependent markets (live=${liveStateSuccess})`, async () => {
+for (const liveStateSuccess of [true, false]) test(`deployed preset snapshot replaces prediction, progress, funding and dependent markets without caller configuration (live=${liveStateSuccess})`, async () => {
   const source = await fixture(liveStateSuccess);
   await withLifecycleReadClient(source.client, async (client) => {
-    const block = await readLifecyclePlanningBlock(client, source.plan, source.plan.creator, false, false, source.preset);
+    const block = await readLifecyclePlanningBlock(client, source.plan, source.plan.creator);
     assert.equal(block.number, 42n); assert.equal(block.hash, toHex(42n, { size: 32 }));
     const progress = await readLaunchProgress({ client, planned: source.planned }, block);
     assert.equal(progress.pendingAccountNonce, 7n);
@@ -72,6 +72,14 @@ test("a lens result from a different chain is rejected at the snapshot boundary"
   source.snapshot.chainId = 1n;
   await assert.rejects(withLifecycleReadClient(source.client, (client) =>
     readLifecyclePlanningBlock(client, source.plan, source.plan.creator, false, false, source.preset)), { code: "INVALID_RPC_RESPONSE" });
+});
+
+test("an enabled deployed lens refusal surfaces without legacy reads or fallback", async () => {
+  const source = await fixture(true, true);
+  await assert.rejects(withLifecycleReadClient(source.client, (client) =>
+    readLifecyclePlanningBlock(client, source.plan, source.plan.creator)), { code: "INVALID_RPC_RESPONSE" });
+  assert.equal(source.calls.filter((call) => call.method === "eth_call").length, 1);
+  assert.equal(source.calls.some((call) => call.method === "eth_getBalance"), false);
 });
 
 test("one- and two-getter same-block stages each use exactly one aggregate", async () => {

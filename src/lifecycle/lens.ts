@@ -2,7 +2,7 @@ import { type Address, type Hex } from "viem";
 import { launchPlanV1Components, launchProgressV1Components, preparedMarketV1Components, marketLiveStateV1Components, type LaunchProgressV1, type PreparedMarketV1, type MarketLiveStateV1 } from "./schema.js";
 import type { LifecycleBlock, LifecycleRpcClient } from "./types.js";
 
-/** ILaunchLens.sol, versioned planning snapshot. No preset lens is deployed by this release. */
+/** ILaunchLens.sol, versioned planning snapshot. Its address is owned by the deployment preset. */
 export const launchLensAbi = [{ type: "function", name: "snapshot", stateMutability: "view",
   inputs: [{ name: "plan", type: "tuple", components: launchPlanV1Components }, { name: "owner", type: "address" },
     { name: "fundingEscrow", type: "address" }, { name: "tokens", type: "address[]" }, { name: "maxAttempts", type: "uint256" }],

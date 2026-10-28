@@ -26,6 +26,8 @@ test("known metadata is scoped to exact chain, core and profile identity", () =>
   assert.deepEqual(listKnownLifecycleProfiles(identity).map((preset) => preset.key), Object.values(KnownLifecycleProfile));
   assert.equal(deployment.provenance.deploymentBlock, 82880546n);
   assert.equal(deployment.provenance.sourceCommit, "e174ce695c7010f50ca9211b07b9f178c990beac");
+  assert.equal(deployment.launchLens, "0xcb4bb3caca71fe52eace8170cf83e901418646f8");
+  assert.equal(deployment.launchLensCodeHash, "0xc19e86bfed47afbb6ff719293edd8fb8bb3399d5d017b3f533d90cc72e58f1d3");
   assert.equal(getKnownLifecycleDeployment({ ...identity, orchestrator: "0xb75CBD17b9aecb7305B4DFcDa69595F783341c0E" }), undefined,
     "Historical October5 deployment is not relabeled as the current graph");
   const v4 = select(KnownLifecycleProfile.V4FixedFeePool);
@@ -84,6 +86,8 @@ for (const key of [KnownLifecycleProfile.V4FixedFeePool, KnownLifecycleProfile.V
     () => { KnownLifecycleHook.FixedFeePoolV1 = "unreviewed-hook"; },
     () => { KnownLifecycleHook.DynamicFeePoolV1 = "unreviewed-hook"; },
     () => { deployment.orchestrator = otherAddress; },
+    () => { deployment.launchLens = otherAddress; },
+    () => { deployment.launchLensCodeHash = otherHash; },
     () => { deployment.provenance.deploymentBlock = 0n; },
     () => { deployment.profiles.reverse(); },
     () => { v4.key = KnownLifecycleProfile.Abyss3; },

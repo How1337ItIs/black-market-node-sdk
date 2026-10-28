@@ -2,7 +2,7 @@
 
 Use the [launch guide](launch-lifecycle.md) for the end-to-end flow and the
 [runner reference](../examples/README.md) for environment and recovery artifacts.
-This page covers SDK **0.14.0** addresses, limits, wire formats, fees, and diagnostics.
+This page covers SDK **0.14.1** addresses, limits, wire formats, fees, and diagnostics.
 
 ## Deployed infrastructure
 
@@ -19,6 +19,7 @@ start historical log queries there, in chunks of at most **10M blocks**.
 | `UFG_LAUNCH_PROXY_ADDRESS` | `0xf6673d859DE03eB74A0b01696Edb97f941dFD0CA` |
 | `UFG_TREASURY_FACTORY_ADDRESS` | `0x26Aa5D52134c8E6c4C01E9fb53A7568c0C64901F` |
 | `UFG_UPSTREAM_FACTORY_ADDRESS` | `0xA170b5A58C111334A7237F2Ea2c428ec5022f68E` |
+| Known deployment `launchLens` | `0xcb4bb3caca71fe52eace8170cf83e901418646f8` |
 
 `getKnownLifecycleDeployment`, `getKnownLifecycleProfile`, and
 `listKnownLifecycleProfiles` are pure selectors keyed by chain/core. Unknown
@@ -222,11 +223,14 @@ stateful execution proof stay fresh. Session caching does not extend admission.
 One RPC L2 header supplies number, hash, timestamp, gas limit and base fee.
 The initial Multicall3 call uses that explicit L2 block and includes native balance,
 funding/progress and Nitro getters. Independent getters are aggregated with no
-minimum-count threshold. Runtime code is attested once per
-session. The optional preset `launchLens` remains unset until deployment; once set,
-one `launchLensAbi.snapshot` call replaces dependent token/hook/market/funding reads
-inside that aggregate. The deployed preset `hookSaltMiner` replaces local mining
-during combined preparation; every returned winner is verified locally.
+minimum-count threshold. Multicall3 runtime code is attested once per session.
+The 4663 preset enables `launchLensAbi.snapshot` without caller configuration:
+one call replaces dependent token/hook/market/funding reads inside that aggregate.
+Its `launchLensCodeHash` pins the reviewed deployed runtime as frozen release
+metadata, like `tokenFactoryCodeHash`, without another guard-only RPC.
+The deployed preset `hookSaltMiner` replaces local mining during combined
+preparation; every returned winner is verified locally.
+Lens failures surface directly; planning does not retry through legacy reads.
 
 Diagnostic events carry `stage`, `phase`, optional `durationMs`, `queueMs`,
 `requestId`, allowlisted RPC `method`, and cache `hits` / `misses` / `reuses`.
