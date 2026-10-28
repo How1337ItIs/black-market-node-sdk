@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.0
+
+- Pin one RPC L2 header and batch same-block planning reads/native balances into one explicitly pinned chain4663 Multicall3 stage, even for fewer than three getters. Never derive L2 pins from EVM `BLOCKNUMBER`/`BLOCKHASH`, which expose L1 values on Nitro.
+- Retain successful Multicall3 code attestation, Nitro backend capability and per-account code observations for the caller's session. Financial state, receipts, nonces and exact execution remain fresh.
+- Keep one planning pin through hook mining and buy calibration. Remove final source-chain/canonical re-reads and the redundant exact-gas replay after final validated measurement.
+- Estimate Nitro poster allocation only for the immediate final transaction, once. Build-next recompiles the next determined command from receipt/progress, original batch spans, allowance and nonce, then simulates only that command.
+- Use the deployed HookSaltMiner `findMany` for pool-bound preparation and verify returned CREATE2 salts locally. Preserve the public local miner for deployments without a miner preset.
+- Add optional `LifecycleDeploymentPreset.launchLens` and `launchLensAbi` integration for dependent reads and mining in the initial aggregate. The preset remains unset until deployment; setting its address enables the path.
+- Preserve launch economics, deployed contract ABIs and committed transaction calldata.
+
 ## 0.13.0
 
 - Finalize each lifecycle invocation with one fresh source-chain guard and one canonical check per used proof pin, including after optional submission estimation. Reuse the initial chain observation for nested hook metadata/discovery, one fee recommendation per operation, and known immutable factory predictions across construction/execution pins.

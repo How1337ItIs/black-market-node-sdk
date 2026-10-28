@@ -1,6 +1,6 @@
 # Launch a token with the TypeScript SDK
 
-Use SDK **0.13.0** on Robinhood Chain mainnet (**4663**). For a first launch, run
+Use SDK **0.14.0** on Robinhood Chain mainnet (**4663**). For a first launch, run
 [`launch-erc20-abyss.ts`](../examples/launch-erc20-abyss.ts): one market, one position,
 one buy. [Runner setup](../examples/README.md) covers its environment and commands.
 This guide explains the economics and the public APIs for your own integration.
@@ -19,29 +19,26 @@ staking, or dividends. A pool profile selects the admitted venue/hook implementa
 | HMM V2 | `V4HmmFixedPool`, `V4HmmDynamicPool` | Auxiliary fee-funded bids/asks; LP and developer fees 0; explicit risk guards. |
 | UFG | Abyss QUOTE/QUOTE_ORACLE or `V4UfgFixedPool`, `V4UfgDynamicPool` | Treasury route; ERC20 without rewards; quote-only fees, executor bounty 0. |
 
-Use `getKnownLifecycleProfile` for construction metadata. Check current admission
-with `readLifecycleProfiles`; registered totals include retired profiles.
-This read-only snippet lists the live registry, including each refusal reason:
+SDK presets are the source of supported profiles and deployment wiring. Profiles
+registered after this release appear with a subsequent SDK update.
+This local snippet lists the release's supported offerings without RPC reads:
 
 ```ts
 import {
-  createProtocolPublicClient, getAddresses, readLifecycleProfiles,
+  getAddresses, listKnownLifecycleProfiles,
 } from "@black-market/sdk";
 
-const client = createProtocolPublicClient({ chainId: 4663 });
-if (await client.getChainId() !== 4663) throw new Error("Wrong RPC chain");
-const profiles = await readLifecycleProfiles({
-  client, orchestrator: getAddresses(4663).launchOrchestrator,
+const profiles = listKnownLifecycleProfiles({
+  chainId: 4663, orchestrator: getAddresses(4663).launchOrchestrator,
 });
-console.table(profiles.map((p) => ({
+console.table(profiles.map(({ profile: p }) => ({
   id: p.id, venue: p.venueKind, version: p.topology.configVersion,
-  admitted: p.admitted, reason: p.reason ?? "",
 })));
 ```
 
-Do not hard-code a live profile count. Select the exact admitted profile ID and
-its schema, terms, treasury, and dependency graph. For V4, permit at most **one
-market per quote asset** across all hooks/fees; combine positions in that market.
+`readLifecycleProfiles` remains available for explicit registry inspection, not
+as a planning prerequisite. Select the exact preset ID, schema, terms, treasury,
+and dependency graph. For V4, permit at most **one market per quote asset** across all hooks/fees; combine positions in that market.
 An Abyss market can share the same quote. Oracle-enabled does not mean lending-approved.
 
 <a id="deployed-infrastructure"></a>
@@ -369,12 +366,25 @@ it is never bumped to obtain admission. The final protected calldata still recei
 one natural-child-fee validated replay at the exact chosen envelope. Failure never
 enlarges it or switches mode.
 
-On chain4663, independent Nitro getters, known factory prediction and known-core
-head progress can share one Multicall3 read after pinned runtime attestation.
-Poster estimates retain their original sender/value and are never aggregated.
-One invocation owns the final fresh chain check and every distinct canonical
-proof pin, including after optional sending-RPC estimation. Balances and economic
-proofs are not shared across invocations.
+On chain4663, one RPC L2 header pins the invocation. Token prediction, native/token
+balances, allowances, launch progress and Nitro getters share one Multicall3 call
+at that explicit L2 block. Further independent stages use one aggregate, even for
+one or two reads. Multicall3's block-number/hash getters expose L1 values on Nitro
+and must not select the L2 pin.
+The same pin survives salt mining and buy calibration; there are no final chain or
+canonical-header guard reads. Receipt confirmation/reorg checks remain.
+
+Final measurement validates the exact calldata once; there is no later exact-gas
+replay. Poster allocation is estimated only for the immediate final command.
+`buildNextTransaction` preserves the original staged batch spans and proves only
+the next command, rather than simulating the whole remaining launch.
+
+Multicall3 runtime, Nitro backend capability and account-code observations are
+retained for the caller's session. Financial state and execution proof are not.
+The 4663 preset uses the deployed `hookSaltMiner`; returned salts are verified
+locally. The optional `launchLens` preset is unset in this release. Once deployed,
+its address enables dependent progress, market, balance and hook-mining reads in
+the same initial aggregate. See [read caching](reference.md#cache-static-reads-and-inspect-timing).
 
 ## Sign and confirm
 

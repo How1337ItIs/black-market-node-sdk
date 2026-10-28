@@ -9,7 +9,7 @@ import type {
 export type LifecycleDiagnosticStage =
   | "plan" | "plan.context" | "plan.domain" | "plan.progress" | "plan.inputs" | "rpc"
   | "profile.certification" | "simulation.context" | "simulation.nitro"
-  | "simulation.poster" | "simulation.measure" | "simulation.replay" | "simulation.envelope" | "session-cache";
+  | "simulation.poster" | "simulation.measure" | "session-cache";
 export type LifecycleDiagnosticEvent = {
   stage: LifecycleDiagnosticStage;
   phase: "queued" | "start" | "success" | "failure" | "reuse";
@@ -35,7 +35,7 @@ export type LifecycleRpcClient = {
   sessionCache?: LifecycleSessionCache;
 };
 export type LifecycleBlock = { number: bigint; hash: Hash; timestamp: bigint; gasLimit: bigint; baseFeePerGas?: bigint };
-/** A session retains only static reads at one canonical block, never execution proof. */
+/** A session retains pinned static reads and deployment/backend capability observations. */
 export type LifecycleSessionCache = {
   readonly block: Readonly<Pick<LifecycleBlock, "number" | "hash">> | undefined;
   /** Call on wallet/chain changes and after every confirmed transaction. */

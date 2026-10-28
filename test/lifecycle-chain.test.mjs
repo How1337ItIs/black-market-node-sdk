@@ -140,7 +140,7 @@ test("reviewed real-AMM metadata, admission, cancellation and canonical recovery
       return toHex(BigInt(result) + 1n);
     } };
     const next = await buildNextTransaction({ client: higherRecommendation, planned, limits, fork, reviewedTransaction, submissionClient: client });
-    assert.equal(advisoryReads, 1);
+    assert.equal(advisoryReads, 0, "A held envelope does not request a new fee recommendation");
     for (const field of ["id", "kind", "chainId", "from", "to", "data", "value", "gas", "gasPrice"]) assert.equal(next[field], reviewedTransaction[field]);
     assert.equal(next.admission.executionProof, "proved");
     assert.equal(next.admission.protocolFit, "proved");

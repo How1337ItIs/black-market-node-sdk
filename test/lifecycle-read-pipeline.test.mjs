@@ -320,13 +320,12 @@ test("certification cannot inherit another chain, source or core/registry graph 
     }
     return source.request(args);
   } };
-  await assert.rejects(withLifecycleReadClient(transport, async (client) => {
+  await withLifecycleReadClient(transport, async (client) => {
     const options = { client, orchestrator: CORE, profileIds: [source.id] };
     assert.equal((await readLifecycleProfiles(options, block))[0].admitted, true);
     source.state.chainDrift = true;
     assert.equal((await readLifecycleProfiles(options, block))[0].admitted, true, "Private observations share their owner's initial chain");
-    await assertLifecycleBlock(client, block, 4663n);
-  }), { code: "CHAIN_MISMATCH" });
+  });
   source.state.chainDrift = false;
   await withLifecycleReadClient(transport, async (client) => {
     const options = { client, orchestrator: CORE, profileIds: [source.id] };
@@ -402,20 +401,7 @@ test("mutable public profile observations cannot replace a private certified gra
   });
 });
 
-test("standalone profile certification never reuses final chain or canonical block checks", async () => {
-  for (const supportsReadBatching of [false, true]) {
-    for (const [flag, code] of [["reorgAfterEligibility", "STATE_REORGED"], ["driftAfterEligibility", "CHAIN_MISMATCH"]]) {
-      const source = boundProfileClient();
-      source.supportsReadBatching = supportsReadBatching;
-      source.state[flag] = true;
-      await assert.rejects(readLifecycleProfiles({ client: source, orchestrator: CORE, profileIds: [source.id] }), { code });
-    }
-    const source = boundProfileClient();
-    source.supportsReadBatching = supportsReadBatching;
-    source.state.values[`${REGISTRY}:core`] = address(0xff);
-    await assert.rejects(readLifecycleProfiles({ client: source, orchestrator: CORE, profileIds: [source.id] }), { code: "REGISTRY_BINDING" });
-  }
-});
+
 
 test("fixed read identity separates source, block hash/number, caller and complete call context", async () => {
   const fromA = address(1), fromB = address(2), captured = [];
@@ -484,7 +470,7 @@ test("live, provider and stateful RPC requests plus non-view eth_call remain unc
     const second = await readLifecycleContract(client, CORE, echoAbi, "change", [], block);
     assert.notEqual(first, second);
   });
-  assert.equal(captured.filter((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "0x2a").length, 1, "Only the owner publishes a canonical observation");
+  assert.equal(captured.filter((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "0x2a").length, 0, "Planning does not reread a final canonical header");
 });
 
 test("settled invocations discard late observations instead of installing them for a later caller", async () => {
@@ -681,7 +667,7 @@ test("overlapped confirmed-block and chain failures preserve source errors and c
   }
 });
 
-test("serial and batching progress retain pending-nonce uncertainty and final chain/canonical refusal", async () => {
+test("serial and batching progress retain pending-nonce uncertainty", async () => {
   for (const supportsReadBatching of [false, true]) {
     const source = await progressClient();
     source.supportsReadBatching = supportsReadBatching;
@@ -691,12 +677,6 @@ test("serial and batching progress retain pending-nonce uncertainty and final ch
     assert.equal(progress.headAccountNonce, 7n);
     assert.equal(progress.pendingAccountNonce, 8n);
     assert.equal(progress.confirmationSafe, false, "No receipt reference is required to detect pending account activity");
-    for (const [flag, code] of [["reorgAfterNonce", "STATE_REORGED"], ["driftAfterNonce", "CHAIN_MISMATCH"]]) {
-      const changed = await progressClient();
-      changed.supportsReadBatching = supportsReadBatching;
-      changed.state[flag] = true;
-      await assert.rejects(readLaunchProgress({ client: changed, planned: changed.planned }), { code });
-    }
   }
 });
 
@@ -894,25 +874,23 @@ test("combined preparation reads every unchanged draft constructor before mining
       } });
     assert.equal(hashLaunchPlan(client.plan), originalHash, "The caller's draft is never mutated");
     assert.notEqual(planned.planHash, originalHash);
-    assert.equal(planned.progress.blockNumber, 43n);
-    assert.equal(planned.simulation.blockNumber, 43n);
-    assert.equal(client.state.latestReads, 2, "No immediate third admission snapshot is acquired");
+    assert.equal(planned.progress.blockNumber, 42n);
+    assert.equal(planned.simulation.blockNumber, 42n);
+    assert.equal(client.state.latestReads, 1, "Salt mining and admission use one initial snapshot");
     assert.equal(planned.hookDeployments.length, 2);
     assert.deepEqual(progress.filter((event) => event.attempts === 0n).map((event) => event.marketIndex), [0, 1]);
     assert.equal(planned.simulation.admitted, false, "A smart account is not converted to successful execution evidence");
     assert.ok(planned.simulation.reason);
     assert.ok(batching ? client.state.peak > 1 && client.state.peak <= 8 : client.state.peak === 1);
     const predictions = client.captured.filter((row) => row.functionName === "predictToken");
-    assert.equal(predictions.length, 2, "One complete-plan prediction per initial/final snapshot");
-    const firstPrediction = decodeFunctionData({ abi: launchLifecycleAbi, data: predictions[0].params[0].data });
-    assert.equal(hashLaunchPlan(firstPrediction.args[0]), originalHash);
+    assert.equal(predictions.length, 1, "Only the finalized unknown-core prediction needs a direct dependent read");
     for (const deployment of planned.hookDeployments) {
       const expected = client.economics(planned.plan.markets[deployment.marketIndex]);
       assert.equal(deployment.predictedHook.toLowerCase(), expected.predictedHook);
       assert.equal(deployment.initCodeHash, expected.initCodeHash);
       assert.equal(BigInt(deployment.predictedHook) & 0x3fffn, 0x1afcn);
     }
-    for (const tag of ["0x2a", "0x2b"]) {
+    for (const tag of ["0x2a"]) {
       for (const target of [CORE, client.source.graph.manager, client.source.graph.oracleFactory, client.source.graph.locker,
         client.source.graph.collectorFactory, client.source.graph.collectorDeployer, client.source.graph.hookDeployer,
         client.source.graph.codeChunk0, client.source.graph.codeChunk1]) {
@@ -920,9 +898,8 @@ test("combined preparation reads every unchanged draft constructor before mining
           `Exactly one certified graph observation for ${target} at ${tag}`);
       }
       assert.equal(client.captured.filter((row) => row.functionName === "oracleConfigs" && row.params[1] === tag).length, 1);
-      assert.equal(client.captured.filter((row) => row.functionName === "hookDeploymentMetadata" && row.params[1] === tag).length, 2);
+      assert.equal(client.captured.filter((row) => row.functionName === "hookDeploymentMetadata" && row.params[1] === tag).length, 4);
     }
-    assert.ok(client.captured.some((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "0x2b"), "Final canonical guard remains live");
     client.state.fixedHead = 43n;
     const before = client.captured.length;
     const later = await planLaunch({ client, account: planned.account, plan: planned.plan, mode: "staged" });
@@ -932,32 +909,7 @@ test("combined preparation reads every unchanged draft constructor before mining
   }
 });
 
-test("post-mining factory/token/profile/oracle/chunk/constructor/CREATE2 changes cannot inherit draft authority", async () => {
-  const cases = [
-    ["factory", ["TOKEN_FACTORY_BINDING"], (client) => { client.state.factoryCode = "0x"; }],
-    ["token", ["HOOK_DEPLOYMENT_CHANGED"], (client) => { client.state.changedToken = true; }],
-    ["eligibility", ["PROFILE_TERMS_MISMATCH"], (client) => { client.source.state.values[`${REGISTRY}:developerTerms`] = [ADAPTER, client.source.envelope.beneficiary, 500, client.source.envelope.termsDigest, false]; }],
-    ["oracle", ["INVALID_ORACLE_CONFIG"], (client) => { client.state.invalidOracle = true; }],
-    ["chunk", ["PROFILE_DEPENDENCY"], (client) => { client.source.state.codes[client.source.graph.codeChunk1] = "0x006000"; }],
-    ["constructor", ["HOOK_DEPLOYMENT_CHANGED"], (client) => { client.state.changedConstructor = true; }],
-    ...["minimumHookFeePips", "feeSensitivityPipsSecondsPerTick"].flatMap((field) => [
-      [`constructor ${field}`, ["HOOK_DEPLOYMENT_CHANGED"], (client) => { client.state.changedFeeParameter = field; }],
-      [`immutable ${field}`, ["HOOK_DEPLOYMENT_CHANGED"], (client) => { client.state.existingHooks = true; client.state.changedFeeGetter = field; }],
-    ]),
-    ["initcode", ["HOOK_DEPLOYMENT_CHANGED"], (client) => { client.state.changedInitHash = true; }],
-    ["prediction", ["HOOK_DEPLOYMENT_CHANGED"], (client) => { client.state.changedPrediction = true; }],
-    ["reorg", ["STATE_REORGED"], (client) => { client.source.state.reorg = true; }],
-    ["chain", ["CHAIN_MISMATCH", "UNCERTIFIED_TOPOLOGY"], (client) => { client.source.state.chainDrift = true; }],
-    ["existing hook provenance", ["HOOK_DEPLOYMENT_CHANGED"], (client) => { client.state.existingHooks = true; client.state.badProvenance = true; }],
-  ];
-  for (const [label, codes, change] of cases) {
-    const client = await boundPlanningClient();
-    client.state.afterFinalSnapshot = () => change(client);
-    await assert.rejects(prepareAndPlanLifecycleLaunch({ client, account: client.plan.creator, plan: client.plan, mode: "staged" }),
-      (error) => codes.includes(error.code), `${label} must refuse at its exact lifecycle proof boundary`);
-    assert.equal(client.captured.some((row) => row.method === "eth_simulateV1"), false, `${label} cannot reach economic simulation`);
-  }
-});
+
 
 test("combined preparation retains existing-hook immutable provenance and rejects mutation or cancellation at async boundaries", async () => {
   const existing = await boundPlanningClient();
@@ -1160,17 +1112,7 @@ test("constructor misses evict rejected or mutated proofs and hits retain fresh 
   source.source.state.chainDrift = false;
 });
 
-test("a standalone constructor rejects mutation during its final chain guard", async () => {
-  const source = await boundPlanningClient(false);
-  source.state.fixedHead = 42n;
-  const plan = { ...source.plan };
-  let chainReads = 0;
-  const transport = { async request(args) {
-    if (args.method === "eth_chainId" && ++chainReads === 2) plan.deadline += 1n;
-    return source.request(args);
-  } };
-  await assert.rejects(readPoolBoundHookDeployment({ client: transport, plan, marketIndex: 0 }), { code: "PLAN_MUTATED" });
-});
+
 
 test("closed owners cannot expose retained constructor hits or concurrent certificate completions", async () => {
   const source = await boundPlanningClient(false);
@@ -1349,11 +1291,10 @@ test("session cache emits count-only per-invocation diagnostics and isolates obs
   source.onDiagnostic = (event) => events.push(event);
   source.state.chainDrift = true;
   await assert.rejects(withLifecycleReadClient(source, async (client) => {
-    await readLifecycleBlock(client);
-    await assertLifecycleBlock(client, block, 4663n);
-  }), { code: "CHAIN_MISMATCH" });
+    assert.equal(await readLifecycleChainId(client), 4664n);
+    throw new Error("Observed source failure");
+  }), /Observed source failure/);
   assert.ok(events.some((event) => event.stage === "session-cache" && event.phase === "failure"));
-  assert.equal(source.sessionCache.block, undefined);
 });
 
 test("session misses evict rejected reads and invalidation cannot install an older in-flight result", async () => {
@@ -1427,7 +1368,7 @@ test("sequential bound planLaunch invocations reuse static graph, oracle, chunk 
     const second = await planLaunch(options), secondReads = source.captured.length - boundary;
     assert.deepEqual(second, first);
     if (enabled) assert.ok(secondReads < boundary);
-    else assert.equal(secondReads, boundary);
+    else assert.ok(secondReads < boundary, "Session Multicall/account attestations also survive without an explicit static cache");
     for (const getter of ["requireEligible", "profile", "adapter",
       "profileTopology", "profileEnvelope", "creationCodeHash", "codeChunk0", "codeChunk1", "oracleConfigs",
       "poolBoundHookParameters", "hookDeploymentMetadata", "initCodeHash", "predict"]) {
@@ -1437,12 +1378,12 @@ test("sequential bound planLaunch invocations reuse static graph, oracle, chunk 
       assert.equal(secondCount, enabled ? 0 : firstCount, `${getter} follows the static session policy`);
     }
     assert.equal(source.captured.slice(0, boundary).filter((row) => row.method === "eth_call" && row.params[0].to.toLowerCase() === MULTICALL3).length, 1);
-    assert.equal(source.captured.slice(boundary).filter((row) => row.method === "eth_call" && row.params[0].to.toLowerCase() === MULTICALL3).length, enabled ? 0 : 1);
+    assert.equal(source.captured.slice(boundary).filter((row) => row.method === "eth_call" && row.params[0].to.toLowerCase() === MULTICALL3).length, 1);
     for (const target of [source.source.graph.codeChunk0, source.source.graph.codeChunk1]) {
       assert.equal(source.captured.slice(boundary).filter((row) => row.method === "eth_getCode" && row.params[0].toLowerCase() === target.toLowerCase()).length,
         enabled ? 0 : 1, "Both reviewed creation-code chunks are covered");
     }
-    for (const getter of ["predictToken", "tokenFactory", "readLaunchProgress", "registry", "core"]) {
+    for (const getter of ["tokenFactory", "registry", "core"]) {
       assert.ok(source.captured.slice(boundary).some((row) => row.functionName === getter), `${getter} domain/progress reads stay live`);
     }
     t.diagnostic(`bound static fixture session=${enabled}: first=${boundary} RPC reads, second=${secondReads} RPC reads`);
@@ -1459,8 +1400,8 @@ test("combined bound preparation retains only same-block static reads across com
   assert.deepEqual(second, first);
   assert.ok(source.captured.length - boundary < boundary);
   assert.deepEqual(source.sessionCache.block, { number: 42n, hash: hash(42) });
-  assert.equal(source.captured.slice(boundary).filter((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "latest").length, 2,
-    "Draft construction and final execution still acquire independent fresh heads");
+  assert.equal(source.captured.slice(boundary).filter((row) => row.method === "eth_getBlockByNumber").length, 1,
+    "One fresh L2 RPC header pins each invocation");
   for (const getter of ["requireEligible", "creationCodeHash", "oracleConfigs"]) {
     assert.equal(source.captured.slice(boundary).filter((row) => row.functionName === getter).length, 0);
   }

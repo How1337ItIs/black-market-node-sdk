@@ -6,6 +6,8 @@ import { robinhoodMainnet } from "../addresses.js";
 
 // Reviewed chain4663 deployment, independently observed at block 98,136,655.
 const multicall3CodeHash = "0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891";
+const sessionObservations = new WeakMap<object, Map<string, Promise<unknown>>>();
+const canonicalWireValue = (_key: string, value: unknown): unknown => typeof value === "string" && value.startsWith("0x") ? value.toLowerCase() : value;
 type IndependentRead = { params: readonly unknown[]; resolve: (value: unknown) => void; reject: (failure: unknown) => void };
 
 const lifecycleReadConcurrency = 8;
@@ -74,7 +76,6 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
   private chainId?: Promise<bigint>;
   private gasPrice?: Promise<unknown>;
   private readonly immutableReads = new Map<string, Promise<unknown>>();
-  private readonly canonicalPins = new Map<string, { block: Pick<LifecycleBlock, "number" | "hash">; chainId?: bigint }>();
   private readonly independentReads = new Map<string, { block: LifecycleBlock; reads: IndependentRead[] }>();
   readonly finalChecks = new Set<() => void>();
   private readonly limitObservations = new Map<LifecycleLimitSource | undefined, Map<string, Promise<LifecycleLimitObservation>>>();
@@ -172,37 +173,9 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
     return pending.then((value) => { this.assertOpen(); return value; });
   }
 
-  deferCanonicalCheck(block: Pick<LifecycleBlock, "number" | "hash">, chainId?: bigint): void {
-    this.assertOpen();
-    const key = block.number.toString();
-    const existing = this.canonicalPins.get(key);
-    if (existing !== undefined && (existing.block.hash.toLowerCase() !== block.hash.toLowerCase() ||
-      existing.chainId !== undefined && chainId !== undefined && existing.chainId !== chainId)) {
-      this.invalidateSession();
-      throw new LifecyclePlanningError("STATE_REORGED", "One lifecycle invocation observed incompatible canonical pins");
-    }
-    this.canonicalPins.set(key, { block: { ...block }, chainId: chainId ?? existing?.chainId });
-  }
 
   async finalize(): Promise<void> {
     this.assertOpen();
-    const pins = [...this.canonicalPins.values()];
-    if (pins.length === 0) return;
-    const [chainId, current] = await Promise.all([
-      pins.some((pin) => pin.chainId !== undefined) ? this.run("eth_chainId", []).then((value) => rpcQuantity(value, "chain ID")) : undefined,
-      Promise.all(pins.map((pin) => readLifecycleBlock(this, toHex(pin.block.number)))),
-    ]);
-    for (let index = 0; index < pins.length; index += 1) {
-      const pin = pins[index]!;
-      if (pin.chainId !== undefined && chainId !== pin.chainId) {
-        this.invalidateSession();
-        throw new LifecyclePlanningError("CHAIN_MISMATCH", "Source RPC chain changed during the pinned operation");
-      }
-      if (current[index]!.hash.toLowerCase() !== pin.block.hash.toLowerCase()) {
-        this.invalidateSession();
-        throw new LifecyclePlanningError("STATE_REORGED", "Pinned launch state changed during the operation; read canonical progress again");
-      }
-    }
     for (const check of this.finalChecks) check();
   }
 
@@ -225,8 +198,7 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
   private async flushIndependentReads(group: { block: LifecycleBlock; reads: IndependentRead[] }): Promise<void> {
     const { block, reads } = group;
     try {
-      // Two cold reads cannot beat two direct calls after code attestation.
-      if (reads.length < 3 || await this.observeChainId() !== 4663n) {
+      if (await this.observeChainId() !== 4663n) {
         await Promise.all(reads.map(async (read) => {
           try { read.resolve(await this.run("eth_call", read.params)); }
           catch (failure) { read.reject(failure); }
@@ -234,8 +206,7 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
         return;
       }
       const to = robinhoodMainnet.contracts.multicall3.address;
-      const code = rpcHex(await this.read("eth_getCode", [to, toHex(block.number)], block, true), "Multicall3 code");
-      if (keccak256(code) !== multicall3CodeHash) throw new LifecyclePlanningError("MULTICALL_CODE_MISMATCH", "Pinned Multicall3 runtime differs from the reviewed chain4663 deployment");
+      await attestLifecycleMulticall(this, block);
       const calls = reads.map((read) => {
         const request = read.params[0] as { to: Address; data: Hex };
         return { target: request.to, allowFailure: true, callData: request.data };
@@ -279,7 +250,7 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
     this.assertOpen();
     // Source identity is this scope's original client. The complete wire call includes
     // caller, value, gas and any other call fields; no selector-only/ABI-name aliasing.
-    const key = JSON.stringify([block.number.toString(), block.hash.toLowerCase(), method, params]);
+    const key = JSON.stringify([block.number.toString(), block.hash, method, params], canonicalWireValue);
     const existing = this.reads.get(key);
     if (existing !== undefined) {
       if (staticRead && this.session !== undefined) this.sessionReuses += 1;
@@ -309,6 +280,12 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
     return pending;
   }
 
+  seed(method: string, params: readonly unknown[], block: LifecycleBlock, value: unknown): void {
+    this.assertOpen();
+    const key = JSON.stringify([block.number.toString(), block.hash, method, params], canonicalWireValue);
+    this.reads.set(key, Promise.resolve(value));
+  }
+
   close(success: boolean): void {
     this.closed = true;
     this.reads.clear();
@@ -316,7 +293,6 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
     this.limitObservations.clear();
     this.gasPrice = undefined;
     this.immutableReads.clear();
-    this.canonicalPins.clear();
     this.independentReads.clear();
     this.finalChecks.clear();
     const listener = this.source.onDiagnostic;
@@ -336,8 +312,7 @@ export async function withLifecycleReadClient<T>(source: LifecycleRpcClient, wor
     let result: T;
     try { result = await work(client); }
     catch (failure) {
-      // Refused simulations still report a changed canonical source, not a
-      // misleading economic refusal derived from an orphaned observation.
+      // Live policy is rechecked even when exact execution or a source read refuses.
       await client.finalize();
       throw failure;
     }
@@ -398,8 +373,7 @@ export function lifecycleStaticRpc(client: LifecycleRpcClient, method: "eth_call
 export async function lifecycleRpc(client: LifecycleRpcClient, method: string, params: readonly unknown[] = []): Promise<unknown> {
   return client instanceof InvocationLifecycleClient ? client.run(method, params) : client.request({ method, params });
 }
-/** One invocation's observed identity. End-of-operation and submission checks
- * deliberately use uncached eth_chainId so a switched provider cannot retain proof. */
+/** One invocation's observed identity; wallet submission owns its final chain check. */
 export function readLifecycleChainId(client: LifecycleRpcClient): Promise<bigint> {
   return client instanceof InvocationLifecycleClient
     ? client.observeChainId()
@@ -414,6 +388,37 @@ export function readLifecycleGasPrice(client: LifecycleRpcClient): Promise<unkno
 /** Only the reviewed immutable factory identity may use an invocation-wide key. */
 export function readLifecycleImmutable<T>(client: LifecycleRpcClient, key: string, work: () => Promise<T>): Promise<T> {
   return (client instanceof InvocationLifecycleClient ? client.immutableRead(key, work) : work()) as Promise<T>;
+}
+
+/** Successful deployment/backend observations live for the caller's session, not one block. */
+export function lifecycleSessionRead<T>(client: LifecycleRpcClient, key: string, work: () => Promise<T>): Promise<T> {
+  const source = lifecycleSourceClient(client);
+  const owner = source.sessionCache ?? source;
+  let values = sessionObservations.get(owner);
+  if (values === undefined) { values = new Map(); sessionObservations.set(owner, values); }
+  let pending = values.get(key);
+  if (pending === undefined) {
+    pending = work();
+    values.set(key, pending);
+    const owned = pending;
+    void pending.catch(() => { if (values.get(key) === owned) values.delete(key); });
+  }
+  return pending as Promise<T>;
+}
+
+export async function attestLifecycleMulticall(client: LifecycleRpcClient, block?: LifecycleBlock): Promise<void> {
+  const to = robinhoodMainnet.contracts.multicall3.address;
+  await lifecycleSessionRead(client, `4663:multicall:${to}`, async () => {
+    const code = rpcHex(await lifecycleRpc(client, "eth_getCode", [to, block === undefined ? "latest" : toHex(block.number)]), "Multicall3 code");
+    if (keccak256(code) !== multicall3CodeHash) throw new LifecyclePlanningError("MULTICALL_CODE_MISMATCH", "Multicall3 runtime differs from the reviewed chain4663 deployment");
+  });
+}
+
+/** Installs only SDK-observed wire results from this invocation's aggregate/lens. */
+export function seedLifecycleRead(client: LifecycleRpcClient, method: string, params: readonly unknown[], block: LifecycleBlock, value: unknown): void {
+  if (!(client instanceof InvocationLifecycleClient)) throw new LifecyclePlanningError("INVALID_READ_CONTEXT", "Snapshot reads require an invocation owner");
+  client.observeBlock(block, true);
+  client.seed(method, params, block, value);
 }
 
 /** Recheck live policy after the owner's final asynchronous canonical guards. */
@@ -468,10 +473,7 @@ export async function readLifecycleBlock(client: LifecycleRpcClient, tag: Hex | 
   return block;
 }
 export async function assertLifecycleBlock(client: LifecycleRpcClient, block: Pick<LifecycleBlock, "number" | "hash">, expectedChainId?: bigint): Promise<void> {
-  if (client instanceof InvocationLifecycleClient) {
-    client.deferCanonicalCheck(block, expectedChainId);
-    return;
-  }
+  if (client instanceof InvocationLifecycleClient) return;
   const [chainId, current] = await Promise.all([
     expectedChainId === undefined ? undefined : lifecycleRpc(client, "eth_chainId"),
     readLifecycleBlock(client, toHex(block.number)),
