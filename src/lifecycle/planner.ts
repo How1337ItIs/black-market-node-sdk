@@ -336,7 +336,7 @@ export async function prepareAndPlanLifecycleLaunch(options: PrepareAndPlanLifec
       // This is the real SDK-owned None observation, not an assumed new-launch
       // state. No onchain commitment existed at this exact snapshot to replace.
       ownedProgress = { ...diagnostic.progress, planHash: hashLaunchPlan(plan) };
-      sizing = new Map(diagnostic.simulation.steps.map((step) => [step.transactionId, { kind: "measurement" as const, gas: step.gasRequired ?? step.gasUsed! }]));
+      sizing = new Map(diagnostic.simulation.steps.map((step) => [step.transactionId, step.gasRequired ?? step.gasUsed!]));
     }
     const planned = await lifecycleStage(client, "plan", () => planLaunchWithReads({ ...options, plan }, client, executionBlock, ownedProgress, false, finalEnvelope, sizing));
     assertDraft();
@@ -576,12 +576,9 @@ export async function buildNextTransaction(options: BuildNextTransactionOptions)
     const candidate = orderedTransactions(planned.plan, planned.mode, progress, funding.approvals, batches, planned.ufg)[0];
     if (candidate === undefined) return undefined;
     if (reviewed !== undefined && !matchesReviewedNextTransaction(candidate, reviewed)) throw new LifecyclePlanningError("REVIEWED_TRANSACTION_MISMATCH", "Reviewed transaction differs from the current canonical unfinished next step");
-    const stored = reviewed === undefined ? planned.transactions.find((transaction) => transaction.id === candidate.id && transaction.data === candidate.data) : undefined;
     const observed = planned.simulation.executionProof === "proved" ? planned.simulation.steps.find((step) => step.transactionId === candidate.id && step.success) : undefined;
-    const used = observed?.gasRequired ?? observed?.gasUsed;
-    const sizing: GasSizingHints | undefined = reviewed !== undefined ? undefined : stored?.gas !== undefined
-      ? new Map([[candidate.id, { kind: "envelope", gas: stored.gas }]])
-      : used === undefined ? undefined : new Map([[candidate.id, { kind: "complete-measurement", gas: used }]]);
+    const compute = observed?.computeGasRequired;
+    const sizing: GasSizingHints | undefined = reviewed !== undefined || compute === undefined ? undefined : new Map([[candidate.id, compute]]);
     const simulation = await simulateLaunchTransactions({ client, planned, limits: limitSource, fork: options.fork, signal: options.signal }, [candidate], block, reviewed, sizing);
     assertFinalPlan(planned, options.signal);
     if (!simulation.admitted) throw new LifecyclePlanningError("PLAN_NOT_ADMITTED", simulation.reason ?? "Next exact launch transaction is not admitted", simulation);

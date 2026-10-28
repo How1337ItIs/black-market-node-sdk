@@ -202,7 +202,7 @@ function clientFor(plan, settings = {}) {
         assert.equal(block.calls.length, 1, "Actual dependent state is carried between ordered blocks");
         assert.equal(block.blockOverrides.baseFeePerGas, undefined, "Exact execution cannot fabricate fee-bearing block state");
         const tx = block.calls[0];
-        if (request.validation && state.enforceUpfrontBalance && BigInt(tx.value) + BigInt(tx.gas) * BigInt(tx.gasPrice) > nativeBalance) {
+        if (state.enforceUpfrontBalance && BigInt(tx.value) + BigInt(tx.gas) * BigInt(tx.gasPrice) > nativeBalance) {
           throw Object.assign(new Error("insufficient funds for gas * price + value"), { code: -38014 });
         }
         // Independent fee-bearing refusal: recommendations are advisory, but
@@ -265,7 +265,7 @@ function clientFor(plan, settings = {}) {
           logs = [log("LaunchActivated", { launchId: hashLaunchIdentity(executingPlan), planHash: hashLaunchPlan(executingPlan), token: TOKEN, marketCount: state.eventMarketCount ?? executingPlan.markets.length, positionCount: state.eventPositionCount ?? positionCount })];
         } else if (functionName === "cancelLaunch") { assert.ok([LifecyclePhase.Preparing, LifecyclePhase.Ready].includes(phase)); phase = LifecyclePhase.Cancelled; logs = [log("LaunchCancelled", { launchId: hashLaunchIdentity(plan), creator: plan.creator, inventoryBurned: false })]; }
         else assert.fail(`Unexpected execution ${functionName}`);
-        if (request.validation && state.enforceUpfrontBalance) nativeBalance -= BigInt(tx.value) + fullUsed * BigInt(tx.gasPrice);
+        if (state.enforceUpfrontBalance) nativeBalance -= BigInt(tx.value) + fullUsed * BigInt(tx.gasPrice);
         return { calls: [{ status: "0x1", gasUsed: toHex(fullUsed), maxUsedGas: state.maxUsedGas === null ? undefined : toHex(state.maxUsedGas ?? fullUsed), returnData, logs }] };
       });
       if (state.reorg && request.validation) reorged = true;
@@ -2696,11 +2696,12 @@ test("deferred activation receives exact gas only after canonical progress bring
   assert.deepEqual(economicRequests(client).map((row) => row.params[0].blockStateCalls.length), [1, 1]);
 });
 
-test("reviewed generic-EVM envelopes use an explicit isolated fork directly without measurement or backend switching", async () => {
+test("reviewed and compute-sized generic-EVM next commands use the explicit owned fork without source replay", async () => {
   const plan = makePlan(), source = clientFor(plan);
   const planned = await review(source, plan, { mode: "staged" });
   const reviewedTransaction = planned.transactions[0];
-  for (const succeeds of [true, false]) {
+  source.state.simulationUnavailable = true;
+  for (const held of [true, false]) for (const succeeds of [true, false]) {
     source.captured.length = 0;
     const calls = [];
     const fork = { isolation: "disposable", allowTransactions: true, sourceRpcUrl: "https://source.invalid", forkRpcUrl: "http://127.0.0.1:18545",
@@ -2720,7 +2721,7 @@ test("reviewed generic-EVM envelopes use an explicit isolated fork directly with
         if (method === "evm_revert") return true;
         assert.fail(`Unexpected reviewed-fork call${method}`);
       } } };
-    const pending = buildNextTransaction({ client: source, planned, reviewedTransaction, fork });
+    const pending = buildNextTransaction({ client: source, planned, reviewedTransaction: held ? reviewedTransaction : undefined, fork });
     if (succeeds) assert.equal((await pending).admission.executionProof, "proved");
     else await assert.rejects(pending, { code: "PLAN_NOT_ADMITTED" });
     assert.equal(economicRequests(source).length, 0, "An explicit held-fork replay never switches to native simulation");
@@ -3055,6 +3056,7 @@ test("final native validation uses an affordable returned envelope, never its RP
     const planned = await review(client, plan);
     assert.equal(planned.simulation.admitted, expected !== undefined, planned.simulation.reason);
     const exact = economicRequests(client).filter((row) => row.params[0].validation);
+    assert.ok(economicRequests(client).every((row) => row.params[0].blockStateCalls.every((block) => BigInt(block.calls[0].gas) * BigInt(block.calls[0].gasPrice) + BigInt(block.calls[0].value) <= balance)), "Unvalidated sizing must be affordable too");
     if (expected === undefined) { assert.equal(exact.length, 0); continue; }
     assert.equal(exact.length, 1);
     const sent = exact[0].params[0].blockStateCalls[0].calls[0];
@@ -3088,9 +3090,16 @@ test("staged suffix feasibility budgets are affordable and never reused as next-
   const beforeQuotes = client.state.posterRequests.length;
   const next = await buildNextTransaction({ client, planned });
   assert.equal(next.kind, "prepare");
-  assert.equal(next.gas, 201_250n, "Buffer actual complete gas without adding its poster twice");
+  assert.equal(next.gas, 201_250n, "Buffer compute and freshly quoted poster exactly once");
   assert.notEqual(next.gas, provisional);
   assert.equal(client.state.posterRequests.length, beforeQuotes + 1);
+  assert.deepEqual(economicRequests(client).map((row) => row.params[0].validation), [true]);
+  assert.equal(planned.simulation.steps[1].computeGasRequired, 100_000n);
+  client.state.poster = 200_000n;
+  client.captured.length = 0;
+  const repriced = await buildNextTransaction({ client, planned });
+  assert.equal(repriced.gas, 345_000n, "100k compute plus fresh200k poster both receive15% headroom");
+  assert.equal(repriced.estimate.gasUsed, 300_000n);
   assert.deepEqual(economicRequests(client).map((row) => row.params[0].validation), [true]);
 });
 

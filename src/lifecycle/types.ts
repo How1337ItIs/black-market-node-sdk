@@ -107,6 +107,8 @@ export type LifecycleFailureCategory = "semantic" | "capacity" | "opaque" | "sou
 export type LifecycleCapacityConstraint = "compute" | "gas-envelope" | "calldata" | "simulation-gas";
 export type LifecycleSimulationStep = {
   transactionId: string; success: boolean; gasUsed?: bigint; gasLimit?: bigint; gasRequired?: bigint;
+  /** Compute-only sizing observation, excluding Nitro poster gas; not admission. */
+  computeGasRequired?: bigint;
   returnData?: Hex; error?: string; estimate?: LifecycleTransactionEstimate;
   /** Suffix feasibility budget only, not a transaction estimate or execution admission.
    * buildNextTransaction obtains a fresh poster quote and exact envelope at its turn. */

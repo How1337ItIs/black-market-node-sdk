@@ -168,8 +168,11 @@ restriction. It is separate from compute. NodeInterface (`0xc8`)
 `gasEstimateL1Component` estimates poster allocation once for the next final
 transaction, using its exact sender/target/calldata/value at the same block.
 Compute-only calibration and fresh poster allocation size the immediate envelope
-before native validation; an already measured complete gas observation is not
-charged poster twice. The final validated pass executes exactly the returned gas.
+before native validation. `step.computeGasRequired` retains a separable compute
+observation, never the old poster charge or provisional budget. A fresh poster
+quote is combined once when that command becomes next. Both unvalidated sizing
+and the final exact pass use affordable pinned envelopes; validation:false does
+not disable Nitro's upfront funds check. The final pass uses exactly returned gas.
 Suffix steps are marked `provisional: true` and have no transaction estimate:
 their conservative complete budgets check sequence feasibility, bounded across
 the pinned affordable remaining balance. `buildNextTransaction` never reuses

@@ -11,6 +11,7 @@
 - Preserve launch economics, deployed contract ABIs and committed transaction calldata.
 - Diagnostic migration: remove `simulation.replay` and `simulation.envelope` from `LifecycleDiagnosticStage` listeners/exhaustive switches. Both stages are replaced by `simulation.measure`, which now includes the authoritative validated execution at the exact returned gas envelope. Buy calibration or an unvalidated sizing pass can also emit `simulation.measure`; neither is execution admission.
 - Staged admission still checks the full simulated sequence for feasibility, using conservative suffix gas budgets bounded by the pinned balance. Only the immediate command receives a final exact gas/price estimate and admission. Later `simulation.steps` have `provisional: true` and no estimate; their transaction gas/price/estimate/admission stay unset until `buildNextTransaction` re-sizes and proves that command with a fresh poster quote. Never reuse a provisional `gasLimit` as a transaction estimate.
+- Bound unvalidated sizing/calibration envelopes by pinned affordability too: Nitro still checks upfront funds with `validation: false`. Retain separable `LifecycleSimulationStep.computeGasRequired` so build-next combines compute with the fresh poster quote, not a previous complete observation containing an old poster charge.
 
 ## 0.13.0
 
