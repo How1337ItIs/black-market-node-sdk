@@ -1,6 +1,6 @@
 # Launch a token with the TypeScript SDK
 
-Use SDK **0.14.0** on Robinhood Chain mainnet (**4663**). For a first launch, run
+Use SDK **0.14.1** on Robinhood Chain mainnet (**4663**). For a first launch, run
 [`launch-erc20-abyss.ts`](../examples/launch-erc20-abyss.ts): one market, one position,
 one buy. [Runner setup](../examples/README.md) covers its environment and commands.
 This guide explains the economics and the public APIs for your own integration.
@@ -394,9 +394,9 @@ the next command, rather than simulating the whole remaining launch.
 Multicall3 runtime, Nitro backend capability and account-code observations are
 retained for the caller's session. Financial state and execution proof are not.
 The 4663 preset uses the deployed `hookSaltMiner`; returned salts are verified
-locally. The optional `launchLens` preset is unset in this release. Once deployed,
-its address enables dependent progress, market, balance and hook-mining reads in
-the same initial aggregate. See [read caching](reference.md#cache-static-reads-and-inspect-timing).
+locally. Its deployed `launchLens` supplies dependent progress, market, balance
+and hook-mining reads in the same initial aggregate. Callers need no lens
+configuration. See [read caching](reference.md#cache-static-reads-and-inspect-timing).
 
 ## Sign and confirm
 

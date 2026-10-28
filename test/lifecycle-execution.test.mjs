@@ -2866,9 +2866,9 @@ test("counting transport retains explicit cold entrypoint budgets and complete e
     t.diagnostic(`${name}: ${client.captured.length} RPC methods`);
   }
   for (const [fixedFinalEnvelope, vector] of [
-    [undefined, { ...atomicVector, eth_call: 4, eth_simulateV1: 3 }],
-    [{ gas: 31_000_000n }, { ...atomicVector, eth_simulateV1: 3 }],
-    [{ gas: 31_000_000n, gasPrice: 2n }, { ...atomicVector, eth_simulateV1: 3, eth_gasPrice: undefined }],
+    [undefined, { ...atomicVector, eth_simulateV1: 3 }],
+    [{ gas: 31_000_000n }, { ...atomicVector, eth_call: 2, eth_simulateV1: 3 }],
+    [{ gas: 31_000_000n, gasPrice: 2n }, { ...atomicVector, eth_call: 2, eth_simulateV1: 3, eth_gasPrice: undefined }],
   ]) {
     const client = rpcBudgetClient(options.plan);
     const result = await prepareAndPlanLifecycleLaunch({ ...options, client, buySlippageBps: 50, fixedFinalEnvelope });

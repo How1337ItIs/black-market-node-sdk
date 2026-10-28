@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.1
+
+- Enable the deployed Robinhood 4663 LaunchLens through the SDK-owned `launchLens` preset. Callers configure no lens address.
+- Pin `launchLensCodeHash` as frozen release metadata alongside the address, matching the existing factory/runtime identity convention without adding a guard-only RPC read.
+- Preserve the original exact planning, salt verification, balances, progress and execution contracts while dependent snapshot reads and hook mining use the lens.
+
 ## 0.14.0
 
 - Pin one RPC L2 header and batch same-block planning reads/native balances into one explicitly pinned chain4663 Multicall3 stage, even for fewer than three getters. Never derive L2 pins from EVM `BLOCKNUMBER`/`BLOCKHASH`, which expose L1 values on Nitro.
