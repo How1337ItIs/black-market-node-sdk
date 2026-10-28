@@ -19,6 +19,7 @@ Read the relevant skill before working on those paths.
 - Keep TypeScript ESM imports and the existing `.js` relative-import suffixes.
 - Use SDK address/ABI/client helpers; do not copy deployment addresses into apps.
 - Select the intended chain explicitly. Use `bigint` for token amounts and fixed-point values.
+- Lifecycle plans/build-next never read or assign wallet nonces. Keep profile admission distinct from native execution; conversion-carrying commands and dependent activation require the latter. Recreate a bound client on chain changes rather than adding fresh chain guards.
 - Keep launch cases independently runnable with one command and no arguments.
 - Load secrets from the environment or an existing `.env`; never overwrite it.
 

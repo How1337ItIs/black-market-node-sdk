@@ -1,10 +1,10 @@
 import { decodeFunctionResult, encodeFunctionData, keccak256, stringToHex, zeroAddress, type Address } from "viem";
 import { lifecycleErc20Abi } from "./abi.js";
 import { ufgLaunchProxyV1Abi, ufgTreasuryFactoryV1Abi } from "./ufg-abi.js";
-import { buildLaunchTransactions } from "./transactions.js";
+import { buildLifecycleCommands } from "./transactions.js";
 import { decodeAbyssLifecycleMarketConfig, encodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig } from "./markets.js";
 import { getKnownLifecycleProfile, KnownLifecycleProfile } from "./presets.js";
-import { LifecycleFundingKind, LifecycleTokenKind, LifecycleRewardMode, LifecycleMode, type LaunchPlanV1 } from "./schema.js";
+import { LifecycleFundingKind, LifecycleTokenKind, LifecycleRewardMode, type LaunchPlanV1 } from "./schema.js";
 import { LifecyclePlanningError, type BuildLaunchTransactionsOptions, type LifecycleRpcClient, type LifecycleTransaction } from "./types.js";
 import { buildUfgFeeAssetPolicies, encodeUfgLaunchConfig, hashUfgLaunchConfig, isUfgProfile, UFG_DYNAMIC_ADAPTER_ID, UFG_FIXED_ADAPTER_ID, UFG_FIXED_PROFILE_ID, UFG_LAUNCH_PROXY_ADDRESS, UFG_TREASURY_FACTORY_ADDRESS, ufgPlanPrincipal, type UfgLaunchConfig } from "./ufg-config.js";
 
@@ -49,11 +49,7 @@ export function buildUfgLaunchTransactions(options: BuildUfgLaunchTransactionsOp
   const { plan, config } = options;
   const principal = ufgPlanPrincipal(plan);
   encodeUfgLaunchConfig(config);
-  return buildLaunchTransactions(options).map((transaction) => {
-    const data = transaction.kind === "atomic" ? encodeFunctionData({ abi: ufgLaunchProxyV1Abi, functionName: "launchAtomic", args: [plan, config] })
-      : transaction.kind === "begin" ? encodeFunctionData({ abi: ufgLaunchProxyV1Abi, functionName: "beginLaunch", args: [plan, LifecycleMode.Staged, config] }) : transaction.data;
-    return { ...transaction, from: principal, to: UFG_LAUNCH_PROXY_ADDRESS, data, calldataBytes: (data.length - 2) / 2 };
-  });
+  return buildLifecycleCommands(options, { account: principal, config });
 }
 export function buildUfgCancelTransaction({ plan, preparedMarkets = 0 }: { plan: LaunchPlanV1; preparedMarkets?: number }): LifecycleTransaction {
   const data = encodeFunctionData({ abi: ufgLaunchProxyV1Abi, functionName: "cancelLaunch", args: [plan] });

@@ -57,7 +57,7 @@ for (const liveStateSuccess of [true, false]) test(`deployed preset snapshot rep
     const block = await readLifecyclePlanningBlock(client, source.plan, source.plan.creator);
     assert.equal(block.number, 42n); assert.equal(block.hash, toHex(42n, { size: 32 }));
     const progress = await readLaunchProgress({ client, planned: source.planned }, block);
-    assert.equal(progress.pendingAccountNonce, 7n);
+    assert.equal(progress.confirmationSafe, true);
     assert.equal(progress.markets.length, 1);
     assert.equal(progress.markets[0].live?.liquidity, liveStateSuccess ? 123n : undefined);
     assert.equal(Boolean(progress.markets[0].error), !liveStateSuccess);
@@ -65,6 +65,7 @@ for (const liveStateSuccess of [true, false]) test(`deployed preset snapshot rep
   assert.equal(source.calls.filter((call) => call.method === "eth_call").length, 1);
   assert.equal(source.calls.filter((call) => call.method === "eth_getBlockByNumber").length, 1);
   assert.equal(source.calls.some((call) => call.method === "eth_getBalance"), false);
+  assert.equal(source.calls.some((call) => call.method === "eth_getTransactionCount"), false);
 });
 
 test("a lens result from a different chain is rejected at the snapshot boundary", async () => {

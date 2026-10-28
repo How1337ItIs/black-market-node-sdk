@@ -1,11 +1,10 @@
 import { decodeErrorResult, decodeEventLog, decodeFunctionResult, encodeFunctionData, encodeFunctionResult, parseAbi, toHex, type Hex } from "viem";
 import { fixedFeePoolHookV1Abi, launchLifecycleAbi, lifecycleErc20Abi } from "./abi.js";
 import { hashLaunchIdentity, hashLaunchPlan, LifecyclePhase, type LaunchPlanV1, type LaunchProgressV1, type LaunchReceiptV1 } from "./schema.js";
-import { assertLifecycleReadClientOpen, lifecycleFailureReason, lifecyclePinnedRpc, lifecycleRpc, lifecycleSessionRead, lifecycleSourceClient, lifecycleStage, nitroArbSys, nitroArbSysAbi, nitroGasInfo, nitroGasInfoAbi, readLifecycleBlock, readLifecycleChainId, readLifecycleGasPrice, readNitroPosterGas, registerLifecycleFinalCheck, resolveLifecycleLimits, rpcHex, rpcObject, rpcQuantity, type LifecycleLimitObservation } from "./rpc.js";
+import { assertLifecycleReadClientOpen, lifecycleFailureReason, lifecyclePinnedRpc, lifecycleRpc, lifecycleSessionRead, lifecycleSourceClient, lifecycleStage, nitroArbSys, nitroArbSysAbi, nitroGasInfo, nitroGasInfoAbi, nitroPosterGasBound, readLifecycleBlock, readLifecycleChainId, readLifecycleGasPrice, readNitroPrices, registerLifecycleFinalCheck, resolveLifecycleLimits, rpcHex, rpcObject, rpcQuantity, withLifecycleReadClient, type LifecycleLimitObservation } from "./rpc.js";
 import { LifecyclePlanningError, type ControlledLifecycleFork, type LifecycleBlock, type LifecycleLimitContext, type LifecyclePostcondition, type LifecycleRpcClient, type LifecycleSimulation, type LifecycleSimulationStep, type LifecycleTransaction, type PlannedLaunch, type ResolvedLifecycleLimits, type SimulateLaunchPlanOptions } from "./types.js";
 import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, isPoolBoundV4ConfigVersion } from "./markets.js";
 import { hmmV2ForwardingReserve } from "./presets.js";
-import { transactionGasEstimate } from "./transactions.js";
 import { hashUfgLaunchConfig } from "./ufg-config.js";
 
 function committedPositionCount(plan: LaunchPlanV1): number {
@@ -118,7 +117,7 @@ async function simulateRpcPass(client: LifecycleRpcClient, planned: PlannedLaunc
   // parent gasLimit are set.
   const blockStateCalls = transactions.map((transaction, index) => ({
     blockOverrides: { number: toHex(block.number + BigInt(index + 1)), time: toHex(block.timestamp + BigInt(index + 1)), gasLimit: toHex(block.gasLimit) },
-    calls: [{ from: transaction.from, to: transaction.to, data: transaction.data, value: toHex(transaction.value), gas: toHex(gasLimits[index] ?? limits.executionGasCeiling), gasPrice: toHex(gasPrice), ...(transaction.nonce === undefined ? {} : { nonce: toHex(transaction.nonce) }) }],
+    calls: [{ from: transaction.from, to: transaction.to, data: transaction.data, value: toHex(transaction.value), gas: toHex(gasLimits[index] ?? limits.executionGasCeiling), gasPrice: toHex(gasPrice) }],
   }));
   const result = await lifecycleRpc(client, "eth_simulateV1", [{ blockStateCalls, validation, traceTransfers: false, returnFullTransactions: false }, toHex(block.number)]);
   if (!Array.isArray(result) || result.length !== transactions.length) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Sequential simulation omitted blocks");
@@ -222,7 +221,7 @@ async function simulateForkPass(fork: ControlledLifecycleFork, planned: PlannedL
     await lifecycleRpc(fork.client, fork.resetMethod ?? "anvil_reset", [{ forking: { jsonRpcUrl: fork.sourceRpcUrl, blockNumber: Number(block.number) } }]);
     forkBlock = await readLifecycleBlock(fork.client);
   }
-  const forkChain = rpcQuantity(await lifecycleRpc(fork.client, "eth_chainId"), "fork chain ID");
+  const forkChain = await readLifecycleChainId(fork.client);
   if (forkChain !== planned.chainId || forkChain !== (fork.expectedChainId ?? planned.chainId) || forkBlock.hash.toLowerCase() !== block.hash.toLowerCase() || forkBlock.hash.toLowerCase() !== (fork.expectedBlockHash ?? block.hash).toLowerCase()) throw new LifecyclePlanningError("FORK_STATE_MISMATCH", "Controlled fork must match the exact source chain and pinned latest block before simulation");
   const snapshot = rpcHex(await lifecycleRpc(fork.client, "evm_snapshot"), "fork snapshot");
   const steps: LifecycleSimulationStep[] = [];
@@ -239,12 +238,12 @@ async function simulateForkPass(fork: ControlledLifecycleFork, planned: PlannedL
       if (transaction === undefined || gas === undefined) throw new LifecyclePlanningError("INVALID_SIMULATION", "Missing fork transaction/gas context");
       try {
         if (measure) {
-          const estimated = rpcQuantity(await lifecycleRpc(fork.client, "eth_estimateGas", [{ from: transaction.from, to: transaction.to, data: transaction.data, value: toHex(transaction.value), gasPrice: toHex(gasPrice), ...(transaction.nonce === undefined ? {} : { nonce: toHex(transaction.nonce) }) }]), "fork sequential gas estimate");
+          const estimated = rpcQuantity(await lifecycleRpc(fork.client, "eth_estimateGas", [{ from: transaction.from, to: transaction.to, data: transaction.data, value: toHex(transaction.value), gasPrice: toHex(gasPrice) }]), "fork sequential gas estimate");
           gasRequired = estimated;
           const buffered = (estimated * BigInt(10000 + headroomBps) + 9999n) / 10000n;
           if (buffered < gas) gas = buffered;
         }
-        const hash = rpcHex(await lifecycleRpc(fork.client, "eth_sendTransaction", [{ from: transaction.from, to: transaction.to, data: transaction.data, value: toHex(transaction.value), gas: toHex(gas), gasPrice: toHex(gasPrice), ...(transaction.nonce === undefined ? {} : { nonce: toHex(transaction.nonce) }) }]), "fork transaction hash");
+        const hash = rpcHex(await lifecycleRpc(fork.client, "eth_sendTransaction", [{ from: transaction.from, to: transaction.to, data: transaction.data, value: toHex(transaction.value), gas: toHex(gas), gasPrice: toHex(gasPrice) }]), "fork transaction hash");
         const receipt = await waitForkReceipt(fork.client, hash, fork.receiptTimeoutMs ?? 10_000);
         const gasUsed = rpcQuantity(receipt.gasUsed, "fork gas used");
         if (rpcQuantity(receipt.status, "fork transaction status") !== 1n) {
@@ -307,15 +306,15 @@ async function simulateForkPass(fork: ControlledLifecycleFork, planned: PlannedL
 type SimulationObservations = [LifecycleLimitObservation, unknown, unknown, unknown];
 /** Internal, operation-local fee envelope for the already matched immediate step. */
 export type NextTransactionEnvelope = Readonly<{ gas: bigint; gasPrice: bigint }>;
-/** Compute-only sizing observations; native poster charges are never included. */
-export type GasSizingHints = ReadonlyMap<string, bigint>;
+/** Internal compute sizing: measurements need buffering; profile bounds already include it. */
+export type GasSizingHints = Readonly<{ kind: "measured" | "profiled"; values: ReadonlyMap<string, bigint> }>;
 export type PreparedLaunchSimulation = ((transactions: readonly LifecycleTransaction[], nextEnvelope?: NextTransactionEnvelope) => Promise<LifecycleSimulation>) & {
   /** Unadmitted diagnostic results only; final measurement validates exact calldata. */
   measure(transactions: readonly LifecycleTransaction[]): Promise<LifecycleSimulation>;
   close(): void;
 };
 
-function observedFields<T extends object>(value: T): () => boolean {
+export function observedFields<T extends object>(value: T): () => boolean {
   const keys = Object.keys(value) as (keyof T)[];
   const values = keys.map((key) => value[key]);
   return () => keys.length === Object.keys(value).length && keys.every((key, index) => value[key] === values[index]);
@@ -362,7 +361,7 @@ export function prepareLaunchSimulation(options: SimulateLaunchPlanOptions, bloc
       resolveLifecycleLimits(context, policy),
       readLifecycleChainId(client),
       lifecycleSessionRead(client, `${planned.chainId}:account-code:${context.account.toLowerCase()}`, () => lifecyclePinnedRpc(client, "eth_getCode", [context.account, toHex(context.block.number)], context.block)),
-      hasTransactions && reviewedEnvelope === undefined ? selectedGasPrice ?? readLifecycleGasPrice(client) : undefined,
+      hasTransactions && reviewedEnvelope === undefined ? selectedGasPrice ?? readLifecycleGasPrice(client, block, planned.chainId) : undefined,
     ]));
   })().then((observations) => ({ observations }), (failure: unknown) => ({ failure }));
   // Refused inputs may discard this read-only preparation before it settles.
@@ -438,12 +437,14 @@ export function prepareLaunchSimulation(options: SimulateLaunchPlanOptions, bloc
 }
 
 export async function simulateLaunchTransactions(options: SimulateLaunchPlanOptions, transactions: readonly LifecycleTransaction[], pinnedBlock?: LifecycleBlock, nextEnvelope?: NextTransactionEnvelope, sizing?: GasSizingHints): Promise<LifecycleSimulation> {
-  // Standalone calls always produce fresh context, including live chain and fees.
+  // Standalone calls own one fresh block/pricing context, not fresh chain guards.
   if (options.fork !== undefined && lifecycleSourceClient(options.fork.client) === lifecycleSourceClient(options.client)) throw new LifecyclePlanningError("UNSAFE_FORK", "Source RPC must never receive controlled simulation transactions/snapshots/resets");
-  const block = pinnedBlock ?? await readLifecycleBlock(options.client);
-  const prepared = prepareLaunchSimulation(options, block, transactions.length !== 0, nextEnvelope, undefined, sizing);
-  try { return await prepared(transactions, nextEnvelope); }
-  finally { prepared.close(); }
+  return withLifecycleReadClient(options.client, async (client) => {
+    const [block] = await Promise.all([pinnedBlock ?? readLifecycleBlock(client), readLifecycleChainId(client)]);
+    const prepared = prepareLaunchSimulation({ ...options, client }, block, transactions.length !== 0, nextEnvelope, undefined, sizing);
+    try { return await prepared(transactions, nextEnvelope); }
+    finally { prepared.close(); }
+  });
 }
 
 async function simulateLaunchTransactionsWithContext(
@@ -462,7 +463,7 @@ async function simulateLaunchTransactionsWithContext(
   const sourceClient = lifecycleSourceClient(client);
   const { block } = context;
   const [{ limits, configuration }, chainId, accountCodeValue, gasPriceValue] = observations;
-  const base = { confidence: "stateful" as const, executionProof: "failed" as const, protocolFit: "unknown" as const, transportPreflight: "not-requested" as const, blockNumber: block.number, blockHash: block.hash, account: planned.account, chainId: planned.chainId, limits, deferredTransactionIds: [] as string[] };
+  const base = { confidence: "stateful" as const, executionProof: "failed" as const, protocolFit: "unknown" as const, blockNumber: block.number, blockHash: block.hash, account: planned.account, chainId: planned.chainId, limits, deferredTransactionIds: [] as string[] };
   if (chainId !== planned.chainId) throw new LifecyclePlanningError("CHAIN_MISMATCH", "RPC chain changed before sequential simulation");
   const accountCode = rpcHex(accountCodeValue, "account code");
   if (accountCode !== "0x") {
@@ -481,31 +482,6 @@ async function simulateLaunchTransactionsWithContext(
     typeof nextEnvelope.gasPrice !== "bigint" || nextEnvelope.gasPrice < 0n || nextEnvelope.gasPrice >= 1n << 256n)) {
     throw new LifecyclePlanningError("INVALID_GAS_ENVELOPE", "Reviewed replay requires one immediate transaction with exact uint64 gas and uint256 price");
   }
-  const allTransactions = transactions;
-  if (limits.maxSimulationGas !== undefined && nextEnvelope === undefined) {
-    let estimatedGas = 0n, count = 0;
-    for (const transaction of transactions) {
-      estimatedGas += transactionGasEstimate(planned.plan, transaction);
-      if (estimatedGas > limits.maxSimulationGas) break;
-      count += 1;
-    }
-    transactions = transactions.slice(0, count);
-    base.deferredTransactionIds = allTransactions.slice(count).map((transaction) => transaction.id);
-    if (count === 0) {
-      const computeCap = limits.transactionGasCeiling !== undefined && limits.transactionGasCeiling < limits.executionGasCeiling ? limits.transactionGasCeiling : limits.executionGasCeiling;
-      const exceedsCompute = estimatedGas > computeCap;
-      const gasInMillions = (gas: bigint) => {
-        const tenths = (gas + 50_000n) / 100_000n;
-        return `${tenths / 10n}.${tenths % 10n}`;
-      };
-      const atomic = allTransactions[0]!.kind === "atomic";
-      const reason = exceedsCompute
-        ? `${atomic ? "Atomic launch" : "Immediate transaction"} needs about ${gasInMillions(estimatedGas)}M gas, above the ${gasInMillions(computeCap)}M per-transaction limit${atomic ? "; use staged" : ""}`
-        : "The immediate transaction estimate exceeds the RPC aggregate simulation gas cap; no prefix can be proved";
-      
-      return { ...base, confidence: "provisional", executionProof: "unavailable", backend: "unavailable", admitted: false, steps: [], failureCategory: "capacity", capacityConstraint: exceedsCompute ? "compute" : "simulation-gas", reason };
-    }
-  }
   const recommendedGasPrice = nextEnvelope === undefined ? typeof gasPriceValue === "bigint" ? gasPriceValue : rpcQuantity(gasPriceValue, "gas price") : nextEnvelope.gasPrice;
   // New recommendations cover lagging quotes; reviewed fees are replayed unchanged
   // under natural child fees, never refreshed or silently increased.
@@ -516,11 +492,11 @@ async function simulateLaunchTransactionsWithContext(
   const posterGas: bigint[] = [];
   if (limits.protocol === "nitro") {
     try {
-      const [, estimates] = await Promise.all([
+      const [, prices] = await Promise.all([
         proveBackend(limits, gasPrice),
-        !diagnostic && nextEnvelope === undefined ? lifecycleStage(client, "simulation.poster", async () => [buffer((await readNitroPosterGas(transactions[0]!, context)).posterGas)]) : [],
+        !diagnostic && nextEnvelope === undefined ? readNitroPrices(client, block) : undefined,
       ]);
-      posterGas.push(...estimates);
+      if (prices !== undefined) for (const transaction of transactions) posterGas.push(nitroPosterGasBound(transaction, prices).posterGas);
     } catch (failure) {
       if (simulationFailureKind(failure) === "abort") throw failure;
       assertCurrent();
@@ -529,8 +505,9 @@ async function simulateLaunchTransactionsWithContext(
     }
   }
   assertCurrent();
-  const discoveryGas = transactions.map(() => {
-    const total = limits.protocol === "nitro" ? limits.maxSimulationGas ?? block.gasLimit : limits.executionGasCeiling;
+  const discoveryGas = transactions.map((_transaction, index) => {
+    const computeAndPoster = limits.executionGasCeiling + (posterGas[index] ?? 0n);
+    const total = limits.maxSimulationGas !== undefined && limits.maxSimulationGas < computeAndPoster ? limits.maxSimulationGas : computeAndPoster;
     const capped = limits.transactionGasCeiling !== undefined && limits.transactionGasCeiling < total ? limits.transactionGasCeiling : total;
     if (capped <= 0n || capped >= 1n << 64n) throw new LifecyclePlanningError("INVALID_GAS_ENVELOPE", "Compute/poster envelope exceeds uint64 gas");
     return capped;
@@ -538,7 +515,8 @@ async function simulateLaunchTransactionsWithContext(
   if (discoveryGas[0]! * gasPrice + transactions[0]!.value >= 1n << 256n) throw new LifecyclePlanningError("INVALID_GAS_ENVELOPE", "Transaction value and fee envelope exceed uint256");
   const balance = rpcQuantity(await lifecyclePinnedRpc(client, "eth_getBalance", [planned.account, toHex(block.number)], block), "creator native balance");
   let measured: LifecycleSimulationStep[] = [];
-  const hasSizing = !diagnostic && transactions.every((transaction) => sizing?.has(transaction.id));
+  const hasSizing = !diagnostic && transactions.every((transaction) => sizing?.values.has(transaction.id));
+  const profiledSizing = hasSizing && sizing?.kind === "profiled";
   let backend: "eth_simulateV1" | "controlled-fork" = (nextEnvelope !== undefined || hasSizing) && limits.protocol === "evm" && options.fork !== undefined ? "controlled-fork" : "eth_simulateV1";
   if (nextEnvelope === undefined && !hasSizing) {
     // Nitro checks upfront funds even with validation:false. Bound discovery
@@ -590,17 +568,11 @@ async function simulateLaunchTransactionsWithContext(
       return { ...base, confidence: "provisional", executionProof: "unavailable", backend, admitted: false, steps: measured,
         failedTransactionId: refusal.transactionId, failureCategory: "affordability", reason: "Native balance does not provide the sequential sizing margin; an exact transaction envelope was not proved" };
     }
-    if (failedIndex >= 0 && limits.maxSimulationGas !== undefined &&
+    if (refusal?.failureCategory === "capacity" && limits.maxSimulationGas !== undefined &&
       measured.reduce((gas, step) => gas + (step.gasUsed ?? 0n), 0n) * 100n >= limits.maxSimulationGas * 95n) {
-      // The provider exhausted its aggregate used-gas budget, not the contract.
-      // Preserve only actual successful results; the failed call is deferred too.
-      measured = measured.slice(0, failedIndex);
-      transactions = transactions.slice(0, failedIndex);
-      base.deferredTransactionIds = allTransactions.slice(failedIndex).map((transaction) => transaction.id);
-      if (transactions.length === 0) {
-        
-        return { ...base, confidence: "provisional", executionProof: "unavailable", backend, admitted: false, steps: [], failureCategory: "source", reason: "RPC aggregate simulation gas cap left no successful prefix to prove" };
-      }
+      return { ...base, backend, confidence: "provisional", executionProof: "unavailable", admitted: false, steps: measured,
+        deferredTransactionIds: transactions.slice(failedIndex).map((transaction) => transaction.id), failedTransactionId: refusal.transactionId,
+        failureCategory: "source", capacityConstraint: "simulation-gas", reason: "RPC aggregate simulation gas cap prevented a complete launch proof" };
     }
     const failed = measured.find((step) => !step.success);
     if (diagnostic && failed !== undefined) return { ...base, backend, admitted: false, steps: measured, reason: failed.error, failedTransactionId: failed.transactionId, failureCategory: failed.failureCategory ?? "opaque", capacityConstraint: failed.failureCategory === "capacity" ? "compute" : undefined };
@@ -611,30 +583,46 @@ async function simulateLaunchTransactionsWithContext(
   }
   const sizedTransactions = measured.length === 0 ? transactions : transactions.slice(0, measured.length);
   const minimumGas = sizedTransactions.map((transaction, index) => {
-    return nextEnvelope !== undefined ? 0n : hasSizing ? sizing!.get(transaction.id)! : measured[index]!.gasRequired ?? measured[index]!.gasUsed!;
+    const value = nextEnvelope !== undefined ? 0n : hasSizing ? sizing!.values.get(transaction.id)! : measured[index]!.gasRequired ?? measured[index]!.gasUsed!;
+    return profiledSizing && value > limits.executionGasCeiling ? limits.executionGasCeiling : value;
   });
   const gasLimits = nextEnvelope === undefined ? sizedTransactions.map((transaction, index) => {
     // Suffix budgets prove feasibility, not a future transaction's fee estimate.
-    if (index > 0) return discoveryGas[index]!;
+    if (index > 0) {
+      const desired = profiledSizing ? minimumGas[index]! + (posterGas[index] ?? 0n) : discoveryGas[index]!;
+      return desired < discoveryGas[index]! ? desired : discoveryGas[index]!;
+    }
     const gross = minimumGas[index]!;
     const reserve = transaction.kind === "activate" || transaction.kind === "atomic" ? hmmV2ForwardingReserve(planned.plan) : 0n;
-    const buffered = gross + reserve > buffer(gross) ? gross + reserve : buffer(gross);
+    const buffered = profiledSizing ? gross : gross + reserve > buffer(gross) ? gross + reserve : buffer(gross);
     const desired = buffered + (posterGas[0] ?? 0n);
     return desired < discoveryGas[index]! ? desired : discoveryGas[index]!;
   }) : [nextEnvelope.gas];
   if (gasLimits[0]! * gasPrice + transactions[0]!.value >= 1n << 256n) throw new LifecyclePlanningError("INVALID_GAS_ENVELOPE", "Transaction value and fee envelope exceed uint256");
   const validate = nextEnvelope !== undefined || measured.every((step) => step.success);
+  let profileBudgetLimited = false;
   if (nextEnvelope === undefined) {
     const value = transactions.reduce((total, transaction) => total + transaction.value, 0n);
     let available = balance - value;
-    let suffixMinimum = minimumGas.slice(1).reduce((total, gas) => total + gas, 0n);
     if (gasPrice !== 0n) available /= gasPrice;
-    for (let index = 0; index < gasLimits.length && gasPrice !== 0n; index += 1) {
-      const minimum = minimumGas[index]!;
-      if (index > 0) suffixMinimum -= minimum;
-      const budget = index === 0 ? available - suffixMinimum : minimum + (available - minimum - suffixMinimum) / BigInt(gasLimits.length - index);
-      if (gasLimits[index]! > budget) gasLimits[index] = budget;
-      available -= gasLimits[index]!;
+    if (profiledSizing && gasPrice !== 0n && gasLimits.reduce((total, gas) => total + gas, 0n) > available) {
+      // One exact attempt, not another sizing pass. No partial observations are
+      // invented when the payer cannot reserve the profiled margins up front.
+      profileBudgetLimited = true;
+      for (let index = 0; index < gasLimits.length; index += 1) {
+        const share = available / BigInt(gasLimits.length - index);
+        if (gasLimits[index]! > share) gasLimits[index] = share;
+        available -= gasLimits[index]!;
+      }
+    } else {
+      let suffixMinimum = minimumGas.slice(1).reduce((total, gas) => total + gas, 0n);
+      for (let index = 0; index < gasLimits.length && gasPrice !== 0n; index += 1) {
+        const minimum = minimumGas[index]!;
+        if (index > 0) suffixMinimum -= minimum;
+        const budget = index === 0 ? available - suffixMinimum : minimum + (available - minimum - suffixMinimum) / BigInt(gasLimits.length - index);
+        if (gasLimits[index]! > budget) gasLimits[index] = budget;
+        available -= gasLimits[index]!;
+      }
     }
     if (balance < value || gasLimits.some((gas, index) => gas <= 0n && minimumGas[index]! > 0n)) return { ...base, executionProof: "unavailable", backend, admitted: false, steps: measured, failureCategory: "affordability", reason: "Creator native balance cannot fund transaction value and execution fee envelopes" };
   }
@@ -657,11 +645,17 @@ async function simulateLaunchTransactionsWithContext(
     } catch (failure) {
       if (simulationFailureKind(failure) === "abort") throw failure;
       assertCurrent();
+      if (upfrontFundsFailure(failure)) return { ...base, backend, confidence: "provisional", executionProof: "unavailable", admitted: false, steps: [], failureCategory: "affordability", reason: "Native balance cannot reserve the exact sequence fee envelopes" };
       return { ...base, backend: "unavailable", confidence: "provisional", executionProof: "unavailable", admitted: false, steps: [], reason: `Exact transaction simulation unavailable: ${lifecycleFailureReason(failure)}` };
     }
   }
   assertCurrent();
-  const finalFailure = verifiedSteps.find((step) => !step.success);
+  const failedIndex = verifiedSteps.findIndex((step) => !step.success);
+  let finalFailure = verifiedSteps[failedIndex];
+  if (profileBudgetLimited && finalFailure?.failureCategory === "capacity" && finalFailure.gasLimit !== undefined && finalFailure.gasLimit < limits.executionGasCeiling) {
+    finalFailure = { ...finalFailure, failureCategory: "affordability", error: "Native balance does not provide the profiled sequence margin; an exact affordable envelope was not proved" };
+    verifiedSteps[failedIndex] = finalFailure;
+  }
   const estimates: LifecycleSimulationStep[] = [];
   let remainingBalance = finalFailure === undefined ? balance : undefined;
   let affordabilityFailure: string | undefined;
@@ -669,7 +663,7 @@ async function simulateLaunchTransactionsWithContext(
   for (let index = 0; index < verifiedSteps.length; index += 1) {
     const step = verifiedSteps[index]; const transaction = transactions[index]; const gasLimit = gasLimits[index];
     if (step === undefined || transaction === undefined || gasLimit === undefined) throw new LifecyclePlanningError("INVALID_SIMULATION", "Missing verified fee context");
-    if (index > 0) { estimates.push({ ...step, computeGasRequired: minimumGas[index], provisional: true }); continue; }
+    if (index > 0) { estimates.push({ ...step, computeGasRequired: profiledSizing ? undefined : minimumGas[index], provisional: true }); continue; }
     const dataFee = limits.protocol === "nitro" ? 0n : configuration.estimateDataFee === undefined ? undefined : await configuration.estimateDataFee({ ...transaction, gas: gasLimit, gasPrice }, feeContext);
     if (dataFee !== undefined && (typeof dataFee !== "bigint" || dataFee < 0n || dataFee >= 1n << 256n)) throw new LifecyclePlanningError("INVALID_DATA_FEE", "Data-fee oracle must return a nonnegative uint256 bigint amount");
     // Nitro gas includes poster charges. Never add the quoted poster fee again.
@@ -681,7 +675,7 @@ async function simulateLaunchTransactionsWithContext(
       remainingBalance -= required;
     }
     const poster = posterGas[index];
-    estimates.push({ ...step, computeGasRequired: nextEnvelope === undefined ? minimumGas[index] : undefined, estimate: { gasUsed: step.gasUsed ?? 0n, gasLimit, gasPrice, executionFee, dataFee, posterGas: poster, posterFee: poster === undefined ? undefined : poster * gasPrice, dataFeeIncludedInGas: limits.protocol === "nitro", totalFee: dataFee === undefined ? undefined : executionFee + dataFee, feeConfidence: dataFee === undefined ? "execution-only" : "execution-and-data" } });
+    estimates.push({ ...step, computeGasRequired: nextEnvelope === undefined && !profiledSizing ? minimumGas[index] : undefined, estimate: { gasUsed: step.gasUsed, gasLimit, gasPrice, executionFee, dataFee, posterGas: poster, posterFee: poster === undefined ? undefined : poster * gasPrice, dataFeeIncludedInGas: limits.protocol === "nitro", totalFee: dataFee === undefined ? undefined : executionFee + dataFee, feeConfidence: dataFee === undefined ? "execution-only" : "execution-and-data" } });
   }
   
   return { ...base, backend, executionProof: finalFailure === undefined ? "proved" : "failed", protocolFit: finalFailure === undefined ? "proved" : "unknown", admitted: finalFailure === undefined && affordabilityFailure === undefined, steps: estimates, reason: finalFailure?.error ?? affordabilityFailure, failedTransactionId: finalFailure?.transactionId, failureCategory: finalFailure?.failureCategory ?? (affordabilityFailure === undefined ? undefined : "affordability"), capacityConstraint: finalFailure?.failureCategory === "capacity" ? "compute" : undefined };

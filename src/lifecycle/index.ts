@@ -11,9 +11,10 @@ export { ABYSS_LIFECYCLE_CONFIG_SCHEMA, readLifecycleTokenAtBlock, readLifecycle
 export * from "./fork.js";
 export * from "./authors.js";
 export * from "./presets.js";
-export * from "./transactions.js";
+export { preparationGasEstimate, packPreparationBatches, buildLaunchTransactions } from "./transactions.js";
 export { createLifecycleSessionCache } from "./rpc.js";
 export { launchLensAbi } from "./lens.js";
 export { hookSaltMinerAbi } from "./mining.js";
 export { planLaunch, simulateLaunchPlan, buildNextTransaction, prepareAndPlanLifecycleLaunch } from "./planner.js";
+export { computeLifecycleOpeningBuys } from "./opening-buys.js";
 export { assertLaunchTopologyCoverage, getTickAtSqrtRatio, type LaunchTopologyCoverageInput, type LaunchTopologyPosition } from "../launch.js";

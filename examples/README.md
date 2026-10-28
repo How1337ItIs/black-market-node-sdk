@@ -44,7 +44,7 @@ Copy `launch-example.ts`, `launch-example-support.ts`, and `launch-example-kyber
 | `EXAMPLE_ACCOUNT_GAS_CAP` | Optional wallet/account transaction gas-envelope ceiling. |
 | `EXAMPLE_MAX_CALLDATA_BYTES` | Optional whole-transaction byte ceiling. |
 | `EXAMPLE_HEADROOM_BPS` | Gas headroom, default `1500`; accepted range 0–10,000. |
-| `EXAMPLE_SIMULATION_GAS_CAP` | Aggregate simulation-used gas budget; default 50M on chain 4663. |
+| `EXAMPLE_SIMULATION_GAS_CAP` | Optional aggregate simulation-used gas ceiling; no SDK-invented default window. |
 
 Configure **exactly one** of `PRIVATE_KEY` and `EXAMPLE_KEYSTORE_PATH`.
 A keystore must be a regular file owned by your user with owner-only permissions.
@@ -117,7 +117,7 @@ node examples/launch-erc20-abyss.ts --resume "launch-results/<original-run-dir>"
 
 | Mode | Reads / writes | Identity |
 | --- | --- | --- |
-| No flags | Live discovery, funding quotes, preparation, simulation, economic output; unsigned, no API writes | Fresh plan/run directory |
+| No flags | Live discovery, funding quotes, preparation, profiled or executed economic review; unsigned, no API writes | Fresh plan/run directory |
 | `--broadcast` | Signs, spends, stages/uploads metadata, deploys, verifies, and publishes; no further prompt | **Fresh plan**, not the preceding dry run |
 | `--resume <original-run-dir>` | May sign remaining steps or finish publication | Retained plan, receipts, mode, confirmation policy, and API session |
 
@@ -125,10 +125,11 @@ Dry-run needs the signer source, RPC/API, and sufficient funds for execution adm
 Review its economics, then review the fresh broadcast output too. Mode flags cannot
 be combined or duplicated. Resume is an execution authorization; omit `--broadcast`.
 
-The default proof window is **50M aggregate used gas**, not a per-transaction limit.
-Opening-buy calibration needs activation inside the proven prefix. A deferred activation
-cannot produce protected buy minima. Raise `EXAMPLE_SIMULATION_GAS_CAP` only when your
-provider supports it; start with one market when checking an unfamiliar RPC.
+Covered template steps use generous gas profiles and exact local ordered curve math.
+Conversions and activation consuming conversion funding still require exact native
+execution of the complete staged sequence; a successful prefix is not admission.
+An explicit `EXAMPLE_SIMULATION_GAS_CAP` may tighten policy, not authorize partial proof.
+See [coverage and migration](../docs/lifecycle-gas-profiles.md) for evidence and limitations.
 
 ### Fund opening buys
 
@@ -166,8 +167,10 @@ It does not automatically retry sends, adopt replacements, cancel, or create ano
 | Unstarted / Cancelled / unresolved signed hash | Stops for reconciliation; do not use a new invocation as a retry. |
 
 Resume retains salts and buy minima; it does not rerun preparation or recalibrate economics.
-For replacements, retain original `transactionHash` and effective `replacementHash`,
-plus observed block number/hash. A missing receipt alone does not establish a reorg.
+For replacements, retain original `transactionHash`, effective `replacementHash`,
+observed block number/hash and the actual submitted nonce as an exact bigint
+(decimal string in journals). SDK planning has no account-queue nonce gate; the
+wallet assigns and tracks nonces. A missing receipt alone does not establish a reorg.
 
 Metadata is staged before deployment. Publication uses the **original activation hash**.
 A `LaunchPublishPending` response means indexing is pending; the runner polls for up

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.15.0
+
+- Remove wallet nonce reads from lifecycle planning/build-next and remove fixed nonces from unsigned `LifecycleTransaction` envelopes. The plan identity nonce is unchanged. Learn the submitted nonce from the wallet/transaction, retain optional exact `LifecycleReceiptReference.nonce`, and keep queue/reload recovery with the wallet. Progress no longer exposes confirmed/head/pending account nonce gates.
+- Cache chain identity once per bound client object, including author paths. Recreate the client on a chain switch; planning never depends on fresh stage/final `eth_chainId`.
+- Use versioned, generously margined gas profiles for covered Robinhood ArbOS61 template steps and exact integer ordered opening-buy math. Preserve native execution for conversion-carrying begin/atomic and dependent activation/buys. Unknown coverage or an empirical bound exceeding capacity falls back to real execution, not automatic partitioning or a false capacity refusal.
+- Distinguish conditional `backend/confidence: "profiled"`, `executionProof: "not-run"` and `protocolFit: "profiled"` from actual native proof. Add `gasProfile` evidence and `computeLifecycleOpeningBuys`; `estimate.gasUsed` is optional and never fabricated. Economic review schema v2 distinguishes local curve quotes from simulated execution.
+- Carry opaque conversion commands at the pinned native compute ceiling (or the exact held envelope), not a guessed router allowance. One validated pass checks the full staged sequence. Refused full review cannot authorize a new begin. No invented 50M aggregate cap or successful-prefix admission remains; caller aggregate ceilings still refuse incomplete proof.
+- Read `ArbGasInfo.getPricesInWei` in the existing initial aggregate, then bound EOA serialization/Brotli poster allocation locally. Remove per-transaction `gasEstimateL1Component` and separate 4663 `eth_gasPrice`. Poster remains inside the complete gas limit, never an extra fee.
+- Build only the canonical immediate command, preserving normal/UFG calldata and original/clipped batch spans. Suffix budgets remain provisional; each step receives its own fresh profile or required exact execution. Keep held gas/fee immutable, native discovery's one funds-only retry, and honest tight-payer affordability refusals.
+- Remove `BuildNextTransactionOptions.submissionClient` and proof `transportPreflight`; the wallet owns sending-RPC preparation. Remove redundant started-stage UFG principal/config mapping guards while preserving committed config and actual begin receipt attribution.
+- Retire the obsolete `transactionGasEstimate` heuristic. Use planned immediate estimates or explicit `gasProfile` evidence; `preparationGasEstimate`, `packPreparationBatches` and the unsigned compiler remain available.
+- Preserve launch economics, domain identity, deployed ABIs and transaction calldata. Document measured native/fork gas evidence, profile limitations, exact curve parity and recording-transport budgets in `docs/lifecycle-gas-profiles.md`.
+
 ## 0.14.1
 
 - Enable the deployed Robinhood 4663 LaunchLens through the SDK-owned `launchLens` preset. Callers configure no lens address.

@@ -48,11 +48,11 @@ export type LifecycleLimits = {
   /** Optional tightening caps on the complete transaction gas envelope, including Nitro poster gas. */
   headroomBps?: number; chainGasLimit?: bigint; rpcGasLimit?: bigint; accountGasLimit?: bigint;
   maxCalldataBytes?: number;
-  /** Aggregate gas-used budget for one simulation request; defaults to 50M on chain 4663. */
+  /** Optional aggregate gas-used policy ceiling for one simulation request; no SDK-invented default window. */
   maxSimulationGas?: bigint;
   chainId?: bigint; orchestrator?: Address; account?: Address; observedBlockNumber?: bigint; observedBlockHash?: Hash;
   /** External data fee not already charged in gas, called with exact calldata and the pinned block.
-   * Nitro poster fees are included in gas and use the native NodeInterface instead. */
+   * Nitro poster fees are already included in gas, bounded locally from same-review ArbGasInfo prices. */
   estimateDataFee?: (transaction: LifecycleTransaction, context: LifecycleLimitContext) => Promise<bigint>;
 };
 export type LifecycleLimitSource = LifecycleLimits | ((context: LifecycleLimitContext) => Promise<LifecycleLimits>);
@@ -78,28 +78,28 @@ export type LifecyclePostcondition =
 export type LifecycleTransaction = {
   id: string; kind: LifecycleTransactionKind; chainId: number; from: Address; to: Address; data: Hex; value: bigint;
   dependencies: readonly string[]; postconditions: readonly LifecyclePostcondition[];
-  marketStart?: number; marketCount?: number; gas?: bigint; gasPrice?: bigint; nonce?: bigint;
+  marketStart?: number; marketCount?: number; gas?: bigint; gasPrice?: bigint;
   /** Exact encoded byte count; populated on SDK-built commands, including approvals. */
   calldataBytes?: number;
-  /** Only the immediate command receives exact gas/price/estimate/admission.
-   * Future commands must be re-sized and proved by buildNextTransaction. */
+  /** Only the immediate command receives its final unsigned envelope and admission.
+   * Profile gas is a bound, not measured usage; future commands need a fresh build. */
   admission?: LifecycleAdmission;
   estimate?: LifecycleTransactionEstimate;
 };
 export type LifecycleTransactionEstimate = {
-  gasUsed: bigint; gasLimit: bigint; gasPrice: bigint; executionFee: bigint; dataFee?: bigint; totalFee?: bigint;
+  /** Present only for measured execution; profiled envelopes never fabricate gas usage. */
+  gasUsed?: bigint; gasLimit: bigint; gasPrice: bigint; executionFee: bigint; dataFee?: bigint; totalFee?: bigint;
   /** Estimated poster allocation within gasLimit, never an exact compute measurement or an extra fee. */
   posterGas?: bigint; posterFee?: bigint; dataFeeIncludedInGas: boolean;
-  feeConfidence: "execution-and-data" | "execution-only";
+  feeConfidence: "execution-and-data" | "execution-only" | "profiled-execution-and-data";
 };
 /** Proof scopes are independent: current execution is not guaranteed wallet submission. */
 export type LifecycleProofOutcomes = {
-  executionProof: "proved" | "failed" | "unavailable";
-  protocolFit: "proved" | "failed" | "unknown";
-  transportPreflight: "not-requested" | "passed" | "failed";
+  executionProof: "proved" | "failed" | "unavailable" | "not-run";
+  protocolFit: "proved" | "failed" | "unknown" | "profiled";
 };
 export type LifecycleAdmission = LifecycleProofOutcomes & {
-  admitted: boolean; confidence: "stateful" | "provisional";
+  admitted: boolean; confidence: "stateful" | "provisional" | "profiled";
   blockNumber: bigint; blockHash: Hash; account: Address; chainId: bigint;
   reason?: string; limits: ResolvedLifecycleLimits;
 };
@@ -111,7 +111,8 @@ export type LifecycleSimulationStep = {
   computeGasRequired?: bigint;
   returnData?: Hex; error?: string; estimate?: LifecycleTransactionEstimate;
   /** Suffix feasibility budget only, not a transaction estimate or execution admission.
-   * buildNextTransaction obtains a fresh poster quote and exact envelope at its turn. */
+   * buildNextTransaction sizes its current envelope with fresh prices and either
+   * template coverage or the required exact execution proof at its turn. */
   provisional?: boolean;
   failureCategory?: LifecycleFailureCategory; decodedError?: string;
   /** Safe failed-call facts only; native messages and error-data bytes are never copied here. */
@@ -121,13 +122,24 @@ export type LifecycleSimulationStep = {
   /** Explicit native simulator report, not inferred from gas consumption or the requested limit. */
   nativeGasCapped?: boolean;
 };
+export type LifecycleOpeningBuyQuote = {
+  buyIndex: number; marketIndex: number; quoteAmountIn: bigint; quoteSpent: bigint;
+  tokenOut: bigint; sqrtPriceAfterX96: bigint;
+};
+/** Versioned template bounds, native ceilings for opaque conversion calls and
+ * exact local curve outputs. Provisional sizing, never simulated receipts. */
+export type LifecycleGasProfileEvidence = {
+  version: string; estimates: Readonly<Record<string, LifecycleTransactionEstimate>>;
+  initialBuys: readonly LifecycleOpeningBuyQuote[];
+};
 export type LifecycleSimulation = LifecycleProofOutcomes & {
-  backend: "eth_simulateV1" | "controlled-fork" | "unavailable";
-  /** Full successful prefix feasibility; only its immediate envelope is final. */
-  confidence: "stateful" | "provisional"; admitted: boolean;
+  backend: "eth_simulateV1" | "controlled-fork" | "unavailable" | "profiled";
+  /** Stateful execution or versioned profile coverage; only the immediate envelope is final. */
+  confidence: "stateful" | "provisional" | "profiled"; admitted: boolean;
   blockNumber: bigint; blockHash: Hash; account: Address; chainId: bigint;
   steps: readonly LifecycleSimulationStep[]; limits: ResolvedLifecycleLimits;
-  /** Unproved suffix. These transactions receive no gas, price, estimate or admission. */
+  gasProfile?: LifecycleGasProfileEvidence;
+  /** Work outside the returned admission, including an RPC-cap failed suffix. */
   deferredTransactionIds: readonly string[];
   reason?: string; failedTransactionId?: string;
   /** Affordability can mean insufficient sizing margin, even if smaller exact
@@ -152,15 +164,18 @@ export type LifecycleMarketProgress = {
 export type LifecycleReceiptReference = {
   transactionHash: Hash; replacementHash?: Hash; confirmations?: number;
   observedBlockNumber?: bigint; observedBlockHash?: Hash;
+  /** Actual submitted nonce from the wallet/transaction observation, never a planning guess. */
+  nonce?: bigint;
 };
 export type LifecycleReceiptStatus = {
   transactionHash: Hash; effectiveHash: Hash; status: "pending" | "confirmed" | "reverted" | "reorged" | "unconfirmed" | "replacement-cancelled";
-  blockNumber?: bigint; blockHash?: Hash; confirmations?: bigint; replaced: boolean;
+  blockNumber?: bigint; blockHash?: Hash; confirmations?: bigint; replaced: boolean; nonce?: bigint;
 };
 export type CanonicalLaunchProgress = {
   canonical: LaunchProgressV1; blockNumber: bigint; blockHash: Hash; chainId: bigint;
   head: LaunchProgressV1; confirmationDepth: number; confirmedBlockNumber: bigint; confirmedBlockHash: Hash;
-  confirmedAccountNonce: bigint; headAccountNonce: bigint; pendingAccountNonce: bigint; confirmationSafe: boolean;
+  /** Confirmed launch state only; unrelated account pending transactions do not block it. */
+  confirmationSafe: boolean;
   markets: readonly LifecycleMarketProgress[]; receipts: readonly LifecycleReceiptStatus[];
   token: Address; planHash: Hash; launchId: Hash;
 };
@@ -230,10 +245,8 @@ export type ReadLaunchProgressOptions = {
 };
 export type BuildNextTransactionOptions = ReadLaunchProgressOptions & {
   planned: PlannedLaunch; action?: "continue" | "cancel"; limits?: LifecycleLimitSource; fork?: ControlledLifecycleFork;
-  /** Optional active submission RPC. Only the immediate next exact transaction is estimated, read-only. */
-  submissionClient?: LifecycleRpcClient;
-  /** Untrusted reviewed next envelope. Canonical identity and direct exact replay
-   * prove only this immediate transaction at its held gas and gasPrice. */
+  /** Untrusted reviewed envelope. Revalidate its canonical identity and exact
+   * held gas/price with fresh profile coverage or native execution, never a nonce. */
   reviewedTransaction?: LifecycleTransaction;
 };
 export class LifecyclePlanningError extends Error {

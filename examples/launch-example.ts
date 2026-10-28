@@ -309,15 +309,23 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
   }
   const activationTransaction = planned.transactions.find((transaction) => ["atomic", "activate"].includes(transaction.kind));
   const activationStep = planned.simulation.steps.find((step) => step.transactionId === activationTransaction?.id);
-  if (!activationStep?.success || !activationStep.returnData) throw exampleError("MISSING_ECONOMIC_OUTPUTS", "Economic review requires the admitted activation receipt and every ordered buy output");
-  const simulatedReceipt = decodeFunctionResult({ abi: sdk.launchLifecycleAbi,
-    functionName: activationTransaction.kind === "atomic" ? "launchAtomic" : "activateLaunch", data: activationStep.returnData });
-  assert.equal(simulatedReceipt.planHash.toLowerCase(), planned.planHash.toLowerCase(), "Economic receipt exact plan");
-  assert.equal(simulatedReceipt.tokenOut.length, planned.plan.buys.length, "Economic receipt ordered outputs");
-  const simulatedBuys = planned.plan.buys.map((buy, index) => {
-    const tokenOut = simulatedReceipt.tokenOut[index];
-    const quoteSpent = simulatedReceipt.quoteSpent[index];
-    assert.ok(tokenOut >= buy.minTokenOut && tokenOut > 0n && quoteSpent <= buy.quoteAmountIn, "Exact protected simulated buy");
+  let orderedOutputs, buyEvidence;
+  if (activationStep?.success && activationStep.returnData) {
+    const receipt = decodeFunctionResult({ abi: sdk.launchLifecycleAbi,
+      functionName: activationTransaction.kind === "atomic" ? "launchAtomic" : "activateLaunch", data: activationStep.returnData });
+    assert.equal(receipt.planHash.toLowerCase(), planned.planHash.toLowerCase(), "Economic receipt exact plan");
+    assert.equal(receipt.tokenOut.length, planned.plan.buys.length, "Economic receipt ordered outputs");
+    assert.equal(receipt.quoteSpent.length, planned.plan.buys.length, "Economic receipt ordered spending");
+    orderedOutputs = receipt.tokenOut.map((tokenOut, index) => ({ tokenOut, quoteSpent: receipt.quoteSpent[index] }));
+    buyEvidence = "simulated-execution";
+  } else if (planned.simulation.backend === "profiled" && planned.simulation.gasProfile) {
+    orderedOutputs = planned.simulation.gasProfile.initialBuys;
+    buyEvidence = "local-exact-curve";
+  } else throw exampleError("MISSING_ECONOMIC_OUTPUTS", "Economic review requires ordered buy outputs from exact execution or the covered local curve");
+  assert.equal(orderedOutputs.length, planned.plan.buys.length, "Economic review ordered outputs");
+  const reviewedBuys = planned.plan.buys.map((buy, index) => {
+    const { tokenOut, quoteSpent } = orderedOutputs[index];
+    assert.ok(tokenOut >= buy.minTokenOut && tokenOut > 0n && quoteSpent <= buy.quoteAmountIn, "Exact protected opening buy");
     const market = marketEconomics[buy.marketIndex];
     const ratio = market.rawQuotePerRawToken;
     return { buyIndex: index, marketIndex: buy.marketIndex, quoteAsset: market.quoteAsset, quoteSymbol: market.quoteSymbol, quoteSpent, tokenOut,
@@ -325,10 +333,10 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
       feeAndPriceImpactPremiumBps: (quoteSpent * ratio.denominator - tokenOut * ratio.numerator) * 10000n /
         (tokenOut * ratio.numerator),
       // Effective execution price includes fees and path impact, not post-buy marginal spot.
-      priceBasis: "admitted-simulation-all-in-average-including-fees-and-price-impact" };
+      priceBasis: `${buyEvidence}-all-in-average-including-fees-and-price-impact` };
   });
   const economicReview = {
-    schema: "black-market.launch-economic-review.v1", caseId: scenario.id, chainId: fixture.chainId,
+    schema: "black-market.launch-economic-review.v2", caseId: scenario.id, chainId: fixture.chainId,
     targetMarketCapUsdX18: fixture.targetMarketCapUsdX18, quotes, metadata, image: image?.descriptor ?? null,
     actualMintedSupply: token.supply, nftUnit: token.nftUnit, tokenDecimals: 18,
     predictedToken, markets: marketEconomics,
@@ -337,7 +345,7 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
       executorFeeBps: plan.executorFeeBps, feeAssets, v4Markets: scenario.markets.flatMap((spec, marketIndex) => spec.venue === "v4" ?
         [{ marketIndex, feeMode: spec.feeMode ?? 0, protocolFeeDenominator: selected.v4.envelope.protocolFeeDenominator,
           treasury: selected.v4.envelope.protocolTreasury, developerBeneficiary: selected.v4.envelope.beneficiary, developerFeeBps: 0 }] : []) },
-    initialBuy: { slippageBps: BUY_SLIPPAGE_BPS, funding: planned.plan.funding, orderedBuys: planned.plan.buys, simulatedBuys,
+    initialBuy: { slippageBps: BUY_SLIPPAGE_BPS, funding: planned.plan.funding, orderedBuys: planned.plan.buys, reviewedBuys, evidence: buyEvidence,
       observedBlockNumber: planned.simulation.blockNumber, observedBlockHash: planned.simulation.blockHash },
     planHash: planned.planHash, finalizedPlan: finalizedPlan,
   };
@@ -490,11 +498,11 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
   let activation;
   for (let step = 0; step < 64; step += 1) {
     artifacts.stage("build-next", { step });
-    const reviewedTransaction = planned.transactions[step];
-    const next = await sdk.buildNextTransaction({ client, planned, receipts: references, limits, submissionClient: client, reviewedTransaction, signal });
+    const stored = planned.transactions[step];
+    const reviewedTransaction = stored?.gas === undefined ? undefined : stored;
+    const next = await sdk.buildNextTransaction({ client, planned, receipts: references, limits, reviewedTransaction, signal });
     if (!next) return { references, activation };
-    assert.ok(reviewedTransaction, "No transaction outside the saved review may be submitted");
-    for (const field of ["id", "kind", "chainId", "from", "to", "data", "value", "nonce", "gas", "gasPrice"]) assert.equal(next[field], reviewedTransaction[field], `Fresh ${field} must match the saved review`);
+    if (reviewedTransaction) for (const field of ["id", "kind", "chainId", "from", "to", "data", "value", "gas", "gasPrice"]) assert.equal(next[field], reviewedTransaction[field], `Fresh ${field} must match the saved exact envelope`);
     if (retainedReferences.length) {
       const progress = await sdk.readLaunchProgress({ client, planned, receipts: references, confirmations: planned.confirmations, signal });
       assertRetainedExampleReceipts({ progress, references, artifacts });
@@ -509,9 +517,9 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
     assert.ok(functionName, "Native-input conversion cases do not permit unrelated approval/cancellation writes");
     const args = next.kind === "begin" ? [planned.plan, sdk.LifecycleMode.Staged] : next.kind === "prepare" ? [planned.plan, next.marketStart, next.marketCount] : [planned.plan];
     assert.equal(next.data.toLowerCase(), encodeFunctionData({ abi: sdk.launchLifecycleAbi, functionName, args }).toLowerCase(), "Exact finalized-plan calldata");
-    assert.ok(next.gas !== undefined && (next.gasPrice !== undefined || next.maxFeePerGas !== undefined && next.maxPriorityFeePerGas !== undefined) && next.admission?.admitted === true, "Actual next transaction needs stateful gas/envelope admission");
-    assert.equal(next.admission.executionProof, "proved"); assert.equal(next.admission.protocolFit, "proved");
-    assert.equal(next.admission.transportPreflight, "passed", "Exact immediate-next submission RPC preflight is required before signing");
+    assert.ok(next.gas !== undefined && (next.gasPrice !== undefined || next.maxFeePerGas !== undefined && next.maxPriorityFeePerGas !== undefined) && next.admission?.admitted === true, "Actual next transaction needs an admitted gas envelope");
+    assert.ok(next.admission.executionProof === "proved" && next.admission.protocolFit === "proved" ||
+      next.admission.executionProof === "not-run" && next.admission.protocolFit === "profiled", "Distinguish exact execution from covered gas profiling");
     const ceiling = next.admission.limits.transactionGasCeiling;
     assert.ok(next.gas > 0n && (ceiling === undefined || next.gas <= ceiling), "Complete gas envelope must fit supplied restrictions; Nitro compute is separately proved");
     const calldataCap = next.admission.limits.maxCalldataBytes;
@@ -549,7 +557,7 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
     addressEqual(includedBlock?.hash, receipt.blockHash, "Canonical included block");
     const latest = BigInt(await client.request({ method: "eth_blockNumber" }));
     assert.ok(latest >= BigInt(receipt.blockNumber) + BigInt(planned.confirmations) - 1n, "Required confirmations must be included canonically");
-    const reference = { transactionHash: row.transactionHash, observedBlockNumber: BigInt(receipt.blockNumber), observedBlockHash: receipt.blockHash, confirmations: planned.confirmations };
+    const reference = { transactionHash: row.transactionHash, nonce: BigInt(row.transaction.nonce), observedBlockNumber: BigInt(receipt.blockNumber), observedBlockHash: receipt.blockHash, confirmations: planned.confirmations };
     row.status = "confirmed"; row.reference = reference; artifacts.saveReceipts();
     references.push(reference);
     if (["atomic", "activate"].includes(next.kind)) {
@@ -894,7 +902,7 @@ async function executeExample({ fixture, privateKey, scenario, sdk, artifacts, s
   console.log(`Economic review ${reviewHash}\n${metadata.name} (${metadata.symbol}); target USD ${usd(economicReview.targetMarketCapUsdX18)}; minted supply ${usd(economicReview.actualMintedSupply)}\n` +
     economicReview.markets.map((market) => `Market ${market.marketIndex} ${market.venue}/${market.quoteSymbol}: retained-supply opening valuation USD ${usd(market.retainedSupplyOpeningValuationUsdX18)} (minted-supply USD ${usd(market.openingValuationUsdX18)}), token USD ${usd(market.unitPriceUsdX18)}, token ${market.quoteSymbol} ${usd(market.unitPriceQuoteX18)}, ${market.positions.length} positions`).join("\n") +
     `\nExpected rounding burn ${economicReview.expectedUnusedBurn} raw token units; ${planned.plan.buys.length} ordered buys, native input ${fixture.buyAmountWei} wei each (${fundingSummary}); 50 bps conversion and ordered-buy protection.\nLP fee 3000 pips; V4 hook max 10000/min 1000 pips (fixed maximum schedule); executor 275 bps.\nImage ${image ? `${image.descriptor.contentType}, ${image.descriptor.contentLength} bytes, ${image.descriptor.sha256}` : "none (metadata only)"}.\nReview allocations, fees and exact protected buys: ${artifacts.directory}/economic-review.json`);
-  console.log(economicReview.initialBuy.simulatedBuys.map((buy) => `Buy ${buy.buyIndex} market ${buy.marketIndex}/${buy.quoteSymbol}: quote spent ${buy.quoteSpent} raw units; simulated all-in USD/token ${usd(buy.allInUnitPriceUsdX18)}; fees + price-impact premium ${buy.feeAndPriceImpactPremiumBps} bps vs opening`).join("\n"));
+  console.log(economicReview.initialBuy.reviewedBuys.map((buy) => `Buy ${buy.buyIndex} market ${buy.marketIndex}/${buy.quoteSymbol}: quote spent ${buy.quoteSpent} raw units; ${economicReview.initialBuy.evidence} all-in USD/token ${usd(buy.allInUnitPriceUsdX18)}; fees + price-impact premium ${buy.feeAndPriceImpactPremiumBps} bps vs opening`).join("\n"));
   for (const quote of economicReview.quotes) {
     const seed = quote.usdSeed;
     console.log(`${quote.symbol}/USD ${usd(seed.priceUsdX18)}; source ${seed.source}; chain ${seed.chainId}; quote ${seed.tokenAddress} (${seed.tokenDecimals} decimals); retrieved ${seed.retrievedAt}.\n` +
@@ -1054,7 +1062,8 @@ export async function resumeLaunchExample({ fixture, privateKey, sdk, artifacts,
     assert.match(reference.transactionHash, /^0x[\da-fA-F]{64}$/, "Original receipt hash");
     assert.match(reference.observedBlockHash, /^0x[\da-fA-F]{64}$/, "Original receipt block hash");
     assert.ok(reference.observedBlockNumber !== undefined && reference.observedBlockNumber !== null, "Original receipt block number");
-    return { ...reference, observedBlockNumber: BigInt(reference.observedBlockNumber), confirmations: reference.confirmations ?? confirmations };
+    if (reference.nonce !== undefined) assert.ok(typeof reference.nonce === "bigint" || typeof reference.nonce === "string" && /^(0|[1-9]\d*)$/.test(reference.nonce), "Retained submitted nonce must be an exact unsigned integer");
+    return { ...reference, ...(reference.nonce === undefined ? {} : { nonce: BigInt(reference.nonce) }), observedBlockNumber: BigInt(reference.observedBlockNumber), confirmations: reference.confirmations ?? confirmations };
   });
   const retainedHashes = new Set(references.map((reference) => reference.transactionHash.toLowerCase()));
   if (references.some((reference) => reference.replacementHash && !same(reference.replacementHash, reference.transactionHash)) ||

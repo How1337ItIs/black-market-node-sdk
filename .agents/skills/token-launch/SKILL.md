@@ -105,7 +105,7 @@ tick partitions as a source preset. See `references/audit-history.md`.
    do not silently submit a separate wallet swap.
 4. Freeze economics and ordered buys, then use `prepareAndPlanLifecycleLaunch`
    with explicit mode and, for an unstarted launch, optional `buySlippageBps`.
-   Review only its final plan/hash, stateful execution proof and immediate envelope.
+   Review only its final plan/hash, explicit profiled-or-executed evidence and immediate envelope.
 5. Require explicit authorization for chain/API writes. Keep secrets in the
    existing environment; never overwrite `.env` or supply a development key.
 6. Sign/submit only the exact reviewed immediate command. Persist its signed hash

@@ -127,15 +127,17 @@ console.log({ fdvX18: fdvX18.toString(), bands: bands.positions });
    NativeWrap/direct funding remain SDK choices outside those fixed cases.
 2. `estimateLaunchInitialBuy` is only a pure fresh-single-position preview. It does
    not model multi-band traversal, earlier buys, hook/token effects or funding routes.
-   Its reported paired input is not proof of actual partial-fill spend. Never copy
-   its output into executable minimums without full stateful proof.
+   Its reported paired input is not proof of actual partial-fill spend. Use the
+   covered exact ordered curve model or native calibration for executable minima.
 3. `deriveLaunchBuySqrtPriceLimitX96` provides a directional exclusive price guard;
    this is separate from output slippage. On a multi-band or sizable buy, an overly
    tight guard can stop execution early. Review partial fills and retained quote.
 4. For an unstarted launch, use `prepareAndPlanLifecycleLaunch` with explicit
-   `buySlippageBps`. It diagnoses all ordered buys, derives each minimum as
-   `floor(actualOutput * (10000 - bps) / 10000)`, then proves the final commitment.
-   Never sign its diagnostic candidate. Omission preserves the caller's minima.
+   `buySlippageBps`. Covered templates use exact local ordered curve math; other
+   templates use native diagnostic output. Each minimum is
+   `floor(output * (10000 - bps) / 10000)`. The final commitment receives its
+   required profile or exact execution; conversion and dependent activation stay
+   exact-native. Never sign a diagnostic candidate. Omission preserves minima.
    Each executable minimum must be positive. If flooring produces zero, refuse or
    resize/reprove the buy; do not silently substitute `1` to pass validation.
 5. A desired percentage purchase is a sizing objective: use estimates for a candidate,

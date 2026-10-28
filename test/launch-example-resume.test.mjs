@@ -130,6 +130,24 @@ function context(t, { phase = sdk.LifecyclePhase.Active, mode = "staged", image,
   return { options, original, artifacts, fixture, recovery, plan, planned, progress, response, references, receipts, calls, transport, parent };
 }
 
+test("resume restores the wallet-observed nonce from its durable exact integer without an account queue read", async (t) => {
+  const c = context(t);
+  c.references[0].nonce = 7n;
+  c.artifacts.privateRecovery({ ...c.artifacts.recovery, receipts: portable(c.references) });
+  await resumeLaunchExample(c.options);
+  assert.ok(c.calls.includes("publish")); assert.equal(c.calls.includes("execute"), false);
+});
+
+test("resume rejects malformed retained submitted nonces before re-admission or execution", async (t) => {
+  for (const nonce of [null, 0, -1, "-1", "0x1", "1.2", "invalid"]) {
+    const c = context(t), receipts = portable(c.references);
+    receipts[0].nonce = nonce;
+    c.artifacts.privateRecovery({ ...c.artifacts.recovery, receipts });
+    await assert.rejects(resumeLaunchExample(c.options), /Retained submitted nonce must be an exact unsigned integer/);
+    assert.equal(c.calls.includes("plan"), false); assert.equal(c.calls.includes("execute"), false);
+  }
+});
+
 test("launch arguments select dry-run, broadcast or resume and reject ambiguous commands with usage", () => {
   assert.deepEqual(readLaunchExampleArguments([]), { mode: "dry-run" });
   assert.deepEqual(readLaunchExampleArguments(["--broadcast"]), { mode: "broadcast" });
@@ -313,14 +331,13 @@ test("live ready-image refresh supersedes a stale awaiting-upload snapshot witho
 test("in-flight resume reaches the existing build-next loop with every retained receipt and the freshly reviewed envelope", async (t) => {
   const c = context(t, { phase: sdk.LifecyclePhase.Ready });
   delete c.options.execute;
-  const reviewed = { id: "activate", kind: "activate" };
+  const reviewed = { id: "activate", kind: "activate", gas: 1_000_000n, gasPrice: 2n };
   c.planned.transactions = [reviewed];
   const observed = Object.assign(new Error("Offline immediate-next boundary observed"), { code: "OFFLINE_BUILD_NEXT" });
   c.options.sdk.buildNextTransaction = async (options) => {
     c.calls.push("build-next");
     assert.deepEqual(options.receipts, c.references);
     assert.equal(options.reviewedTransaction, reviewed);
-    assert.equal(options.submissionClient, c.options.client);
     throw observed; // Do not sign/broadcast in this control-flow test.
   };
   await assert.rejects(resumeLaunchExample(c.options), observed);

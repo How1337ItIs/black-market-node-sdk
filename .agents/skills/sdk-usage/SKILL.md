@@ -25,24 +25,28 @@ description: Integrate the Abyss TypeScript SDK using the correct deployment gra
    `listKnownLifecycleProfiles` for shipped profiles and deployment wiring. Profiles
    registered after the SDK release need not appear until the next SDK update.
 2. Use `readLifecycleProfiles({ client, orchestrator })` only for explicit live
-   registry inspection. Normal planning uses presets and exact native simulation;
-   it does not require a registry crawl or redundant admission getter mirrors.
+   registry inspection. Normal planning uses presets plus covered template profiles
+   or required exact execution; it does not crawl registries or mirror contract guards.
 3. Build the complete `LaunchPlanV1`: explicit creator/core/nonce, token behavior,
    fee policies, funding, all markets/positions and ordered buys. Read the sibling
    `token-launch/SKILL.md` and `launch-pricing/SKILL.md` before choosing economics.
 4. `buildLaunchTransactions({ plan, mode })` compiles unsigned calldata only.
    It does not prove balances, fees, gas capacity, quote freshness or execution.
 5. `prepareAndPlanLifecycleLaunch({ client, account, plan, mode, ... })` combines
-   bound-hook salt preparation and selected-mode proof. `planLaunch` proves an
-   already-finalized plan. Only review the returned final plan/commitment.
+   bound-hook salt preparation and selected-mode admission. `planLaunch` admits an
+   already-finalized plan. Review only the returned final plan/commitment and its
+   explicit profiled-versus-executed evidence.
 6. `readLaunchProgress`, `simulateLaunchPlan` and `buildNextTransaction` support
-   canonical recovery and fresh proof of remaining work. Persist the original plan,
-   execution mode, confirmation policy and actual included/replacement hashes.
+   canonical recovery; explicit simulation always runs execution, while build-next
+   sizes/proves only the immediate command. Persist mode, confirmation policy and
+   actual included/replacement hashes with optional wallet-observed nonce.
 
 Do not add a second application-owned mining/admission loop around these operations.
-Known presets supply construction wiring; the onchain contracts, wallet and final
-exact-calldata simulation enforce execution. Planning has one pin and no final
-chain/canonical guard re-reads. Receipt and nonce recovery checks remain.
+Known presets supply construction wiring. Covered plan-determined steps use the
+versioned profile and exact local curve math; conversion-carrying commands and
+dependent activation require exact native execution. There is one pin, no planning
+nonce read and at most one chain observation per bound client. Recreate that client
+on chain changes. The wallet owns nonce assignment and sending-RPC preparation.
 Do not resurrect `preparePoolBoundLifecyclePlan` or `PlannedLaunch.atomicAttempt`.
 
 Atomic/staged mode is explicit; refusal does not authorize fallback, smaller budgets,
@@ -60,7 +64,7 @@ chain-wide 16M/32M cap from a historical fixture.
 - Quotes, fee assets and direct ERC20/native-wrap funding are not a curated-token
   allowlist. Swap-conversion inputs and target/spender roles have separate registry
   admission; inspect the pricing skill before integrating Kyber.
-- Keep pure price/buy estimates, execution proof, RPC submission preflight, wallet
+- Keep local curve quotes, profiled admission, actual execution proof, wallet
   submission, canonical activation and API publication as separate outcomes.
 - Use existing AMM/lending exports and ABIs before writing wrappers. An indexed
   routing candidate is not executable calldata. A successful launch/oracle setup

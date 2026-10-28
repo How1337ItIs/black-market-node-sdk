@@ -46,7 +46,7 @@ async function send(transaction) {
   const gasPrice = transaction.gasPrice ?? BigInt(await client.request({ method: "eth_gasPrice" }));
   const head = await client.request({ method: "eth_getBlockByNumber", params: ["latest", false] });
   const ceiling = [BigInt(head.gasLimit), BigInt(policy.chainTransactionGasLimit), BigInt(policy.rpcTransactionGasLimit), BigInt(policy.accountTransactionGasLimit)].reduce((a, b) => a < b ? a : b);
-  const wire = { from: transaction.from, to: transaction.to, data: transaction.data, value: toHex(transaction.value), gasPrice: toHex(gasPrice), ...(transaction.nonce === undefined ? {} : { nonce: toHex(transaction.nonce) }) };
+  const wire = { from: transaction.from, to: transaction.to, data: transaction.data, value: toHex(transaction.value), gasPrice: toHex(gasPrice) };
   const estimated = transaction.gas ?? ((BigInt(await client.request({ method: "eth_estimateGas", params: [{ ...wire, gas: toHex(ceiling) }] })) * BigInt(10000 + Number(policy.headroomBps)) + 9999n) / 10000n);
   assert.ok(estimated <= ceiling, "Unsigned helper must still fit explicit local execution admission");
   const transactionHash = await client.request({ method: "eth_sendTransaction", params: [{ ...wire, gas: toHex(estimated) }] });
@@ -103,9 +103,11 @@ for (const row of exported.plans) for (const mode of ["atomic", "staged"]) {
     const receipts = [];
     let activationReceipt;
     for (let guard = 0; guard < 64; ++guard) {
-      const next = await buildNextTransaction({ client, planned, receipts, limits, fork, submissionClient: client });
+      const next = await buildNextTransaction({ client, planned, receipts, limits, fork });
       if (!next) break;
-      assert.equal(next.admission?.transportPreflight, "passed");
+      assert.equal(next.admission?.admitted, true);
+      assert.ok(next.admission.executionProof === "proved" && next.admission.protocolFit === "proved" ||
+        next.admission.executionProof === "not-run" && next.admission.protocolFit === "profiled");
       const submitted = await send(next);
       receipts.push(submitted.reference);
       if (["atomic", "activate"].includes(next.kind)) activationReceipt = submitted.receipt;

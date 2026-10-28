@@ -73,6 +73,19 @@ test("default dry-run exits zero, prints the full review and command, and never 
   assert.equal(existsSync(join(c.directory, "published-token.json")), false);
 });
 
+test("profiled dry-run reviews exact local buy amounts without inventing an activation receipt", (t) => {
+  const c = offlineRun(t, [], { profiled: true });
+  assert.equal(c.child.status, 0, c.child.stderr);
+  const review = c.json("economic-review.json"), simulation = c.json("planning.json").simulation;
+  assert.equal(review.schema, "black-market.launch-economic-review.v2");
+  assert.equal(review.initialBuy.evidence, "local-exact-curve");
+  assert.equal(review.initialBuy.reviewedBuys[0].tokenOut, "1000");
+  assert.equal(review.initialBuy.reviewedBuys[0].quoteSpent, review.initialBuy.orderedBuys[0].quoteAmountIn);
+  assert.equal(simulation.executionProof, "not-run"); assert.deepEqual(simulation.steps, []);
+  assert.equal(Object.hasOwn(simulation.gasProfile, "receipts"), false);
+  assert.equal(c.result.chain.status, "not-run"); assert.equal(c.calls.signTransaction, 0); assert.equal(c.calls.send, 0);
+});
+
 test("--broadcast needs no hash input and routes through guarded signing, execution, verification and publication", (t) => {
   for (const withImage of [false, true]) {
     const c = offlineRun(t, ["--broadcast"], { withImage });

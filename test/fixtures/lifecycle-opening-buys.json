@@ -1,0 +1,1105 @@
+{
+  "scope": "Curve-only extracted parameters; expected amounts and prices come from actual native/fork event logs; ordered prefixes retain their original per-buy observations",
+  "vectors": [
+    {
+      "name": "abyss-0/1/32/0/1/false/false/1000000000000000000000000",
+      "provenance": {
+        "kind": "isolated-fork",
+        "sourceBlock": {
+          "number": "0x5f7a44e",
+          "hash": "0x0d5bab455e8513101367cf71a06ad1e3c24370f6e8efb8ef873fdf75be96c3bb"
+        },
+        "activationHash": "0xc49ca2df990c0cd1a97a15efe24dce50084c5b9e18929cc84f1669432f106fa5",
+        "recordedBuyCount": 1
+      },
+      "predictedToken": "0x066a86c02b8839145f2acA6d0E6d4D82F93F1939",
+      "curve": {
+        "chainId": "4663",
+        "orchestrator": "0x91560876033d568d25CDe98C78c33ff8FC43962c",
+        "markets": [
+          {
+            "adapterId": "0xd79e93fc12ead15de269a5b98a9e0d2205ab77422d0cb480500370babc5687da",
+            "profileId": "0x49b2ed65e2021247951193dd2c671b40867b6e064af65a2d98a70f57556412fc",
+            "quoteAsset": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+            "tokenBudget": "1000000000000000000000000",
+            "configVersion": 1,
+            "config": {
+              "profile": 0,
+              "fee": 3000,
+              "oracleConfigId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "openingSqrtPriceX96": "79228162514264337593543950336",
+              "positions": [
+                {
+                  "tickLower": 0,
+                  "tickUpper": 600,
+                  "liquidity": "1057421869054324107120425",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 600,
+                  "tickUpper": 1200,
+                  "liquidity": "1089623524941071380781721",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 1200,
+                  "tickUpper": 1800,
+                  "liquidity": "1122805817480222911776409",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 1800,
+                  "tickUpper": 2400,
+                  "liquidity": "1156998609988355360951991",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 2400,
+                  "tickUpper": 3000,
+                  "liquidity": "1192232675209277964411510",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 3000,
+                  "tickUpper": 3600,
+                  "liquidity": "1228539723008809475866314",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 3600,
+                  "tickUpper": 4200,
+                  "liquidity": "1265952428912943829287789",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 4200,
+                  "tickUpper": 4800,
+                  "liquidity": "1304504463515088228753690",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 4800,
+                  "tickUpper": 5400,
+                  "liquidity": "1344230522778839518012269",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 5400,
+                  "tickUpper": 6000,
+                  "liquidity": "1385166359263570646586622",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 6000,
+                  "tickUpper": 6600,
+                  "liquidity": "1427348814300929557562362",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 6600,
+                  "tickUpper": 7200,
+                  "liquidity": "1470815851151208621982673",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 7200,
+                  "tickUpper": 7800,
+                  "liquidity": "1515606589169424606216455",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 7800,
+                  "tickUpper": 8400,
+                  "liquidity": "1561761339011857875423240",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 8400,
+                  "tickUpper": 9000,
+                  "liquidity": "1609321638914735926137348",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 9000,
+                  "tickUpper": 9600,
+                  "liquidity": "1658330292077711246763233",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 9600,
+                  "tickUpper": 10200,
+                  "liquidity": "1708831405185777794807699",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 10200,
+                  "tickUpper": 10800,
+                  "liquidity": "1760870428104294948811141",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 10800,
+                  "tickUpper": 11400,
+                  "liquidity": "1814494194782843563268533",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 11400,
+                  "tickUpper": 12000,
+                  "liquidity": "1869750965404726676520929",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 12000,
+                  "tickUpper": 12600,
+                  "liquidity": "1926690469820048473754913",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 12600,
+                  "tickUpper": 13200,
+                  "liquidity": "1985363952301460298792374",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 13200,
+                  "tickUpper": 13800,
+                  "liquidity": "2045824217662852878932612",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 13800,
+                  "tickUpper": 14400,
+                  "liquidity": "2108125678782500548029865",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 14400,
+                  "tickUpper": 15000,
+                  "liquidity": "2172324405573427228183039",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 15000,
+                  "tickUpper": 15600,
+                  "liquidity": "2238478175445066397430031",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 15600,
+                  "tickUpper": 16200,
+                  "liquidity": "2306646525301629401867505",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 16200,
+                  "tickUpper": 16800,
+                  "liquidity": "2376890805123979473546086",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 16800,
+                  "tickUpper": 17400,
+                  "liquidity": "2449274233183233934992135",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 17400,
+                  "tickUpper": 18000,
+                  "liquidity": "2523861952935785589856101",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 18000,
+                  "tickUpper": 18600,
+                  "liquidity": "2600721091650947538617587",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": 18600,
+                  "tickUpper": 887220,
+                  "liquidity": "79199729173037441763559",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                }
+              ]
+            },
+            "configHash": "0x4d0be8b08f8f8ca3660a12618defe79c66fd50ea3fe92230c248328c95d65f1d"
+          }
+        ],
+        "buys": [
+          {
+            "marketIndex": 0,
+            "quoteAmountIn": "1000000000000000000000000",
+            "minTokenOut": "1",
+            "recipient": "0x0000000000000000000000000000000000000001",
+            "sqrtPriceLimitX96": "1461446703485210103287273052203988822378723970341"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "quoteSpent": "1000000000000000000000000",
+          "tokenOut": "557150553801046194287274",
+          "sqrtPriceAfterX96": "135247353962970828062201422875"
+        }
+      ]
+    },
+    {
+      "name": "abyss-2/1/32/0/64",
+      "provenance": {
+        "kind": "isolated-fork",
+        "sourceBlock": {
+          "number": "0x5f7a44e",
+          "hash": "0x0d5bab455e8513101367cf71a06ad1e3c24370f6e8efb8ef873fdf75be96c3bb"
+        },
+        "activationHash": "0xed102359d820b679cc9200afdcc59903121a0c1b003d28781a6bd0c73acc3e96",
+        "recordedBuyCount": 64
+      },
+      "predictedToken": "0x6307442F310097Fe5328EE304FF68121566ea6A8",
+      "curve": {
+        "chainId": "4663",
+        "orchestrator": "0x91560876033d568d25CDe98C78c33ff8FC43962c",
+        "markets": [
+          {
+            "adapterId": "0xd79e93fc12ead15de269a5b98a9e0d2205ab77422d0cb480500370babc5687da",
+            "profileId": "0x49b3bd30fe302526d7799f2ef15f3b2b261b5c44e075aa48b98c6b37148b7d59",
+            "quoteAsset": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+            "tokenBudget": "1000000000000000000000000",
+            "configVersion": 1,
+            "config": {
+              "profile": 2,
+              "fee": 3000,
+              "oracleConfigId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "openingSqrtPriceX96": "79228162514264337593543950336",
+              "positions": [
+                {
+                  "tickLower": -600,
+                  "tickUpper": 0,
+                  "liquidity": "1057421869054324107120425",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -1200,
+                  "tickUpper": -600,
+                  "liquidity": "1089623524941071380781721",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -1800,
+                  "tickUpper": -1200,
+                  "liquidity": "1122805817480222911776409",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -2400,
+                  "tickUpper": -1800,
+                  "liquidity": "1156998609988355360951991",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -3000,
+                  "tickUpper": -2400,
+                  "liquidity": "1192232675209277964411510",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -3600,
+                  "tickUpper": -3000,
+                  "liquidity": "1228539723008809475866314",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -4200,
+                  "tickUpper": -3600,
+                  "liquidity": "1265952428912943829287789",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -4800,
+                  "tickUpper": -4200,
+                  "liquidity": "1304504463515088228753690",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -5400,
+                  "tickUpper": -4800,
+                  "liquidity": "1344230522778839518012269",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -6000,
+                  "tickUpper": -5400,
+                  "liquidity": "1385166359263570646586622",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -6600,
+                  "tickUpper": -6000,
+                  "liquidity": "1427348814300929557562362",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -7200,
+                  "tickUpper": -6600,
+                  "liquidity": "1470815851151208621982673",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -7800,
+                  "tickUpper": -7200,
+                  "liquidity": "1515606589169424606216455",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -8400,
+                  "tickUpper": -7800,
+                  "liquidity": "1561761339011857875423240",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -9000,
+                  "tickUpper": -8400,
+                  "liquidity": "1609321638914735926137348",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -9600,
+                  "tickUpper": -9000,
+                  "liquidity": "1658330292077711246763233",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -10200,
+                  "tickUpper": -9600,
+                  "liquidity": "1708831405185777794807699",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -10800,
+                  "tickUpper": -10200,
+                  "liquidity": "1760870428104294948811141",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -11400,
+                  "tickUpper": -10800,
+                  "liquidity": "1814494194782843563268533",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -12000,
+                  "tickUpper": -11400,
+                  "liquidity": "1869750965404726676520929",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -12600,
+                  "tickUpper": -12000,
+                  "liquidity": "1926690469820048473754913",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -13200,
+                  "tickUpper": -12600,
+                  "liquidity": "1985363952301460298792374",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -13800,
+                  "tickUpper": -13200,
+                  "liquidity": "2045824217662852878932612",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -14400,
+                  "tickUpper": -13800,
+                  "liquidity": "2108125678782500548029865",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -15000,
+                  "tickUpper": -14400,
+                  "liquidity": "2172324405573427228183039",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -15600,
+                  "tickUpper": -15000,
+                  "liquidity": "2238478175445066397430031",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -16200,
+                  "tickUpper": -15600,
+                  "liquidity": "2306646525301629401867505",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -16800,
+                  "tickUpper": -16200,
+                  "liquidity": "2376890805123979473546086",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -17400,
+                  "tickUpper": -16800,
+                  "liquidity": "2449274233183233934992135",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -18000,
+                  "tickUpper": -17400,
+                  "liquidity": "2523861952935785589856101",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -18600,
+                  "tickUpper": -18000,
+                  "liquidity": "2600721091650947538617587",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                },
+                {
+                  "tickLower": -887220,
+                  "tickUpper": -18600,
+                  "liquidity": "79199729173037441763559",
+                  "tokenAmountMaximum": "31250000000000000000000"
+                }
+              ]
+            },
+            "configHash": "0x68fc0c7e5b49573c864d61f4e256a3ee5fa8f05284d4b284c60f41b661f7aebc"
+          }
+        ],
+        "buys": [
+          {
+            "marketIndex": 0,
+            "quoteAmountIn": "1000000000000000",
+            "minTokenOut": "1",
+            "recipient": "0x0000000000000000000000000000000000000001",
+            "sqrtPriceLimitX96": "4295128740"
+          },
+          {
+            "marketIndex": 0,
+            "quoteAmountIn": "1000000000000000",
+            "minTokenOut": "1",
+            "recipient": "0x0000000000000000000000000000000000000001",
+            "sqrtPriceLimitX96": "4295128740"
+          },
+          {
+            "marketIndex": 0,
+            "quoteAmountIn": "1000000000000000",
+            "minTokenOut": "1",
+            "recipient": "0x0000000000000000000000000000000000000001",
+            "sqrtPriceLimitX96": "4295128740"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "quoteSpent": "1000000000000000",
+          "tokenOut": "996999999059969",
+          "sqrtPriceAfterX96": "79228162439563331056874170545"
+        },
+        {
+          "quoteSpent": "1000000000000000",
+          "tokenOut": "996999997179907",
+          "sqrtPriceAfterX96": "79228162364862324661069461841"
+        },
+        {
+          "quoteSpent": "1000000000000000",
+          "tokenOut": "996999995299846",
+          "sqrtPriceAfterX96": "79228162290161318406129823826"
+        }
+      ]
+    },
+    {
+      "name": "native/0xf05e5d9b1ed8f6b3a64436dbbd75d81ab6fa902b9139d369074f4f86fe98fe98",
+      "provenance": {
+        "kind": "native",
+        "transactionHash": "0xf05e5d9b1ed8f6b3a64436dbbd75d81ab6fa902b9139d369074f4f86fe98fe98",
+        "blockNumber": "92358097",
+        "blockHash": "0x78a4afa91fdde1c38ccabc693f95212fbc415316f5c50ba0124f931804ba3348",
+        "recordedBuyCount": 3
+      },
+      "predictedToken": "0xE94b96B151747f07325422508aec5212De48Ed4e",
+      "curve": {
+        "chainId": "4663",
+        "orchestrator": "0x91560876033d568d25CDe98C78c33ff8FC43962c",
+        "markets": [
+          {
+            "adapterId": "0x41651f0ab87e1ac3ce95346e06cab2e9fd11fe5aed569083d5d1253d14b9d6ff",
+            "profileId": "0x8e500f203ace505072e209c5f077e11de6d071ac7f298cd75c0e05c6a55c36e6",
+            "quoteAsset": "0xfF080c8ce2E5feadaCa0Da81314Ae59D232d4afD",
+            "tokenBudget": "700000000000000000000000000",
+            "configVersion": 6,
+            "config": {
+              "version": 6,
+              "lpFeePips": 0,
+              "tickSpacing": 60,
+              "sqrtPriceX96": "10232151002651148900744889",
+              "hookFeePips": 150000,
+              "minimumHookFeePips": 500,
+              "feeSensitivityPipsSecondsPerTick": 12000,
+              "feeMode": 1,
+              "protocolFeeDenominator": 6,
+              "treasury": "0x961981916AB6575C3af3eeCecbf6A3b7Fad7C9e1",
+              "externalLiquidityDisabled": false,
+              "oracleConfigId": "0xc0e9bed88d70a13fd3ab31451fefdd073b7266e838aee0ad1c236c8c9eff855d",
+              "hookSalt": "0x00000000000000000000000000000000000000000000000000000000000014af",
+              "profileId": "0x8e500f203ace505072e209c5f077e11de6d071ac7f298cd75c0e05c6a55c36e6",
+              "termsDigest": "0x1f938732548db1e9e447926e14cfec16a0f0eebb542ee295529a1c19535a59ab",
+              "developerBeneficiary": "0x7cb44b8693b3C350A2BcD4b681aF85365aa27783",
+              "developerFeeBps": 0,
+              "positions": [
+                {
+                  "tickLower": -179100,
+                  "tickUpper": -56880,
+                  "liquidity": "11649160814828374515301",
+                  "salt": "0x0000000000000000000000000000000000000000000000000000000000000001",
+                  "maxTokenAmount": "90000000000000000000000000"
+                },
+                {
+                  "tickLower": -161640,
+                  "tickUpper": -56880,
+                  "liquidity": "27974557644828921750453",
+                  "salt": "0x0000000000000000000000000000000000000000000000000000000000000002",
+                  "maxTokenAmount": "90000000000000000000000000"
+                },
+                {
+                  "tickLower": -144180,
+                  "tickUpper": -56880,
+                  "liquidity": "67472787219241676619344",
+                  "salt": "0x0000000000000000000000000000000000000000000000000000000000000003",
+                  "maxTokenAmount": "90000000000000000000000000"
+                },
+                {
+                  "tickLower": -126720,
+                  "tickUpper": -56880,
+                  "liquidity": "164481821725833810436161",
+                  "salt": "0x0000000000000000000000000000000000000000000000000000000000000004",
+                  "maxTokenAmount": "90000000000000000000000000"
+                },
+                {
+                  "tickLower": -109260,
+                  "tickUpper": -56880,
+                  "liquidity": "411791029432130484102876",
+                  "salt": "0x0000000000000000000000000000000000000000000000000000000000000005",
+                  "maxTokenAmount": "90000000000000000000000000"
+                },
+                {
+                  "tickLower": -91800,
+                  "tickUpper": -56880,
+                  "liquidity": "1107148512283858901148333",
+                  "salt": "0x0000000000000000000000000000000000000000000000000000000000000006",
+                  "maxTokenAmount": "90000000000000000000000000"
+                },
+                {
+                  "tickLower": -74340,
+                  "tickUpper": -56880,
+                  "liquidity": "3757637522353613153032911",
+                  "salt": "0x0000000000000000000000000000000000000000000000000000000000000007",
+                  "maxTokenAmount": "90000000000000000000000000"
+                },
+                {
+                  "tickLower": -56880,
+                  "tickUpper": 887220,
+                  "liquidity": "4074049355853433848905949",
+                  "salt": "0x0000000000000000000000000000000000000000000000000000000000000008",
+                  "maxTokenAmount": "70000000000000000000000000"
+                }
+              ],
+              "hmmLaunchConfig": {
+                "strategyShareBps": 5000,
+                "strategy": {
+                  "bidWidth": 5,
+                  "askWidth": 5,
+                  "gap": 1,
+                  "staleAfterSeconds": 86400,
+                  "staleDisplacement": 5,
+                  "minQuoteDeploy": "1111765817648171",
+                  "minQuoteHarvest": "1111765817648171",
+                  "minTokenHarvest": "7000000000000000000000",
+                  "resalePremiumBps": 500,
+                  "maxAsks": 4,
+                  "maxAskTokenExposure": "70000000000000000000000000",
+                  "maxAcquiredInventory": "700000000000000000000000000",
+                  "premiumDecaySeconds": 259200,
+                  "maxBidQuote": "111176581764817059",
+                  "referenceDeviation": 0
+                }
+              }
+            },
+            "configHash": "0xb60f1b50d9ccccf83f104289287696620e344e15520db82a634e115a23b4f72e"
+          },
+          {
+            "adapterId": "0xd79e93fc12ead15de269a5b98a9e0d2205ab77422d0cb480500370babc5687da",
+            "profileId": "0xe1bd95e086469e6afd9791ccc957e4d22b735012cb3db4a747f703673c62c306",
+            "quoteAsset": "0x15f3385625D7e364C5a6216FBbceadf10fa90e7d",
+            "tokenBudget": "150000000000000000000000000",
+            "configVersion": 1,
+            "config": {
+              "profile": 3,
+              "fee": 100,
+              "oracleConfigId": "0xc0e9bed88d70a13fd3ab31451fefdd073b7266e838aee0ad1c236c8c9eff855d",
+              "openingSqrtPriceX96": "93561924245275980297632694000",
+              "positions": [
+                {
+                  "tickLower": -118740,
+                  "tickUpper": 3326,
+                  "liquidity": "16367728281405292736546758",
+                  "tokenAmountMaximum": "19285714285714285714285714"
+                },
+                {
+                  "tickLower": -118740,
+                  "tickUpper": -14112,
+                  "liquidity": "39263335107905409364507875",
+                  "tokenAmountMaximum": "19285714285714285714285714"
+                },
+                {
+                  "tickLower": -118740,
+                  "tickUpper": -31550,
+                  "liquidity": "94599840465455087221746163",
+                  "tokenAmountMaximum": "19285714285714285714285714"
+                },
+                {
+                  "tickLower": -118740,
+                  "tickUpper": -48988,
+                  "liquidity": "230372823856725543471599812",
+                  "tokenAmountMaximum": "19285714285714285714285714"
+                },
+                {
+                  "tickLower": -118740,
+                  "tickUpper": -66426,
+                  "liquidity": "576189375813054039021215410",
+                  "tokenAmountMaximum": "19285714285714285714285714"
+                },
+                {
+                  "tickLower": -118740,
+                  "tickUpper": -83864,
+                  "liquidity": "1547768093687490885217429000",
+                  "tokenAmountMaximum": "19285714285714285714285714"
+                },
+                {
+                  "tickLower": -118740,
+                  "tickUpper": -101302,
+                  "liquidity": "5249017209599276044776900793",
+                  "tokenAmountMaximum": "19285714285714285714285714"
+                },
+                {
+                  "tickLower": -887272,
+                  "tickUpper": -118740,
+                  "liquidity": "5680266166353123501846520563",
+                  "tokenAmountMaximum": "15000000000000000000000002"
+                }
+              ]
+            },
+            "configHash": "0x7ccd4f0aecf49bd35a91fb7e632b7d5751f2c14bf47dc0bf9a96fc10431305fb"
+          }
+        ],
+        "buys": [
+          {
+            "marketIndex": 0,
+            "quoteAmountIn": "18754801081897411",
+            "minTokenOut": "1",
+            "recipient": "0x0000000000000000000000000000000000000001",
+            "sqrtPriceLimitX96": "0"
+          },
+          {
+            "marketIndex": 1,
+            "quoteAmountIn": "169614413946756570525203",
+            "minTokenOut": "1",
+            "recipient": "0x0000000000000000000000000000000000000001",
+            "sqrtPriceLimitX96": "4295128740"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "quoteSpent": "18754801081897411",
+          "tokenOut": "1110050486286657738137774",
+          "sqrtPriceAfterX96": "10359642201153169911899750"
+        },
+        {
+          "quoteSpent": "169614413946756570525203",
+          "tokenOut": "233655783578372503617505",
+          "sqrtPriceAfterX96": "92430910944256318673403630377"
+        }
+      ]
+    },
+    {
+      "name": "native/0x4cbc425844a95ae9f4256c37aff9032de497ebccb0ff1a1573593b989da85231",
+      "provenance": {
+        "kind": "native",
+        "transactionHash": "0x4cbc425844a95ae9f4256c37aff9032de497ebccb0ff1a1573593b989da85231",
+        "blockNumber": "86879520",
+        "blockHash": "0x212fa3079b3d3741f3e84a530e732c6e80f1d9c90f382c69974e464ee69e32eb",
+        "recordedBuyCount": 1
+      },
+      "predictedToken": "0x1A858a953fD2404c352e485Eea659eD6FCFAc739",
+      "curve": {
+        "chainId": "4663",
+        "orchestrator": "0x91560876033d568d25CDe98C78c33ff8FC43962c",
+        "markets": [
+          {
+            "adapterId": "0xd79e93fc12ead15de269a5b98a9e0d2205ab77422d0cb480500370babc5687da",
+            "profileId": "0xe1bd95e086469e6afd9791ccc957e4d22b735012cb3db4a747f703673c62c306",
+            "quoteAsset": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+            "tokenBudget": "1000000000000000000000000000",
+            "configVersion": 1,
+            "config": {
+              "profile": 3,
+              "fee": 10000,
+              "oracleConfigId": "0xc0e9bed88d70a13fd3ab31451fefdd073b7266e838aee0ad1c236c8c9eff855d",
+              "openingSqrtPriceX96": "1761773193750706363641693178420302",
+              "positions": [
+                {
+                  "tickLower": -887200,
+                  "tickUpper": 200200,
+                  "liquidity": "44970693614421769510836",
+                  "tokenAmountMaximum": "1000000000000000000000000000"
+                }
+              ]
+            },
+            "configHash": "0xc41cdf20705aaf7d1d069022f5f57081e140d72a3fac23d6c603342a6da32b94"
+          }
+        ],
+        "buys": [
+          {
+            "marketIndex": 0,
+            "quoteAmountIn": "500000000000000",
+            "minTokenOut": "243479735508999613527983",
+            "recipient": "0x0000000000000000000000000000000000000001",
+            "sqrtPriceLimitX96": "4295128740"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "quoteSpent": "500000000000000",
+          "tokenOut": "244703251767838807565813",
+          "sqrtPriceAfterX96": "1761342082121318155082672704247246"
+        }
+      ]
+    },
+    {
+      "name": "native/0x3db38db2a282098d894c4c1d3797a649db1bdafa1cca83f5e6405e09de26eb81",
+      "provenance": {
+        "kind": "native",
+        "transactionHash": "0x3db38db2a282098d894c4c1d3797a649db1bdafa1cca83f5e6405e09de26eb81",
+        "blockNumber": "86339168",
+        "blockHash": "0x768dc749990ebc83bec8a0f34191b1d8a6ec0524a78b1e34470e815382c7e42e",
+        "recordedBuyCount": 1
+      },
+      "predictedToken": "0x142C78f0505ae80540486eBaD21A7FE586316B05",
+      "curve": {
+        "chainId": "4663",
+        "orchestrator": "0x91560876033d568d25CDe98C78c33ff8FC43962c",
+        "markets": [
+          {
+            "adapterId": "0xe10c1f6655db6e06817384a2283c2e181a7d9cf21c5bee04fc6f9f073ab24587",
+            "profileId": "0xf18140c2fb66a4202a0f22d62d6288bf7976db108de5381e5497aaed332a06f8",
+            "quoteAsset": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+            "tokenBudget": "1000000000000000000000000000",
+            "configVersion": 6,
+            "config": {
+              "version": 6,
+              "lpFeePips": 0,
+              "tickSpacing": 60,
+              "sqrtPriceX96": "1784824602249969859786789801087101",
+              "hookFeePips": 150000,
+              "minimumHookFeePips": 150000,
+              "feeSensitivityPipsSecondsPerTick": 0,
+              "feeMode": 1,
+              "protocolFeeDenominator": 6,
+              "treasury": "0x961981916AB6575C3af3eeCecbf6A3b7Fad7C9e1",
+              "externalLiquidityDisabled": true,
+              "oracleConfigId": "0xeee1f80886a96fd4dced62af707ecd72df000f86f2cfbbf26c8412c85cf99a4c",
+              "hookSalt": "0x0000000000000000000000000000000000000000000000000000000000002ecb",
+              "profileId": "0xf18140c2fb66a4202a0f22d62d6288bf7976db108de5381e5497aaed332a06f8",
+              "termsDigest": "0xf2503b91eeec87f95c4f5e47df517a143422c766528c403ea44bdbd9b40df10e",
+              "developerBeneficiary": "0x7cb44b8693b3C350A2BcD4b681aF85365aa27783",
+              "developerFeeBps": 0,
+              "positions": [
+                {
+                  "tickLower": -887220,
+                  "tickUpper": 200460,
+                  "liquidity": "44389887059147677385846",
+                  "salt": "0x0000000000000000000000000000000000000000000000000000000000000001",
+                  "maxTokenAmount": "1000000000000000000000000000"
+                }
+              ]
+            },
+            "configHash": "0xe6bdfbb78145f3a1febc96cc1cd45d2a4c34d85054f23941e1b94a37efdfdedd"
+          }
+        ],
+        "buys": [
+          {
+            "marketIndex": 0,
+            "quoteAmountIn": "30000000000000000",
+            "minTokenOut": "12711914891393412859311363",
+            "recipient": "0x0000000000000000000000000000000000000001",
+            "sqrtPriceLimitX96": "4295128740"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "quoteSpent": "30000000000000000",
+          "tokenOut": "12775793860696897346041571",
+          "sqrtPriceAfterX96": "1762022051054123913138482852487846"
+        }
+      ]
+    },
+    {
+      "name": "native/0x86091e2f646b92786f2452a7625170a6f56b5a1c865deea68021d491fc904e74",
+      "provenance": {
+        "kind": "native",
+        "transactionHash": "0x86091e2f646b92786f2452a7625170a6f56b5a1c865deea68021d491fc904e74",
+        "blockNumber": "99640116",
+        "blockHash": "0x001560b22b09b600655dc013761b6a05eab4aaec0a9f0e989666c9ba8a0bb353",
+        "recordedBuyCount": 1
+      },
+      "predictedToken": "0x49354C9e2A1534bD5fA530E2b8f228d322dD3E4A",
+      "curve": {
+        "chainId": "4663",
+        "orchestrator": "0x91560876033d568d25CDe98C78c33ff8FC43962c",
+        "markets": [
+          {
+            "adapterId": "0xd79e93fc12ead15de269a5b98a9e0d2205ab77422d0cb480500370babc5687da",
+            "profileId": "0xe1bd95e086469e6afd9791ccc957e4d22b735012cb3db4a747f703673c62c306",
+            "quoteAsset": "0x4a0E65A3EcceC6dBe60AE065F2e7bb85Fae35eEa",
+            "tokenBudget": "10000000000000000000000",
+            "configVersion": 1,
+            "config": {
+              "profile": 3,
+              "fee": 20000,
+              "oracleConfigId": "0xc0e9bed88d70a13fd3ab31451fefdd073b7266e838aee0ad1c236c8c9eff855d",
+              "openingSqrtPriceX96": "8104713575402195087010238073",
+              "positions": [
+                {
+                  "tickLower": -45600,
+                  "tickUpper": 887200,
+                  "liquidity": "131801741989503023714",
+                  "tokenAmountMaximum": "1288436628494830000000"
+                },
+                {
+                  "tickLower": -28000,
+                  "tickUpper": 65200,
+                  "liquidity": "318698812511126534725",
+                  "tokenAmountMaximum": "1280060624917240000000"
+                },
+                {
+                  "tickLower": -10400,
+                  "tickUpper": 65200,
+                  "liquidity": "773907044850005532443",
+                  "tokenAmountMaximum": "1271985311057780000000"
+                },
+                {
+                  "tickLower": 7200,
+                  "tickUpper": 65200,
+                  "liquidity": "1899039320100678742873",
+                  "tokenAmountMaximum": "1252025662680220000000"
+                },
+                {
+                  "tickLower": 24800,
+                  "tickUpper": 65200,
+                  "liquidity": "4784100729112892470950",
+                  "tokenAmountMaximum": "1200845181470810000000"
+                },
+                {
+                  "tickLower": 42400,
+                  "tickUpper": 65200,
+                  "liquidity": "12936115237028659395542",
+                  "tokenAmountMaximum": "1056229880029450000000"
+                },
+                {
+                  "tickLower": 60000,
+                  "tickUpper": 65200,
+                  "liquidity": "44122419528059052710540",
+                  "tokenAmountMaximum": "502990335189360000000"
+                },
+                {
+                  "tickLower": 38400,
+                  "tickUpper": 111200,
+                  "liquidity": "15041034403756470083352",
+                  "tokenAmountMaximum": "2147426376160310000000"
+                }
+              ]
+            },
+            "configHash": "0xd72281292006b544cf48b5373766bc94afd9682dc1f352b98d1c4ac22c2bb0a3"
+          }
+        ],
+        "buys": [
+          {
+            "marketIndex": 0,
+            "quoteAmountIn": "156634732059271935",
+            "minTokenOut": "14431268950540585284",
+            "recipient": "0x0000000000000000000000000000000000000001",
+            "sqrtPriceLimitX96": "1461446703485210103287273052203988822378723970341"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "quoteSpent": "156634732059271935",
+          "tokenOut": "14503787889990537974",
+          "sqrtPriceAfterX96": "8196986137078955209945042870"
+        }
+      ]
+    },
+    {
+      "name": "native/0xbcdc2f0ec5e72ba5f2b91cb90ee349835c251ea8f5b241cd18a786f42f959699",
+      "provenance": {
+        "kind": "native",
+        "transactionHash": "0xbcdc2f0ec5e72ba5f2b91cb90ee349835c251ea8f5b241cd18a786f42f959699",
+        "blockNumber": "83056818",
+        "blockHash": "0xa9cfc69bc3308807e2d19604f4fc32f4c8653b208e71ac84bb7ba63b60e1ccf1",
+        "recordedBuyCount": 2
+      },
+      "predictedToken": "0xaF91716eCbe14e5096806324C1e10AB03B400A62",
+      "curve": {
+        "chainId": "4663",
+        "orchestrator": "0x91560876033d568d25CDe98C78c33ff8FC43962c",
+        "markets": [
+          {
+            "adapterId": "0xd79e93fc12ead15de269a5b98a9e0d2205ab77422d0cb480500370babc5687da",
+            "profileId": "0xe1bd95e086469e6afd9791ccc957e4d22b735012cb3db4a747f703673c62c306",
+            "quoteAsset": "0x2E8c31162b855A2ffa90F6F8634643Ad6F111e18",
+            "tokenBudget": "500000000000000000000000000",
+            "configVersion": 1,
+            "config": {
+              "profile": 3,
+              "fee": 10000,
+              "oracleConfigId": "0xc0e9bed88d70a13fd3ab31451fefdd073b7266e838aee0ad1c236c8c9eff855d",
+              "openingSqrtPriceX96": "11755562826496067164730007768450",
+              "positions": [
+                {
+                  "tickLower": 99000,
+                  "tickUpper": 100000,
+                  "liquidity": "2086778719886486029134343",
+                  "tokenAmountMaximum": "15100000000000000000000000"
+                },
+                {
+                  "tickLower": 96600,
+                  "tickUpper": 98400,
+                  "liquidity": "2481297156765781293109651",
+                  "tokenAmountMaximum": "29250000000000000000000000"
+                },
+                {
+                  "tickLower": 93200,
+                  "tickUpper": 95800,
+                  "liquidity": "4890496397751743640066900",
+                  "tokenAmountMaximum": "71700000000000000000000000"
+                },
+                {
+                  "tickLower": 88800,
+                  "tickUpper": 92200,
+                  "liquidity": "9070436414772155398834614",
+                  "tokenAmountMaximum": "142450000000000000000000000"
+                },
+                {
+                  "tickLower": -887200,
+                  "tickUpper": 87600,
+                  "liquidity": "3025536582792661775764297",
+                  "tokenAmountMaximum": "241500000000000000000000000"
+                }
+              ]
+            },
+            "configHash": "0x46daf8e3e8b49f28ac9210a279d0eae8c6b2e2c9487cab1ef49ffc516e90d174"
+          },
+          {
+            "adapterId": "0xe10c1f6655db6e06817384a2283c2e181a7d9cf21c5bee04fc6f9f073ab24587",
+            "profileId": "0xf18140c2fb66a4202a0f22d62d6288bf7976db108de5381e5497aaed332a06f8",
+            "quoteAsset": "0xED44A1B434d59B8c4F162D67A43eB198d4C64CB6",
+            "tokenBudget": "500000000000000000000000000",
+            "configVersion": 6,
+            "config": {
+              "version": 6,
+              "lpFeePips": 0,
+              "tickSpacing": 200,
+              "sqrtPriceX96": "5167909805418990784448894947",
+              "hookFeePips": 10000,
+              "minimumHookFeePips": 0,
+              "feeSensitivityPipsSecondsPerTick": 0,
+              "feeMode": 1,
+              "protocolFeeDenominator": 6,
+              "treasury": "0x961981916AB6575C3af3eeCecbf6A3b7Fad7C9e1",
+              "externalLiquidityDisabled": false,
+              "oracleConfigId": "0xc0e9bed88d70a13fd3ab31451fefdd073b7266e838aee0ad1c236c8c9eff855d",
+              "hookSalt": "0x00000000000000000000000000000000000000000000000000000000000018a9",
+              "profileId": "0xf18140c2fb66a4202a0f22d62d6288bf7976db108de5381e5497aaed332a06f8",
+              "termsDigest": "0xf2503b91eeec87f95c4f5e47df517a143422c766528c403ea44bdbd9b40df10e",
+              "developerBeneficiary": "0x7cb44b8693b3C350A2BcD4b681aF85365aa27783",
+              "developerFeeBps": 0,
+              "positions": [
+                {
+                  "tickLower": -54600,
+                  "tickUpper": -51400,
+                  "liquidity": "24507547622339078547913904",
+                  "salt": "0x0000000000000000000000000000000000000000000000000000000000000006",
+                  "maxTokenAmount": "55550000000000000000000000"
+                },
+                {
+                  "tickLower": -51400,
+                  "tickUpper": -48600,
+                  "liquidity": "45586554949908613188110626",
+                  "salt": "0x0000000000000000000000000000000000000000000000000000000000000007",
+                  "maxTokenAmount": "77800000000000000000000000"
+                },
+                {
+                  "tickLower": -48600,
+                  "tickUpper": -46000,
+                  "liquidity": "72229984496063812760771701",
+                  "salt": "0x0000000000000000000000000000000000000000000000000000000000000008",
+                  "maxTokenAmount": "100000000000000000000000000"
+                },
+                {
+                  "tickLower": -46000,
+                  "tickUpper": -43800,
+                  "liquidity": "117635649898834296181144155",
+                  "salt": "0x0000000000000000000000000000000000000000000000000000000000000009",
+                  "maxTokenAmount": "122200000000000000000000000"
+                },
+                {
+                  "tickLower": -43800,
+                  "tickUpper": 887200,
+                  "liquidity": "16168144534667510143366590",
+                  "salt": "0x000000000000000000000000000000000000000000000000000000000000000a",
+                  "maxTokenAmount": "144450000000000000000000000"
+                }
+              ]
+            },
+            "configHash": "0x571d2f56f539bd5cc04d6654450f34a9717de0d9a20d72727da35b9394897c9a"
+          }
+        ],
+        "buys": [
+          {
+            "marketIndex": 0,
+            "quoteAmountIn": "114783886055963920",
+            "minTokenOut": "2489220543007988015978",
+            "recipient": "0x0000000000000000000000000000000000000001",
+            "sqrtPriceLimitX96": "4295128740"
+          },
+          {
+            "marketIndex": 1,
+            "quoteAmountIn": "10473478839643557098",
+            "minTokenOut": "2424798946861865763809",
+            "recipient": "0x0000000000000000000000000000000000000001",
+            "sqrtPriceLimitX96": "0"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "quoteSpent": "114783886055963920",
+          "tokenOut": "2501729188952751774853",
+          "sqrtPriceAfterX96": "11755467844021471195508118668106"
+        },
+        {
+          "quoteSpent": "10473478839643557098",
+          "tokenOut": "2436983866192829913376",
+          "sqrtPriceAfterX96": "5167943325563536467567172445"
+        }
+      ]
+    }
+  ]
+}

@@ -1,8 +1,10 @@
-import { decodeFunctionData, decodeFunctionResult, encodeFunctionData, encodeFunctionResult, multicall3Abi, toFunctionSelector, toHex, zeroAddress, zeroHash } from "viem";
+import { decodeFunctionData, decodeFunctionResult, encodeFunctionData, encodeFunctionResult, multicall3Abi, parseAbi, toFunctionSelector, toHex, zeroAddress, zeroHash } from "viem";
 const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../../src/lifecycle/index.ts" : "../../dist/lifecycle/index.js";
 const { encodePoolBoundHookParameters, getKnownLifecycleProfile, hashLaunchIdentity, launchLensAbi, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, minePoolBoundHookSalt } = await import(sdkPath);
 const { deriveKnownPoolBoundHookDeployment } = await import(sdkPath.replace("index.", "calibration."));
 const snapshotSelector = toFunctionSelector(launchLensAbi.find((item) => item.name === "snapshot"));
+const pricesAbi = parseAbi(["function getPricesInWei() view returns (uint256,uint256,uint256,uint256,uint256,uint256)"]);
+const pricesSelector = toFunctionSelector(pricesAbi[0]);
 
 export const MULTICALL3 = "0xca11bde05977b3631167028862be2a173976ca11";
 // Public chain4663 runtime observed at block 98,136,655, hash d5c15d...e770891.
@@ -66,6 +68,14 @@ export async function emulateMulticall3(client, params) {
     try {
       if (call.callData.slice(0, 10) === snapshotSelector) {
         results.push({ success: true, returnData: await emulateLaunchLens(client, params, call.callData) });
+        continue;
+      }
+      if (call.target.toLowerCase() === "0x000000000000000000000000000000000000006c" && call.callData.slice(0, 10) === pricesSelector) {
+        const prices = client.fixtureNitroPrices ?? (() => client.request({ method: "eth_gasPrice", fixtureSubcall: true })
+          .then((price) => [0n, 0n, 0n, BigInt(price), 0n, BigInt(price)]));
+        const value = typeof prices === "function" ? await prices() : prices;
+        results.push({ success: true, returnData: typeof value === "string" ? value
+          : encodeFunctionResult({ abi: pricesAbi, functionName: "getPricesInWei", result: value }) });
         continue;
       }
       if (call.target.toLowerCase() === MULTICALL3) {
