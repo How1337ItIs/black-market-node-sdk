@@ -9,6 +9,8 @@
 - Use the deployed HookSaltMiner `findMany` for pool-bound preparation and verify returned CREATE2 salts locally. Preserve the public local miner for deployments without a miner preset.
 - Add optional `LifecycleDeploymentPreset.launchLens` and `launchLensAbi` integration for dependent reads and mining in the initial aggregate. The preset remains unset until deployment; setting its address enables the path.
 - Preserve launch economics, deployed contract ABIs and committed transaction calldata.
+- Diagnostic migration: remove `simulation.replay` and `simulation.envelope` from `LifecycleDiagnosticStage` listeners/exhaustive switches. Both stages are replaced by `simulation.measure`, which now includes the authoritative validated execution at the exact returned gas envelope. Buy calibration or an unvalidated sizing pass can also emit `simulation.measure`; neither is execution admission.
+- Staged admission still checks the full simulated sequence for feasibility, using conservative suffix gas budgets bounded by the pinned balance. Only the immediate command receives a final exact gas/price estimate and admission. Later `simulation.steps` have `provisional: true` and no estimate; their transaction gas/price/estimate/admission stay unset until `buildNextTransaction` re-sizes and proves that command with a fresh poster quote. Never reuse a provisional `gasLimit` as a transaction estimate.
 
 ## 0.13.0
 

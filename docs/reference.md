@@ -167,8 +167,13 @@ Failed getters cannot fall back to the large header gas limit or a hard-coded 32
 restriction. It is separate from compute. NodeInterface (`0xc8`)
 `gasEstimateL1Component` estimates poster allocation once for the next final
 transaction, using its exact sender/target/calldata/value at the same block.
-Native validated measurement includes actual poster charges and proves execution;
-the quote is not a compute proof and is not added again to measured gas.
+Compute-only calibration and fresh poster allocation size the immediate envelope
+before native validation; an already measured complete gas observation is not
+charged poster twice. The final validated pass executes exactly the returned gas.
+Suffix steps are marked `provisional: true` and have no transaction estimate:
+their conservative complete budgets check sequence feasibility, bounded across
+the pinned affordable remaining balance. `buildNextTransaction` never reuses
+those budgets as estimates; it freshly quotes and proves only the next command.
 
 On Nitro, `estimate.posterGas` / `posterFee` are buffered allocations **inside**
 `gasLimit`; `dataFeeIncludedInGas` is true, `dataFee` is zero, and `totalFee` equals

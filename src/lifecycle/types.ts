@@ -5,7 +5,9 @@ import type {
   MarketLiveStateV1, PreparedMarketV1, ProfileRegistrationV1, ProfileTopologyV1, LaunchEnvelopeV2, LifecycleDeveloperTerms,
 } from "./schema.js";
 
-/** Local opt-in timing only: never contains request arguments, addresses, results or errors. */
+/** Local opt-in timing only: never contains request arguments, addresses, results or errors.
+ * Since 0.14.0, removed replay/envelope stages are represented by simulation.measure,
+ * which includes the final validated execution at the returned gas envelope. */
 export type LifecycleDiagnosticStage =
   | "plan" | "plan.context" | "plan.domain" | "plan.progress" | "plan.inputs" | "rpc"
   | "profile.certification" | "simulation.context" | "simulation.nitro"
@@ -79,7 +81,8 @@ export type LifecycleTransaction = {
   marketStart?: number; marketCount?: number; gas?: bigint; gasPrice?: bigint; nonce?: bigint;
   /** Exact encoded byte count; populated on SDK-built commands, including approvals. */
   calldataBytes?: number;
-  /** Exact current-state execution admission, not a wallet batch or future guarantee. */
+  /** Only the immediate command receives exact gas/price/estimate/admission.
+   * Future commands must be re-sized and proved by buildNextTransaction. */
   admission?: LifecycleAdmission;
   estimate?: LifecycleTransactionEstimate;
 };
@@ -105,6 +108,9 @@ export type LifecycleCapacityConstraint = "compute" | "gas-envelope" | "calldata
 export type LifecycleSimulationStep = {
   transactionId: string; success: boolean; gasUsed?: bigint; gasLimit?: bigint; gasRequired?: bigint;
   returnData?: Hex; error?: string; estimate?: LifecycleTransactionEstimate;
+  /** Suffix feasibility budget only, not a transaction estimate or execution admission.
+   * buildNextTransaction obtains a fresh poster quote and exact envelope at its turn. */
+  provisional?: boolean;
   failureCategory?: LifecycleFailureCategory; decodedError?: string;
   /** Safe failed-call facts only; native messages and error-data bytes are never copied here. */
   nativeErrorCode?: number;
@@ -115,7 +121,7 @@ export type LifecycleSimulationStep = {
 };
 export type LifecycleSimulation = LifecycleProofOutcomes & {
   backend: "eth_simulateV1" | "controlled-fork" | "unavailable";
-  /** Admission/proved outcomes cover the successful prefix, not the deferred suffix. */
+  /** Full successful prefix feasibility; only its immediate envelope is final. */
   confidence: "stateful" | "provisional"; admitted: boolean;
   blockNumber: bigint; blockHash: Hash; account: Address; chainId: bigint;
   steps: readonly LifecycleSimulationStep[]; limits: ResolvedLifecycleLimits;

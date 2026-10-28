@@ -196,12 +196,15 @@ function clientFor(plan, settings = {}) {
       assert.ok(request.blockStateCalls.every((block) => block.stateOverrides === undefined), "Capability probe balance must never leak into actual execution proof");
       if (state.simulationUnavailable) throw new Error("Native sequential simulation unsupported");
       if (request.validation && state.replayThrow) throw Object.assign(new Error("execution failed"), { code: -32000 });
-      let phase = state.phase, prepared = state.prepared ?? 0, allowance = state.allowance, stopped = false;
+      let phase = state.phase, prepared = state.prepared ?? 0, allowance = state.allowance, stopped = false, nativeBalance = state.balance;
       const blocks = request.blockStateCalls.map((block) => {
         if (stopped) return { calls: [{ status: "0x0", gasUsed: "0x0", returnData: "0x", error: { message: "Prior dependent execution failed", data: state.downstreamFailureData } }] };
         assert.equal(block.calls.length, 1, "Actual dependent state is carried between ordered blocks");
         assert.equal(block.blockOverrides.baseFeePerGas, undefined, "Exact execution cannot fabricate fee-bearing block state");
         const tx = block.calls[0];
+        if (request.validation && state.enforceUpfrontBalance && BigInt(tx.value) + BigInt(tx.gas) * BigInt(tx.gasPrice) > nativeBalance) {
+          throw Object.assign(new Error("insufficient funds for gas * price + value"), { code: -38014 });
+        }
         // Independent fee-bearing refusal: recommendations are advisory, but
         // this natural child fee is an actual native validation requirement.
         if (request.validation && BigInt(tx.gasPrice) < (state.childBaseFee ?? state.baseFeePerGas ?? state.gasPrice / 2n)) {
@@ -262,6 +265,7 @@ function clientFor(plan, settings = {}) {
           logs = [log("LaunchActivated", { launchId: hashLaunchIdentity(executingPlan), planHash: hashLaunchPlan(executingPlan), token: TOKEN, marketCount: state.eventMarketCount ?? executingPlan.markets.length, positionCount: state.eventPositionCount ?? positionCount })];
         } else if (functionName === "cancelLaunch") { assert.ok([LifecyclePhase.Preparing, LifecyclePhase.Ready].includes(phase)); phase = LifecyclePhase.Cancelled; logs = [log("LaunchCancelled", { launchId: hashLaunchIdentity(plan), creator: plan.creator, inventoryBurned: false })]; }
         else assert.fail(`Unexpected execution ${functionName}`);
+        if (request.validation && state.enforceUpfrontBalance) nativeBalance -= BigInt(tx.value) + fullUsed * BigInt(tx.gasPrice);
         return { calls: [{ status: "0x1", gasUsed: toHex(fullUsed), maxUsedGas: state.maxUsedGas === null ? undefined : toHex(state.maxUsedGas ?? fullUsed), returnData, logs }] };
       });
       if (state.reorg && request.validation) reorged = true;
@@ -278,7 +282,7 @@ test("lagging RPC fee recommendations cannot authorize an underpriced launch env
   const client = clientFor(plan, { gasPrice: 2n, baseFeePerGas: 5n });
   const planned = await planLaunch({ client, plan, account: ACCOUNT, mode: "staged" });
   assert.equal(planned.simulation.admitted, true);
-  for (const transaction of planned.transactions) {
+  for (const transaction of planned.transactions.slice(0, 1)) {
     assert.equal(transaction.gasPrice, 10n);
     assert.equal(transaction.estimate.executionFee, transaction.gas * 10n);
   }
@@ -311,9 +315,11 @@ test("missing optional policy admits the exact approval/launch sequence without 
   assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
   assert.equal(planned.simulation.executionProof, "proved"); assert.equal(planned.simulation.protocolFit, "proved"); assert.equal(planned.simulation.transportPreflight, "not-requested");
   assert.deepEqual(planned.transactions.map((tx) => tx.kind), ["approve", "atomic"]);
-  assert.equal(planned.transactions[1].estimate.gasLimit, 1_150_000n);
-  assert.equal(planned.transactions[1].estimate.dataFeeIncludedInGas, false);
-  assert.equal(planned.transactions[1].estimate.totalFee, undefined);
+  assert.equal(planned.transactions[0].estimate.gasLimit, 1_150_000n);
+  assert.equal(planned.transactions[0].estimate.dataFeeIncludedInGas, false);
+  assert.equal(planned.transactions[0].estimate.totalFee, undefined);
+  assert.equal(planned.transactions[1].estimate, undefined);
+  assert.equal(planned.simulation.steps[1].provisional, true);
   const next = await buildNextTransaction({ client, planned });
   assert.equal(next.kind, "approve"); assert.equal(next.admission.blockHash, HASH); assert.equal(next.admission.transportPreflight, "not-requested");
 });
@@ -454,7 +460,7 @@ test("prepared native continuation reuses only positive capability while proving
         assert.equal((await prepared(planned.transactions)).admitted, true);
         assert.equal((await prepared(planned.transactions)).admitted, true);
         assert.equal(capabilityRequests(source).length, 2, "A failed probe is not cached; the one positive proof is then reused");
-        assert.equal(economicRequests(source).length, 2, "Each eligible candidate receives one validated measurement");
+        assert.deepEqual(economicRequests(source).map((row) => row.params[0].validation), [false, true, false, true], "Each unhinted candidate sizes once and validates exactly once");
         assert.equal(source.captured.filter((row) => row.method === "eth_gasPrice").length, 1);
         assert.equal(source.captured.filter((row) => row.method === "eth_getCode" && row.params[0] === ACCOUNT).length, 1);
         assert.equal(source.captured.filter((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "0x2a").length, 0,
@@ -584,7 +590,7 @@ test("standalone native calls refresh fees while session capabilities and accoun
   assert.equal(first.steps[0].estimate.gasPrice, 2n);
   assert.equal(second.steps[0].estimate.gasPrice, 7n);
   assert.equal(capabilityRequests(source).length, 0);
-  assert.equal(economicRequests(source).length, 2);
+  assert.deepEqual(economicRequests(source).map((row) => row.params[0].validation), [false, true, false, true]);
   source.state.accountCode = CODE;
   const smart = await simulateLaunchTransactions({ client: { request: (args) => source.request(args) }, planned }, planned.transactions);
   assert.equal(smart.executionProof, "unavailable");
@@ -650,7 +656,7 @@ test("combined no-bound preparation performs exactly one fresh genuine planning 
     assert.deepEqual(combined.captured, reference.captured, "No mining snapshots, metadata repetitions or additional proofs may precede plain planning");
     assert.equal(progressUpdates, 0, "A plan without bound-hook mining has no mining progress");
     assert.equal(capabilityRequests(combined).length, 1);
-    assert.equal(economicRequests(combined).length, 1);
+    assert.deepEqual(economicRequests(combined).map((row) => row.params[0].validation), [false, true]);
   }
 });
 
@@ -720,7 +726,7 @@ test("Nitro economic dispatch waits for successful capability and every poster p
   assert.equal(started.has("replay"), true);
   const reference = await review(clientFor(plan, { poster: 200_000n }), plan);
   assert.deepEqual(planned, reference, "Scheduling cannot change exact committed calldata, proof outcomes, gas or fee envelopes");
-  assert.equal(source.captured.filter((row) => row.method === "eth_simulateV1").length, 2);
+  assert.equal(source.captured.filter((row) => row.method === "eth_simulateV1").length, 3);
   assert.equal(source.captured.filter((row) => row.method === "eth_getBlockByNumber").length, 1);
 });
 
@@ -752,12 +758,13 @@ test("complete Nitro measurement envelope separates poster budget from the uncha
   assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
   assert.equal(planned.simulation.limits.executionGasCeiling, 32_000_000n);
   assert.equal(planned.transactions[0].gas, 37_950_000n);
-  const [measurement] = economicRequests(client).map((row) => row.params[0]);
+  const [sizing, measurement] = economicRequests(client).map((row) => row.params[0]);
+  assert.equal(sizing.validation, false);
   assert.equal(measurement.validation, true);
-  assert.equal(BigInt(measurement.blockStateCalls[0].calls[0].gas), 50_000_000n, "Native validation enforces compute inside the complete simulation budget");
-  assert.equal(economicRequests(client).length, 1);
+  assert.equal(BigInt(measurement.blockStateCalls[0].calls[0].gas), planned.transactions[0].gas, "The sole authoritative pass uses the exact returned complete envelope");
+  assert.equal(economicRequests(client).length, 2);
   assert.equal(capabilityRequests(client).length, 1);
-  for (const request of [measurement]) {
+  for (const request of [sizing, measurement]) {
     assert.equal(request.blockStateCalls[0].stateOverrides, undefined);
     assert.equal(request.blockStateCalls[0].blockOverrides.baseFeePerGas, undefined);
     assert.equal(request.blockStateCalls[0].calls[0].from, ACCOUNT);
@@ -784,7 +791,7 @@ test("aggregate gas-used budgets prove the longest estimated prefix rather than 
     assert.equal(planned.simulation.protocolFit, "proved");
     assert.deepEqual(planned.simulation.deferredTransactionIds, deferred);
     const proven = planned.transactions.length - deferred.length;
-    assert.deepEqual(economicRequests(client).map((row) => row.params[0].blockStateCalls.length), [proven]);
+    assert.deepEqual(economicRequests(client).map((row) => row.params[0].blockStateCalls.length), [proven, proven]);
     for (const tx of planned.transactions.slice(proven)) {
       assert.equal(tx.gas, undefined); assert.equal(tx.gasPrice, undefined);
       assert.equal(tx.estimate, undefined); assert.equal(tx.admission, undefined);
@@ -833,7 +840,7 @@ test("measurement transport exhaustion truncates only at the observed aggregate 
     assert.equal(planned.simulation.admitted, exhausted, planned.simulation.reason);
     assert.deepEqual(planned.simulation.deferredTransactionIds, exhausted ? ["activate"] : []);
     if (exhausted) {
-      assert.deepEqual(economicRequests(client).map((row) => row.params[0].blockStateCalls.length), [3]);
+      assert.deepEqual(economicRequests(client).map((row) => row.params[0].blockStateCalls.length), [3, 2]);
       assert.equal(planned.simulation.executionProof, "proved");
     } else {
       assert.equal(planned.simulation.failedTransactionId, "activate");
@@ -868,12 +875,12 @@ test("source and malformed exact-replay failures cannot retry into admission", a
       assert.equal(planned.simulation.confidence, "provisional");
       assert.equal(planned.simulation.executionProof, "unavailable");
       assert.equal(diagnosticJson(planned.simulation).includes(failure.message), false);
-      assert.equal(economicRequests(source).length, 1, "A source failure is not permission for another economic RPC");
+      assert.deepEqual(economicRequests(source).map((row) => row.params[0].validation), [false, true], "The one failed exact pass is never retried");
     }
     const plan = makePlan({ chainId }), incomplete = clientFor(plan, { incompleteReplay: true });
     const malformed = await review(incomplete, plan);
     assert.equal(malformed.simulation.executionProof, "unavailable");
-    assert.equal(economicRequests(incomplete).length, 1);
+    assert.equal(economicRequests(incomplete).length, 2);
   }
 });
 
@@ -907,13 +914,13 @@ test("thrown native execution refusal retains unknown failure location and never
   assert.equal(unavailableLocation.simulation.admitted, false);
   assert.equal(unavailableLocation.simulation.executionProof, "unavailable");
   assert.equal(unavailableLocation.simulation.confidence, "provisional");
-  assert.equal(economicRequests(source).length, 1, "Thrown opaque failure cannot authorize an envelope retry");
+  assert.equal(economicRequests(source).length, 2, "Sizing plus the failed exact pass, without an envelope retry");
   assert.equal(unavailableLocation.simulation.failedTransactionId, undefined, "A thrown native error contains no first failed call evidence");
   const ceiling = clientFor(plan, { computeUsed: 32_000_000n, replayThrow: true });
   const refused = await review(ceiling, plan, { limits: { headroomBps: 0 } });
   assert.equal(refused.simulation.admitted, false);
   assert.equal(refused.simulation.failedTransactionId, undefined);
-  assert.equal(economicRequests(ceiling).length, 1, "A failed final measurement cannot benefit from another identical request");
+  assert.equal(economicRequests(ceiling).length, 2, "A failed exact pass cannot benefit from another identical request");
 });
 
 
@@ -934,7 +941,7 @@ test("nonzero Nitro poster envelope may exceed compute cutoff and affordability 
   assert.ok(client.state.posterRequests.every(({ request, args }) => request.from === ACCOUNT && args[0].toLowerCase() === CORE && args[2] === tx.data && request.value === "0xa"));
   const next = await buildNextTransaction({ client, planned }); assert.equal(next.gas, gas);
   const poor = await review(clientFor(plan, { computeUsed: 27_000_000n, poster: 2_000_000n, balance: balance - 1n }), plan);
-  assert.equal(poor.simulation.admitted, false); assert.equal(poor.simulation.executionProof, "proved"); assert.equal(poor.simulation.protocolFit, "proved");
+  assert.equal(poor.simulation.admitted, true); assert.equal(poor.transactions[0].gas, gas - 1n, "Affordable padding is clamped before the exact pass");
   const capped = await review(clientFor(plan, { computeUsed: 27_000_000n, poster: 2_000_000n }), plan, { limits: { accountGasLimit: 33_000_000n } });
   assert.equal(capped.simulation.admitted, true); assert.equal(capped.transactions[0].gas, 33_000_000n);
   await assert.rejects(review(clientFor(plan), plan, { limits: { estimateDataFee: async () => 1n } }), { code: "INVALID_LIMITS" });
@@ -1016,8 +1023,9 @@ test("reviewed native envelope survives the observed upward advisory drift at ex
   assert.equal(client.captured.filter((row) => row.method === "eth_getBalance").length, 0);
   assert.deepEqual(submissionClient.captured[1].params, [{ from: ACCOUNT, to: CORE, data: reviewedTransaction.data,
     value: toHex(100_000_000_000_000n), gas: toHex(23_973_273n), gasPrice: toHex(40_040_000n), nonce: toHex(reviewedTransaction.nonce) }, "latest"]);
-  await assert.rejects(buildNextTransaction({ client, planned, submissionClient: submissionFor(plan) }), { code: "PLAN_NOT_ADMITTED" },
-    "An ordinary new envelope at the larger recommendation is not affordable at the held exact balance");
+  const refreshed = await buildNextTransaction({ client, planned, submissionClient: submissionFor(plan) });
+  assert.equal(refreshed.gasPrice, 40_180_000n);
+  assert.ok(refreshed.gas < reviewedTransaction.gas, "New fee recommendations shrink optional padding to an affordable exact envelope");
 });
 
 test("reviewed atomic, approval, staged preparation, activation and cancellation replay only the immediate exact envelope", async () => {
@@ -1390,11 +1398,11 @@ test("cancellation retains canonical recovery and optional exact submission pref
   assert.equal((await buildNextTransaction({ client: nitro, planned: nitroCommitted, action: "cancel" })).gas, 46_000n, "Probe-only funding cannot reject an exactly-funded real cancellation");
 });
 
-test("definitive failed resumed replay retains every verified-prefix fee without an owned native-balance read", async () => {
+test("definitive resumed failure retains its immediate fee and provisional suffix evidence", async () => {
   for (const chainId of [31337n, 4663n]) {
     const plan = makePlan({ chainId, markets: 2 });
     const error = { code: 3, message: "Primary resumed activation refusal", data: "0x" };
-    const source = clientFor(plan, { phase: LifecyclePhase.Preparing, balance: 0n,
+    const source = clientFor(plan, { phase: LifecyclePhase.Preparing,
       failureFor(name, _args, validation) { return validation && name === "activateLaunch" ? { error } : undefined; },
     });
     let dataFeeCalls = 0;
@@ -1414,7 +1422,7 @@ test("definitive failed resumed replay retains every verified-prefix fee without
     assert.equal(planned.simulation.steps.at(-1).nativeErrorCode, 3);
     assert.equal(planned.simulation.steps.at(-1).nativeErrorKind, "execution-reverted");
     assert.equal(diagnosticJson(planned.simulation).includes(error.message), false);
-    for (const step of planned.simulation.steps) {
+    for (const step of planned.simulation.steps.slice(0, 1)) {
       assert.equal(step.estimate.gasUsed, 1_000_000n);
       assert.equal(step.estimate.gasLimit, 1_150_000n);
       assert.equal(step.estimate.gasPrice, 2n);
@@ -1424,9 +1432,10 @@ test("definitive failed resumed replay retains every verified-prefix fee without
       assert.equal(step.estimate.dataFeeIncludedInGas, chainId === 4663n);
       assert.equal(step.estimate.feeConfidence, "execution-and-data");
     }
-    assert.equal(dataFeeCalls, chainId === 4663n ? 0 : 3);
-    assert.equal(source.captured.filter((row) => row.method === "eth_getBalance").length, 0);
-    assert.equal(economicRequests(source).length, 1);
+    assert.ok(planned.simulation.steps.slice(1).every((step) => step.provisional && step.estimate === undefined));
+    assert.equal(dataFeeCalls, chainId === 4663n ? 0 : 1);
+    assert.equal(source.captured.filter((row) => row.method === "eth_getBalance").length, chainId === 4663n ? 0 : 1);
+    assert.equal(economicRequests(source).length, 2);
     assert.equal(planned.simulation.blockHash, HASH);
   }
 });
@@ -1437,7 +1446,7 @@ test("failed cancellation keeps fee estimates while healthy cancellation still r
     const committed = { plan, planHash: hashLaunchPlan(plan), launchId: hashLaunchIdentity(plan), predictedToken: TOKEN, account: ACCOUNT, chainId, mode: "staged", confirmations: 1 };
     let dataFeeCalls = 0;
     const limits = chainId === 4663n ? undefined : { estimateDataFee: async () => { dataFeeCalls += 1; return 5n; } };
-    const failed = clientFor(plan, { phase: LifecyclePhase.Preparing, computeUsed: 40_000n, balance: 0n, replayFail: true });
+    const failed = clientFor(plan, { phase: LifecyclePhase.Preparing, computeUsed: 40_000n, replayFail: true });
     await assert.rejects(buildNextTransaction({ client: failed, planned: committed, action: "cancel", limits }), (failure) => {
       assert.equal(failure.code, "CANCEL_NOT_ADMITTED");
       const simulation = failure.simulation, step = simulation.steps[0];
@@ -1461,8 +1470,8 @@ test("failed cancellation keeps fee estimates while healthy cancellation still r
       return true;
     });
     assert.equal(dataFeeCalls, chainId === 4663n ? 0 : 1);
-    assert.equal(failed.captured.filter((row) => row.method === "eth_getBalance").length, 0);
-    assert.equal(economicRequests(failed).length, 1);
+    assert.equal(failed.captured.filter((row) => row.method === "eth_getBalance").length, chainId === 4663n ? 0 : 1);
+    assert.equal(economicRequests(failed).length, 2);
     const required = chainId === 4663n ? 92_000n : 92_005n;
     const healthy = clientFor(plan, { phase: LifecyclePhase.Preparing, computeUsed: 40_000n, balance: required });
     const next = await buildNextTransaction({ client: healthy, planned: committed, action: "cancel", limits });
@@ -1470,14 +1479,8 @@ test("failed cancellation keeps fee estimates while healthy cancellation still r
     assert.equal(next.gas, 46_000n);
     assert.equal(next.estimate.totalFee, required);
     assert.equal(healthy.captured.filter((row) => row.method === "eth_getBalance").length, chainId === 4663n ? 0 : 1);
-    const poor = clientFor(plan, { phase: LifecyclePhase.Preparing, computeUsed: 40_000n, balance: required - 1n });
-    await assert.rejects(buildNextTransaction({ client: poor, planned: committed, action: "cancel", limits }), (failure) => {
-      assert.equal(failure.code, "CANCEL_NOT_ADMITTED");
-      assert.equal(failure.simulation.executionProof, "proved");
-      assert.equal(failure.simulation.protocolFit, "proved");
-      assert.match(failure.simulation.reason, /balance/);
-      return true;
-    });
+    const poor = clientFor(plan, { phase: LifecyclePhase.Preparing, computeUsed: 40_000n, balance: 80_000n - 1n });
+    await assert.rejects(buildNextTransaction({ client: poor, planned: committed, action: "cancel", limits }), { code: "CANCEL_NOT_ADMITTED" });
     assert.equal(poor.captured.filter((row) => row.method === "eth_getBalance").length, chainId === 4663n ? 0 : 1, "Success observations cannot bypass the real fee reserve");
   }
 });
@@ -1485,7 +1488,7 @@ test("failed cancellation keeps fee estimates while healthy cancellation still r
 test("failed replay keeps missing-data-fee uncertainty and validates callbacks and uint256 fee envelopes", async () => {
   const plan = makePlan();
   const committed = { plan, planHash: hashLaunchPlan(plan), launchId: hashLaunchIdentity(plan), predictedToken: TOKEN, account: ACCOUNT, chainId: plan.chainId, mode: "staged", confirmations: 1 };
-  const missing = clientFor(plan, { phase: LifecyclePhase.Preparing, computeUsed: 40_000n, balance: 0n, replayFail: true });
+  const missing = clientFor(plan, { phase: LifecyclePhase.Preparing, computeUsed: 40_000n, replayFail: true });
   await assert.rejects(buildNextTransaction({ client: missing, planned: committed, action: "cancel" }), (failure) => {
     assert.equal(failure.code, "CANCEL_NOT_ADMITTED");
     const estimate = failure.simulation.steps[0].estimate;
@@ -1495,15 +1498,15 @@ test("failed replay keeps missing-data-fee uncertainty and validates callbacks a
     assert.equal(estimate.feeConfidence, "execution-only");
     return true;
   });
-  assert.equal(missing.captured.filter((row) => row.method === "eth_getBalance").length, 0);
+  assert.equal(missing.captured.filter((row) => row.method === "eth_getBalance").length, 1);
   for (const dataFee of ["5", -1n, 1n << 256n, (1n << 256n) - 1n]) {
-    const client = clientFor(plan, { phase: LifecyclePhase.Preparing, computeUsed: 40_000n, balance: 0n, replayFail: true });
+    const client = clientFor(plan, { phase: LifecyclePhase.Preparing, computeUsed: 40_000n, replayFail: true });
     let calls = 0;
     await assert.rejects(buildNextTransaction({ client, planned: committed, action: "cancel",
       limits: { estimateDataFee: async () => { calls += 1; return dataFee; } },
     }), { code: dataFee === (1n << 256n) - 1n ? "INVALID_GAS_ENVELOPE" : "INVALID_DATA_FEE" });
     assert.equal(calls, 1, "Returned failure must not discard external data-fee observation and validation");
-    assert.equal(client.captured.filter((row) => row.method === "eth_getBalance").length, 0);
+    assert.equal(client.captured.filter((row) => row.method === "eth_getBalance").length, 1);
   }
   const overflow = clientFor(plan, { phase: LifecyclePhase.Preparing, computeUsed: 40_000n, gasPrice: (1n << 256n) - 1n, replayFail: true });
   await assert.rejects(buildNextTransaction({ client: overflow, planned: committed, action: "cancel" }), { code: "INVALID_GAS_ENVELOPE" });
@@ -1562,8 +1565,8 @@ test("requested staged partitions share one capability but never splice prefix s
     assert.equal(Object.hasOwn(planned, "atomicAttempt"), false);
     assert.equal(capabilityRequests(client).length, 1);
     const sequences = economicRequests(client).map((row) => row.params[0]);
-    assert.equal(sequences.length, 3, "Only under-estimated packed batches require another measurement");
-    assert.deepEqual(sequences.map((request) => request.blockStateCalls.length), [4, 5, 6]);
+    assert.equal(sequences.length, 4, "Packed candidates size before the one final validated pass");
+    assert.deepEqual(sequences.map((request) => request.blockStateCalls.length), [4, 5, 6, 6]);
     const capabilityChild = capabilityRequests(client)[0].params[0].blockStateCalls[0].blockOverrides;
     for (const request of sequences) {
       const calls = request.blockStateCalls.map((block, index) => {
@@ -1731,7 +1734,7 @@ test("non-invariant native returnData takes precedence over known error.data wit
     assert.equal(diagnosticJson(planned.simulation).includes(error.message), false);
     const requests = economicRequests(source).map((row) => row.params[0]);
     assert.deepEqual(requests.map((request) => request.blockStateCalls.length), [2]);
-    assert.ok(requests.every((request) => request.validation === true));
+    assert.ok(requests.every((request) => request.validation === false), "A failed sizing diagnostic never becomes execution admission");
     assert.equal(capabilityRequests(source).length, 1);
   }
 });
@@ -1785,8 +1788,8 @@ test("one plan shares exact pinned observations but retains every stateful repla
   assert.equal(client.captured.filter((row) => row.method === "eth_getCode" && row.params[0].toLowerCase() === ADAPTER).length, 1);
   assert.equal(client.captured.filter((row) => row.method === "eth_getBalance" && row.params[0].toLowerCase() === ACCOUNT).length, 0);
   const simulations = client.captured.filter((row) => row.method === "eth_simulateV1");
-  assert.equal(simulations.length, 2, "One native capability and one validated measurement");
-  assert.ok(simulations.every((row) => row.params[0].validation));
+  assert.equal(simulations.length, 3, "One session capability, unhinted sizing and exact validated execution");
+  assert.deepEqual(economicRequests(client).map((row) => row.params[0].validation), [false, true]);
   assert.equal(client.captured.filter((row) => row.method === "eth_getBlockByNumber").length, 1);
 });
 
@@ -2489,7 +2492,7 @@ test("sequential admitted planLaunch RPC counts decrease across recreated per-si
         assert.ok(firstCount > 0);
         assert.equal(secondCount, firstCount, `${method} must remain live per invocation`);
       }
-      assert.equal(client.captured.slice(boundary).filter((row) => row.method === "eth_simulateV1").length, enabled ? 1 : 2,
+      assert.equal(client.captured.slice(boundary).filter((row) => row.method === "eth_simulateV1").length, enabled ? 2 : 3,
         "Only a new session requires the native capability proof");
       const aborted = new AbortController();
       aborted.abort();
@@ -2517,7 +2520,7 @@ test("prepare, simulate and build-next share static observations but retain live
     assert.ok(result?.admitted === true || result?.admission?.admitted === true);
     const requests = client.captured.slice(boundary);
     assert.equal(requests.filter((row) => row.method === "eth_call" && row.params[0].to.toLowerCase() === NODE_INTERFACE).length, 0, "The same-block exact poster quote was already observed once");
-    assert.equal(requests.filter((row) => row.method === "eth_simulateV1").length, 1);
+    assert.equal(requests.filter((row) => row.method === "eth_simulateV1").length, result?.backend ? 2 : 1);
     assert.equal(requests.some((row) => row.method === "eth_getCode" && row.params[0].toLowerCase() === ACCOUNT.toLowerCase()), false, "Account code is session-scoped");
     assert.equal(requests.some((row) => row.method === "eth_getBalance"), false);
     assert.ok(requests.some((row) => row.method === "eth_getTransactionCount" && row.params[1] === "pending"));
@@ -2529,7 +2532,8 @@ test("prepare, simulate and build-next share static observations but retain live
   const refreshed = await planLaunch({ client, plan, account: ACCOUNT, mode: "staged" });
   assert.equal(refreshed.simulation.admitted, true);
   assert.equal(refreshed.transactions[0].kind, "approve", "Changed live allowance must affect the next command");
-  assert.ok(refreshed.transactions.every((transaction) => transaction.gasPrice === 3n));
+  assert.equal(refreshed.transactions[0].gasPrice, 3n);
+  assert.ok(refreshed.transactions.slice(1).every((transaction) => transaction.gasPrice === undefined));
   client.state.tokenBalance = 0n;
   const refused = await planLaunch({ client, plan, account: ACCOUNT, mode: "staged" });
   assert.equal(refused.prerequisites[0].inputBalance, 0n, "ERC20 balances are never session observations");
@@ -2571,9 +2575,10 @@ test("HMM V2 forwarding reserve is applied once to activation/atomic, never to b
     const planned = await review(client, plan, { mode: "staged", limits: { headroomBps: 0, maxSimulationGas: 200_000_000n } });
     assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
     assert.equal(planned.transactions[0].gas, 8_000_000n);
-    for (const tx of planned.transactions.filter((tx) => tx.kind === "prepare")) assert.equal(tx.gas, BigInt(tx.marketCount) * 14_000_000n);
-    assert.equal(planned.transactions.at(-1).gas, used + reserve, "Reserve scales once with total HMM markets, not once per market/callback");
-    assert.equal(economicRequests(client).length, 1, "Sizing adds no search or round trip");
+    for (const tx of planned.transactions.slice(1)) assert.equal(tx.gas, undefined);
+    client.state.phase = LifecyclePhase.Ready; client.state.prepared = markets;
+    const activation = await buildNextTransaction({ client, planned });
+    assert.equal(activation.gas, used + reserve, "At its turn the activation receives one forwarding reserve, not its provisional budget");
   }
   const plan = makeHmmPlan(), atomic = clientFor(plan, { computeUsed: 27_360_000n,
     failureFor(name, _args, validation, tx) {
@@ -2583,7 +2588,7 @@ test("HMM V2 forwarding reserve is applied once to activation/atomic, never to b
   const planned = await review(atomic, plan);
   assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
   assert.equal(planned.transactions[0].gas, 31_610_000n);
-  assert.equal(economicRequests(atomic).length, 1);
+  assert.equal(economicRequests(atomic).length, 2);
   const nonHmm = makePlan({ chainId: 4663n });
   const ordinary = await review(clientFor(nonHmm, { computeUsed: 5_850_000n }), nonHmm);
   assert.equal(ordinary.transactions[0].gas, 6_727_500n);
@@ -2596,7 +2601,7 @@ test("greedy HMM preparation packs 1/2/3/5 markets before any simulation", async
     assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
     assert.deepEqual(planned.transactions.filter((tx) => tx.kind === "prepare").map((tx) => tx.marketCount), batches);
     const coverage = markets === 1 ? 3 : 2;
-    assert.deepEqual(economicRequests(client).map((row) => row.params[0].blockStateCalls.length), [coverage]);
+    assert.deepEqual(economicRequests(client).map((row) => row.params[0].blockStateCalls.length), [coverage, coverage]);
     assert.deepEqual(planned.simulation.deferredTransactionIds, planned.transactions.slice(coverage).map((tx) => tx.id));
     for (const tx of planned.transactions.slice(coverage)) assert.equal(tx.gas, undefined);
     const next = await buildNextTransaction({ client, planned });
@@ -2614,7 +2619,7 @@ test("near-ceiling packed DeploymentFailed splits at95%, while lower-gas semanti
     const planned = await review(client, plan, { mode: "staged", limits: { maxSimulationGas: 100_000_000n } });
     assert.equal(planned.simulation.admitted, split, planned.simulation.reason);
     assert.deepEqual(planned.transactions.filter((tx) => tx.kind === "prepare").map((tx) => tx.marketCount), split ? [1, 1] : [2]);
-    assert.equal(economicRequests(client).length, split ? 2 : 1);
+    assert.equal(economicRequests(client).length, split ? 3 : 1);
     if (!split) assert.equal(planned.simulation.steps.at(-1).decodedError, "DeploymentFailed");
   }
 });
@@ -2624,7 +2629,9 @@ test("clamped padding keeps28M preparation and31M atomic work within32M while tr
   const client = clientFor(plan, { gasFor: (name) => name === "prepareMarkets" ? 28_000_000n : 1_000_000n });
   const staged = await review(client, plan, { mode: "staged" });
   assert.equal(staged.simulation.admitted, true, staged.simulation.reason);
-  assert.equal(staged.transactions.find((tx) => tx.kind === "prepare").gas, 32_200_000n);
+  assert.equal(staged.transactions.find((tx) => tx.kind === "prepare").gas, undefined);
+  client.state.phase = LifecyclePhase.Preparing;
+  assert.equal((await buildNextTransaction({ client, planned: staged })).gas, 32_200_000n);
   const one = makePlan({ chainId: 4663n });
   const atomic = await review(clientFor(one, { computeUsed: 31_000_000n }), one);
   assert.equal(atomic.simulation.admitted, true);
@@ -2650,7 +2657,7 @@ test("gross maxUsedGas sizes HMM reserve, falling back to gasUsed only when abse
     const planned = await review(client, plan);
     assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
     assert.equal(planned.transactions[0].gas, expected);
-    assert.equal(economicRequests(client).length, 1);
+    assert.equal(economicRequests(client).length, 2);
   }
 });
 
@@ -2686,7 +2693,7 @@ test("deferred activation receives exact gas only after canonical progress bring
   assert.equal(next.gas, 1_150_000n);
   assert.equal(next.gasPrice, 2n);
   assert.equal(next.admission.executionProof, "proved");
-  assert.deepEqual(economicRequests(client).map((row) => row.params[0].blockStateCalls.length), [1]);
+  assert.deepEqual(economicRequests(client).map((row) => row.params[0].blockStateCalls.length), [1, 1]);
 });
 
 test("reviewed generic-EVM envelopes use an explicit isolated fork directly without measurement or backend switching", async () => {
@@ -2837,13 +2844,13 @@ test("counting transport retains explicit cold entrypoint budgets and complete e
   const options = rpcBudgetPlan();
   const seeded = await prepareAndPlanLifecycleLaunch({ ...options, client: rpcBudgetClient(options.plan), buySlippageBps: 50 });
   const finalized = { ...options, plan: seeded.plan };
-  const atomicVector = { eth_call: 3, eth_chainId: 1, eth_gasPrice: 1, eth_getBlockByNumber: 2, eth_getCode: 2, eth_getTransactionCount: 3, eth_simulateV1: 2 };
+  const atomicVector = { eth_call: 3, eth_chainId: 1, eth_gasPrice: 1, eth_getBlockByNumber: 2, eth_getCode: 2, eth_getTransactionCount: 3, eth_simulateV1: 3 };
   const reviewedVector = { eth_call: 2, eth_chainId: 1, eth_getBlockByNumber: 2, eth_getCode: 2, eth_getTransactionCount: 3, eth_simulateV1: 2 };
   const staged = await planLaunch({ ...finalized, mode: "staged", client: rpcBudgetClient(seeded.plan) });
   for (const [name, vector, operation] of [
     ["planLaunch", atomicVector, (client) => planLaunch({ ...finalized, client })],
     ["simulateLaunchPlan", atomicVector, (client) => simulateLaunchPlan({ client, planned: seeded })],
-    ["buildNextTransaction", atomicVector, (client) => buildNextTransaction({ client, planned: seeded })],
+    ["buildNextTransaction", { ...atomicVector, eth_simulateV1: 2 }, (client) => buildNextTransaction({ client, planned: seeded })],
     ["reviewed atomic", reviewedVector, (client) => buildNextTransaction({ client, planned: seeded, reviewedTransaction: seeded.transactions[0] })],
     ["reviewed staged", reviewedVector, (client) => buildNextTransaction({ client, planned: staged, reviewedTransaction: staged.transactions[0] })],
     ["staged plan", atomicVector, (client) => planLaunch({ ...finalized, mode: "staged", client })],
@@ -2997,7 +3004,7 @@ test("planning batches independent state at one L2 pin, then build-next simulate
   assert.equal(client.captured.filter((call) => call.method === "eth_call" && call.params[0].to.toLowerCase() === MULTICALL3).length, 1);
   assert.equal(client.captured.filter((call) => call.method === "eth_getBlockByNumber").length, 1);
   assert.equal(client.captured.filter((call) => call.method === "eth_getBalance").length, 0);
-  assert.equal(economicRequests(client).length, 1, "Final validated measurement has no exact-replay pass");
+  assert.deepEqual(economicRequests(client).map((row) => row.params[0].validation), [false, true], "Unhinted sizing precedes the sole exact validated pass");
   assert.equal(client.state.posterRequests.length, 1, "Only the immediate transaction receives a poster quote");
   client.captured.length = 0;
   client.state.phase = LifecyclePhase.Preparing;
@@ -3020,7 +3027,7 @@ test("a validated final execution refusal never selects a configured fallback fo
   } });
   assert.equal(planned.simulation.admitted, false);
   assert.equal(planned.simulation.executionProof, "unavailable");
-  assert.equal(economicRequests(source).length, 1);
+  assert.equal(economicRequests(source).length, 2);
 });
 
 test("head-height receipts reuse the invocation's authoritative L2 header", async () => {
@@ -3039,4 +3046,89 @@ test("head-height receipts reuse the invocation's authoritative L2 header", asyn
   assert.equal(progress.receipts[0].status, "confirmed");
   assert.equal(wire.filter((call) => call.method === "eth_getBlockByNumber").length, 1);
   assert.equal(wire.find((call) => call.method === "eth_getBlockByNumber").params[0], "latest");
+});
+
+test("final native validation uses an affordable returned envelope, never its RPC discovery budget", async () => {
+  const plan = makePlan({ chainId: 4663n, nativeFunding: true }), price = 10n ** 12n;
+  for (const [balance, expected] of [[10n ** 18n, 115_000n], [100_000n * price + 10n, 100_000n], [99_999n * price + 10n, undefined]]) {
+    const client = clientFor(plan, { computeUsed: 100_000n, gasPrice: price, balance, enforceUpfrontBalance: true });
+    const planned = await review(client, plan);
+    assert.equal(planned.simulation.admitted, expected !== undefined, planned.simulation.reason);
+    const exact = economicRequests(client).filter((row) => row.params[0].validation);
+    if (expected === undefined) { assert.equal(exact.length, 0); continue; }
+    assert.equal(exact.length, 1);
+    const sent = exact[0].params[0].blockStateCalls[0].calls[0];
+    assert.equal(BigInt(sent.gas), expected);
+    assert.equal(planned.transactions[0].gas, expected);
+    assert.equal(planned.simulation.steps[0].gasLimit, expected);
+    assert.ok(BigInt(sent.gas) * BigInt(sent.gasPrice) + BigInt(sent.value) <= balance);
+    client.captured.length = 0;
+    const next = await buildNextTransaction({ client, planned });
+    assert.equal(next.gas, expected);
+    assert.deepEqual(economicRequests(client).map((row) => row.params[0].validation), [true]);
+  }
+});
+
+test("staged suffix feasibility budgets are affordable and never reused as next-transaction estimates", async () => {
+  const plan = makePlan({ chainId: 4663n, markets: 2, nativeFunding: true });
+  const client = clientFor(plan, { computeUsed: 100_000n, poster: 75_000n, balance: 2_000_020n, enforceUpfrontBalance: true });
+  const planned = await review(client, plan, { mode: "staged", limits: { maxSimulationGas: 100_000_000n } });
+  assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+  for (const step of planned.simulation.steps.slice(1)) {
+    assert.equal(step.provisional, true);
+    assert.equal(step.estimate, undefined);
+    assert.ok(step.gasLimit >= 175_000n);
+  }
+  for (const transaction of planned.transactions.slice(1)) {
+    assert.equal(transaction.gas, undefined); assert.equal(transaction.estimate, undefined); assert.equal(transaction.admission, undefined);
+  }
+  const provisional = planned.simulation.steps[1].gasLimit;
+  client.state.phase = LifecyclePhase.Preparing;
+  client.captured.length = 0;
+  const beforeQuotes = client.state.posterRequests.length;
+  const next = await buildNextTransaction({ client, planned });
+  assert.equal(next.kind, "prepare");
+  assert.equal(next.gas, 201_250n, "Buffer actual complete gas without adding its poster twice");
+  assert.notEqual(next.gas, provisional);
+  assert.equal(client.state.posterRequests.length, beforeQuotes + 1);
+  assert.deepEqual(economicRequests(client).map((row) => row.params[0].validation), [true]);
+});
+
+test("build-next clips an overlapping unfinished stored batch and preserves a supplied exact replacement span", async () => {
+  const plan = makePlan({ chainId: 4663n, markets: 3 }), client = clientFor(plan, { phase: LifecyclePhase.Preparing });
+  const planned = await review(client, plan, { mode: "staged", limits: { maxSimulationGas: 100_000_000n } });
+  assert.deepEqual(planned.transactions.filter((transaction) => transaction.kind === "prepare").map((transaction) => [transaction.marketStart, transaction.marketCount]), [[0, 2], [2, 1]]);
+  client.state.prepared = 1;
+  client.captured.length = 0;
+  const next = await buildNextTransaction({ client, planned });
+  assert.equal(next.id, "prepare:1:1");
+  assert.ok(economicRequests(client).every((row) => row.params[0].blockStateCalls.length === 1));
+  const reviewedTransaction = { ...next, id: "prepare:1:2", marketCount: 2,
+    data: encodeFunctionData({ abi: launchLifecycleAbi, functionName: "prepareMarkets", args: [plan, 1, 2] }) };
+  client.captured.length = 0;
+  const held = await buildNextTransaction({ client, planned, reviewedTransaction, limits: { accountGasLimit: 1_200_000n } });
+  assert.equal(held.id, reviewedTransaction.id); assert.equal(held.data, reviewedTransaction.data); assert.equal(held.gas, reviewedTransaction.gas);
+  assert.deepEqual(economicRequests(client).map((row) => row.params[0].validation), [true]);
+});
+
+test("a waiting plan with no stored commands reconstructs only the next suffix after its receipt confirms", async () => {
+  const plan = makePlan({ chainId: 4663n, markets: 3 }), source = clientFor(plan);
+  const data = encodeFunctionData({ abi: launchLifecycleAbi, functionName: "beginLaunch", args: [plan, 1] });
+  let included = false;
+  const client = { request(args) {
+    if (args.method === "eth_getTransactionCount") return Promise.resolve(included || args.params[1] === "pending" ? "0x1" : "0x0");
+    if (args.method === "eth_getTransactionReceipt") return Promise.resolve(included ? { blockNumber: "0x2a", blockHash: HASH, status: "0x1" } : null);
+    if (args.method === "eth_getTransactionByHash") return Promise.resolve(included ? { from: ACCOUNT, to: CORE, input: data, value: "0x0", nonce: "0x0", chainId: toHex(plan.chainId) } : null);
+    return source.request(args);
+  } };
+  const receipts = [{ transactionHash: FOREIGN_HASH }];
+  const planned = await review(client, plan, { mode: "staged", receipts, limits: { maxSimulationGas: 100_000_000n } });
+  assert.deepEqual(planned.transactions, []);
+  assert.equal(planned.simulation.admitted, false);
+  included = true; source.state.phase = LifecyclePhase.Preparing; source.captured.length = 0;
+  const next = await buildNextTransaction({ client, planned, receipts });
+  assert.equal(next.id, "prepare:0:2");
+  assert.equal(next.nonce, 1n);
+  assert.ok(economicRequests(source).every((row) => row.params[0].blockStateCalls.length === 1));
+  assert.ok(economicRequests(source).every((row) => decodeFunctionData({ abi: launchLifecycleAbi, data: row.params[0].blockStateCalls[0].calls[0].data }).functionName === "prepareMarkets"));
 });

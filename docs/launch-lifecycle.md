@@ -342,6 +342,16 @@ admission can cover only a prefix. Deferred steps have no gas, price, or admissi
 Buy-output calibration refuses a deferred activation. Start with one market; raise
 `limits.maxSimulationGas` only with a provider that supports the larger window.
 
+The full simulated prefix still checks whether later staged commands can execute.
+Only its immediate command receives a final gas/price/estimate/admission. Later
+`simulation.steps` have `provisional: true`: their conservative, affordable
+`gasLimit` is a feasibility budget, not a transaction estimate. Their unsigned
+commands have no gas/price/estimate/admission until `buildNextTransaction` obtains
+a fresh poster quote, sizes that command and validates its exact returned envelope.
+Calibration and actual prior gas use are sizing observations, never admission.
+Without a sizing observation, one unvalidated sizing pass precedes the final
+validated pass; the RPC discovery budget is never the immediate transaction gas.
+
 Review the returned final plan/hash, aligned price, burn, retained supply, fees,
 ordered buy outputs/minima, funding, refunds, and complete gas envelope. A fresh
 `buildNextTransaction` proves the immediate next step as canonical progress advances.
