@@ -501,6 +501,11 @@ published → API indexed. A successful transaction alone does not establish the
 
 ## Publish metadata
 
+Onchain Active and a web-app listing are separate outcomes. For read-only directory
+checks and a proposed recovery path for external deployment graphs, see
+[launch-directory recovery](launch-directory-recovery.md). A custom core is not
+automatically supported by the hosted discovery/publication service.
+
 Stage metadata **before chain signatures**, after you freeze the final plan. The
 call order is `createUploadSession` → optional `putImage` → `completeUpload` →
 confirm activation → `publishUploadSession`. Metadata-only sessions skip the image calls.

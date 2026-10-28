@@ -35,6 +35,16 @@ export class LaunchPublishPending extends Error {
 }
 export type LaunchApiClientOptions = { baseUrl?: string; fetch?: typeof globalThis.fetch; retries?: number };
 
+/** API directory data, not independent proof of onchain activation or executable liquidity. */
+export type LaunchDirectoryItem = {
+  chainId: number; token: Address; transactionHash: Hash; blockNumber: string; canonicalStatus: string;
+  [key: string]: unknown;
+};
+export type LaunchDirectoryResponse = {
+  chainId: number; indexedBlock: string; finalizedBlock: string; item: LaunchDirectoryItem;
+  [key: string]: unknown;
+};
+
 /** Optional client for the web app's signed metadata/upload/publication lifecycle. */
 export class LaunchApiClient {
   readonly baseUrl: string;
@@ -45,6 +55,10 @@ export class LaunchApiClient {
     this.fetch = options.fetch ?? globalThis.fetch;
     if (this.fetch === undefined) throw new Error("A fetch implementation is required for LaunchApiClient");
     this.retries = options.retries ?? 3;
+  }
+  /** Read a listing. NOT_FOUND does not establish whether the token is active onchain. */
+  async getLaunch(chainId: number, token: Address): Promise<LaunchDirectoryResponse> {
+    return this.request("GET", `/api/v1/launches/${encodeURIComponent(token)}`, chainId, {});
   }
   async createUploadSession(body: LaunchSessionCreateRequest, idempotencyKey: string): Promise<LaunchSessionResponse> {
     return this.request("POST", "/api/v1/launch-upload-sessions", body.chainId, { body, idempotencyKey });
