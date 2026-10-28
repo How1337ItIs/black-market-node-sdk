@@ -187,6 +187,18 @@ function simulationFailureKind(failure: unknown): "abort" | "out-of-gas" | "exec
   return "source";
 }
 
+function upfrontFundsFailure(failure: unknown): boolean {
+  for (let depth = 0; depth < 8 && failure !== null && typeof failure === "object"; depth += 1) {
+    const error = failure as { name?: unknown; code?: unknown; status?: unknown; statusCode?: unknown; message?: unknown; details?: unknown; cause?: unknown };
+    const status = error.status ?? error.statusCode;
+    if (error.name === "AbortError" || typeof status === "number" && status >= 400 && status <= 599 || error.code === 3) return false;
+    const message = typeof error.details === "string" ? error.details : typeof error.message === "string" ? error.message : "";
+    if (error.code === -38014 || (error.code === undefined || error.code === -32000) && /^insufficient funds\b/i.test(message)) return true;
+    failure = error.cause;
+  }
+  return false;
+}
+
 async function waitForkReceipt(client: LifecycleRpcClient, transactionHash: Hex, timeoutMs: number): Promise<Record<string, unknown>> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
@@ -535,17 +547,31 @@ async function simulateLaunchTransactionsWithContext(
     let available = balance - value;
     if (gasPrice !== 0n) available /= gasPrice;
     const sizingGas = discoveryGas.map((ceiling, index) => {
-      if (gasPrice === 0n) return ceiling;
-      const share = available / BigInt(transactions.length - index);
-      const gas = ceiling < share ? ceiling : share;
-      available -= gas;
-      return gas;
+      // Upfront reservation is per call; unused gas is refunded before the next.
+      const computeAndPoster = limits.executionGasCeiling + (posterGas[index] ?? 0n);
+      const capped = computeAndPoster < ceiling ? computeAndPoster : ceiling;
+      return gasPrice === 0n || capped < available ? capped : available;
     });
     if (balance < value || sizingGas.some((gas) => gas <= 0n)) return { ...base, executionProof: "unavailable", backend, admitted: false, steps: [], failureCategory: "affordability", reason: "Creator native balance cannot fund transaction value and sizing fee budgets" };
     assertCurrent();
     try {
-      measured = await lifecycleStage(client, "simulation.measure", () => simulateRpcPass(client, planned, block, transactions, sizingGas, limits, gasPrice, false));
+      try {
+        measured = await lifecycleStage(client, "simulation.measure", () => simulateRpcPass(client, planned, block, transactions, sizingGas, limits, gasPrice, false));
+      } catch (failure) {
+        if (!upfrontFundsFailure(failure)) throw failure;
+        assertCurrent();
+        let remaining = available;
+        const sharedGas = sizingGas.map((ceiling, index) => {
+          if (gasPrice === 0n) return ceiling;
+          const share = remaining / BigInt(transactions.length - index);
+          const gas = ceiling < share ? ceiling : share;
+          remaining -= gas;
+          return gas;
+        });
+        measured = await lifecycleStage(client, "simulation.measure", () => simulateRpcPass(client, planned, block, transactions, sharedGas, limits, gasPrice, false));
+      }
     } catch (failure) {
+      if (upfrontFundsFailure(failure)) return { ...base, confidence: "provisional", executionProof: "unavailable", backend, admitted: false, steps: [], failureCategory: "affordability", reason: "Native balance cannot cover the sequential sizing fee envelopes" };
       const kind = simulationFailureKind(failure);
       if (kind === "abort") throw failure;
       assertCurrent();

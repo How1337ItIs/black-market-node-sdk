@@ -449,14 +449,14 @@ async function planLaunchWithReads(options: PlanLaunchOptions, client: Lifecycle
     let simulation = await execute(transactions);
     assertFinalPlan(planned, options.signal);
     if (mode === "staged") {
-      // Only a measurement that consumed almost its entire legal envelope
-      // invalidates packing estimates, including gas hidden by CREATE wrappers.
+      // Only pressure at the native ceiling can invalidate packing. A smaller
+      // affordability/RPC/account envelope is not evidence for another wallet write.
       while (!simulation.admitted && simulation.failedTransactionId?.startsWith("prepare:")) {
         const failedIndex = transactions.findIndex((transaction) => transaction.id === simulation.failedTransactionId);
         const failedTransaction = transactions[failedIndex];
         const step = simulation.steps.find((candidate) => candidate.transactionId === simulation.failedTransactionId);
         const count = failedTransaction?.marketCount ?? 0;
-        if (count <= 1 || step?.gasUsed === undefined || step.gasLimit === undefined || step.gasUsed * 100n < (step.gasLimit < limits.executionGasCeiling ? step.gasLimit : limits.executionGasCeiling) * 95n) break;
+        if (count <= 1 || step?.gasUsed === undefined || step.gasLimit === undefined || step.gasLimit < limits.executionGasCeiling || step.gasUsed * 100n < limits.executionGasCeiling * 95n) break;
         let first = 0;
         const batchIndex = batches.findIndex((batch) => { const matches = first === failedTransaction?.marketStart; first += batch; return matches; });
         const left = Math.ceil(count / 2);

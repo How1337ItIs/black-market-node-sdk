@@ -3076,6 +3076,7 @@ test("staged suffix feasibility budgets are affordable and never reused as next-
   const client = clientFor(plan, { computeUsed: 100_000n, poster: 75_000n, balance: 2_000_020n, enforceUpfrontBalance: true });
   const planned = await review(client, plan, { mode: "staged", limits: { maxSimulationGas: 100_000_000n } });
   assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+  assert.deepEqual(economicRequests(client).map((row) => row.params[0].validation), [false, false, true], "Only an upfront-funds refusal allows one shared-budget sizing retry");
   for (const step of planned.simulation.steps.slice(1)) {
     assert.equal(step.provisional, true);
     assert.equal(step.estimate, undefined);
@@ -3140,4 +3141,47 @@ test("a waiting plan with no stored commands reconstructs only the next suffix a
   assert.equal(next.nonce, 1n);
   assert.ok(economicRequests(source).every((row) => row.params[0].blockStateCalls.length === 1));
   assert.ok(economicRequests(source).every((row) => decodeFunctionData({ abi: launchLifecycleAbi, data: row.params[0].blockStateCalls[0].calls[0].data }).functionName === "prepareMarkets"));
+});
+
+test("per-call sizing refunds preserve a legal31M batch instead of adding a wallet write", async () => {
+  const plan = makePlan({ chainId: 4663n, markets: 2, nativeFunding: true }), price = 10n ** 12n;
+  const client = clientFor(plan, { gasPrice: price, balance: 73_000_000n * price + 20n, enforceUpfrontBalance: true,
+    gasFor(name) { return name === "beginLaunch" ? 9_000_000n : name === "prepareMarkets" ? 31_000_000n : 6_000_000n; } });
+  const planned = await review(client, plan, { mode: "staged", limits: { maxSimulationGas: 100_000_000n } });
+  assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+  assert.deepEqual(planned.transactions.map((transaction) => transaction.id), ["begin", "prepare:0:2", "activate"]);
+  const requests = economicRequests(client);
+  assert.deepEqual(requests.map((row) => row.params[0].validation), [false, true]);
+  assert.deepEqual(requests[0].params[0].blockStateCalls.map((block) => BigInt(block.calls[0].gas)), [32_000_000n, 32_000_000n, 32_000_000n]);
+  const capped = clientFor(plan, { phase: LifecyclePhase.Preparing, gasPrice: price, balance: 24_000_000n * price, enforceUpfrontBalance: true,
+    gasFor(name) { return name === "prepareMarkets" ? 31_000_000n : 6_000_000n; } });
+  const refused = await review(capped, plan, { mode: "staged", limits: { maxSimulationGas: 100_000_000n } });
+  assert.equal(refused.simulation.admitted, false);
+  assert.deepEqual(refused.transactions.map((transaction) => transaction.id), ["prepare:0:2", "activate"]);
+  assert.equal(economicRequests(capped).length, 1, "Affordability-limited OOG cannot authorize splitting a batch");
+});
+
+test("sizing retries only a genuine upfront-funds refusal and never more than once", async () => {
+  for (const chainId of [31337n, 4663n]) for (const scenario of [
+    { code: -38014, message: "insufficient funds for gas * price + value", attempts: 2 },
+    { code: -32000, message: "insufficient funds for gas * price + value", attempts: 2 },
+    { code: 3, message: "insufficient funds", attempts: 1 },
+    { code: -32015, message: "out of gas", attempts: 1 },
+    { code: -38014, message: "insufficient funds", status: 429, attempts: 1 },
+  ]) {
+    const plan = makePlan({ chainId, nativeFunding: true }), source = clientFor(plan);
+    const client = { request(args) {
+      if (args.method === "eth_simulateV1" && !args.params[0].validation) {
+        source.captured.push(args);
+        throw Object.assign(new Error(scenario.message), { code: scenario.code, status: scenario.status });
+      }
+      return source.request(args);
+    } };
+    const fork = scenario.status === undefined ? { client: { request() { assert.fail("Funds and execution refusals cannot choose another backend"); } } } : undefined;
+    const planned = await review(client, plan, { fork });
+    assert.equal(planned.simulation.admitted, false);
+    if (scenario.attempts === 2) assert.equal(planned.simulation.failureCategory, "affordability");
+    assert.equal(economicRequests(source).length, scenario.attempts);
+    assert.ok(economicRequests(source).every((row) => !row.params[0].validation));
+  }
 });

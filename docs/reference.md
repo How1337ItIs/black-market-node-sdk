@@ -173,6 +173,10 @@ observation, never the old poster charge or provisional budget. A fresh poster
 quote is combined once when that command becomes next. Both unvalidated sizing
 and the final exact pass use affordable pinned envelopes; validation:false does
 not disable Nitro's upfront funds check. The final pass uses exactly returned gas.
+Sizing starts with per-call ceilings because unused gas is refunded between calls.
+Only a genuine upfront-funds refusal permits one second unvalidated sizing attempt
+with the budget shared across the sequence. Other failures do not retry; the final
+exact validated pass is never replayed.
 Suffix steps are marked `provisional: true` and have no transaction estimate:
 their conservative complete budgets check sequence feasibility, bounded across
 the pinned affordable remaining balance. `buildNextTransaction` never reuses

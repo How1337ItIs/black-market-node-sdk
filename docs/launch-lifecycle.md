@@ -348,9 +348,11 @@ Only its immediate command receives a final gas/price/estimate/admission. Later
 `gasLimit` is a feasibility budget, not a transaction estimate. Their unsigned
 commands have no gas/price/estimate/admission until `buildNextTransaction` obtains
 a fresh poster quote, sizes that command and validates its exact returned envelope.
-Calibration and actual prior gas use are sizing observations, never admission.
-Without a sizing observation, one unvalidated sizing pass precedes the final
-validated pass; the RPC discovery budget is never the immediate transaction gas.
+Calibration and separable prior compute observations size proposals, never admission.
+Without one, unvalidated sizing uses affordable per-call ceilings. Only an upfront
+funds refusal permits one second unvalidated attempt sharing the remaining budget.
+No semantic, HTTP or cancellation failure retries, and the final exact validated
+pass never retries or changes its returned gas.
 
 Review the returned final plan/hash, aligned price, burn, retained supply, fees,
 ordered buy outputs/minima, funding, refunds, and complete gas envelope. A fresh
