@@ -56,7 +56,7 @@ These are structural maxima, not a guarantee that activation fits gas.
 | Initial executor bounty | 0–1,000 bps; UFG requires 0 |
 | Gas-envelope caps | Positive uint64 bigint |
 | Gas headroom | `headroomBps`: 0–10,000; default 1,500 |
-| Robinhood simulation-used gas | `maxSimulationGas`: default 50,000,000 aggregate |
+| Robinhood simulation-used gas | `maxSimulationGas`: optional aggregate policy ceiling; no SDK-invented default |
 
 Use `LIFECYCLE_MAX_ERC404_SUPPLY` and `LIFECYCLE_MAX_REWARD_ERC20_SUPPLY` for the
 exported supply bounds. Market token budgets equal total minted supply; position
@@ -158,49 +158,44 @@ splits are separate values. The example's 3000/60 is not the venue's sole fee ti
 
 ## Account for Nitro compute and poster gas
 
-On chain 4663, the SDK reads ArbSys (`0x64`) `arbOSVersion` and ArbGasInfo (`0x6c`)
-`getMaxTxGasLimit` / `getMaxBlockGasLimit` at the pinned block. ArbSys returns
-55 + logical version; raw must be at least 105. `limits.arbOSVersion` reports the
-logical version. The minimum validated compute getter is `executionGasCeiling`.
-Failed getters cannot fall back to the large header gas limit or a hard-coded 32M.
+On chain4663, `ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT` and the deployment preset's
+`nativeTransactionGasLimit` specify32M **total** gas for begin, prepare, activate,
+atomic and cancel. This includes poster gas. Guard-only maximum-gas getters are
+not read. Pinned ArbSys version selects capacity coverage/native capability, not
+a gas size. Other chains retain their resolved generic transaction ceiling.
 
-`transactionGasCeiling`, when set, is the minimum complete-envelope chain/RPC/account
-restriction. It is separate from compute. NodeInterface (`0xc8`)
-`gasEstimateL1Component` estimates poster allocation once for the next final
-transaction, using its exact sender/target/calldata/value at the same block.
-Compute-only calibration and fresh poster allocation size the immediate envelope
-before native validation. `step.computeGasRequired` retains a separable compute
-observation, never the old poster charge or provisional budget. A fresh poster
-quote is combined once when that command becomes next. Both unvalidated sizing
-and the final exact pass use affordable pinned envelopes; validation:false does
-not disable Nitro's upfront funds check. The final pass uses exactly returned gas.
-Sizing starts with per-call ceilings because unused gas is refunded between calls.
-Only a genuine upfront-funds refusal permits one second unvalidated sizing attempt
-with the budget shared across the sequence. Other failures do not retry; the final
-exact validated pass is never replayed.
+`transactionGasCeiling`, when set, is a caller complete-envelope restriction.
+Below the native ceiling it refuses; it never shrinks a launch step. Approvals
+omit gas/fees and leave preparation to the wallet. One `ArbGasInfo.getPricesInWei`
+leg in the initial aggregate supplies L1 per-byte and L2 prices, with no per-tx
+NodeInterface oracle. See [capacity and poster evidence](lifecycle-gas-profiles.md).
 
-A tight payer balance can cover smaller exact staged envelopes yet not the
-discovery margin. This may return `failureCategory: "affordability"` even though
-the underlying launch could fit. The refused RPC exposes no successful-prefix
-results; the SDK does not invent them or add more metering attempts.
+`computeLifecycleLaunchGasBounds({ plan, predictedToken, ufg? })` returns conservative
+atomic/activation compute upper bounds, excluding poster, or undefined for unknown
+coverage. These select modes, not gas limits. Atomic is a preference that may select
+staged; persist returned `planned.mode`. A large upper bound is uncertain, not
+proof of overflow. Unknown activation gets full-sequence execution before begin.
+Conversion-carrying commands/consuming activation always retain exact execution.
 
-Suffix steps are marked `provisional: true` and have no transaction estimate:
-their conservative complete budgets check sequence feasibility, bounded across
-the pinned affordable remaining balance. `buildNextTransaction` never reuses
-those budgets as estimates; it freshly quotes and proves only the next command.
+Only an immediate launch command receives a final gas/price/estimate/admission.
+Suffix execution metrics stay provisional; build-next constructs only the canonical
+next command at the same native ceiling with fresh fees and required admission.
+There are no sizing passes or funds-only retries. Balance must cover value plus
+the entire ceiling fee even when actual execution uses less gas. Incomplete proof
+cannot authorize begin; explicit aggregate policies still refuse excessive work.
 
 On Nitro, `estimate.posterGas` / `posterFee` are buffered allocations **inside**
 `gasLimit`; `dataFeeIncludedInGas` is true, `dataFee` is zero, and `totalFee` equals
 `gasLimit × gasPrice`. Do not add poster fees a second time. Custom `estimateDataFee`
 is rejected on Nitro; generic EVM clients can use it for an external fee.
-`feeConfidence` distinguishes `execution-and-data` from `execution-only` estimates.
-Initial legacy gas price is the greater of fresh RPC recommendation and twice pinned
-base fee. Reviewed immediate envelopes retain their exact held gas/price.
+`feeConfidence` distinguishes actual execution evidence from the conditional
+`native-ceiling-and-data` budget. Fresh gas price is max(pinned price, twice base fee).
+Held Nitro price must meet max(ArbGasInfo L2 price, header base fee), without an
+automatic bump. Reviewed gas differing from the ceiling is stale and refuses.
 
-HMM atomic/activation sizing adds one forwarding target of
-`4,250,000 + 500,000 × (HMM markets - 1)` gas. Staged packing estimates 14.5M per HMM
-market and 16M per other market before measurement. These are sizing inputs, not
-fixed transaction fees or proof that every permitted topology fits.
+Capacity-only profiles account for route, position and HMM forwarding overhead.
+Staged packing retains conservative per-market grouping, but never changes the
+gas assigned to a launch transaction or splits its final activation.
 
 ## Cache static reads and inspect timing
 
@@ -210,19 +205,22 @@ fixed transaction fees or proof that every permitted topology fits.
 | `sessionCache: createLifecycleSessionCache()` | Caller-owned reuse of SDK-selected static reads at one pin; successful deployment/backend observations also survive across blocks. Without it, those observations belong to the supplied client object. |
 | `onDiagnostic(event)` | Local opt-in stage/RPC timing listener; no automatic console output or telemetry. |
 
-Call `sessionCache.invalidate()` on wallet/chain switches and after each confirmed
-transaction to discard pinned static values. Session deployment/backend facts are
-keyed by chain and account where applicable and live until the session owner is
-discarded. `sessionCache.block` is readonly `{ number, hash }` or undefined.
+Call `sessionCache.invalidate()` after confirmed transactions to discard pinned
+static values. Deployment/backend facts are retained for the session owner and
+keyed by chain/account where applicable. Chain identity is cached by bound client
+object; create a new client on a chain change rather than mutating/reusing it.
+`sessionCache.block` is readonly `{ number, hash }` or undefined.
 Planning pins retain the actual RPC L2 block number and header hash. EVM
 `BLOCKNUMBER`/`BLOCKHASH`, including Multicall3's metadata getters, expose L1 values
 on Nitro and are not L2 pin sources.
-Balances, allowances, current progress, receipts, nonces, policy callbacks, and
-stateful execution proof stay fresh. Session caching does not extend admission.
+Balances, allowances, current progress, receipts, policy callbacks and required
+execution proof stay fresh. Planning/build-next do not read account queue nonces;
+the wallet assigns them and retains the observed submitted nonce for recovery.
+Session caching does not extend admission.
 
 One RPC L2 header supplies number, hash, timestamp, gas limit and base fee.
 The initial Multicall3 call uses that explicit L2 block and includes native balance,
-funding/progress and Nitro getters. Independent getters are aggregated with no
+funding/progress, Nitro getters and `getPricesInWei`. Independent getters are aggregated with no
 minimum-count threshold. Multicall3 runtime code is attested once per session.
 The 4663 preset enables `launchLensAbi.snapshot` without caller configuration:
 one call replaces dependent token/hook/market/funding reads inside that aggregate.

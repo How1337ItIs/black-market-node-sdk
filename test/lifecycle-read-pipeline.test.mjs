@@ -667,16 +667,14 @@ test("overlapped confirmed-block and chain failures preserve source errors and c
   }
 });
 
-test("serial and batching progress retain pending-nonce uncertainty", async () => {
+test("serial and batching progress ignore unrelated wallet queues without account nonce reads", async () => {
   for (const supportsReadBatching of [false, true]) {
     const source = await progressClient();
     source.supportsReadBatching = supportsReadBatching;
     source.state.pendingNonce = 8n;
     const progress = await readLaunchProgress({ client: source, planned: source.planned });
-    assert.equal(progress.confirmedAccountNonce, 7n);
-    assert.equal(progress.headAccountNonce, 7n);
-    assert.equal(progress.pendingAccountNonce, 8n);
-    assert.equal(progress.confirmationSafe, false, "No receipt reference is required to detect pending account activity");
+    assert.equal(progress.confirmationSafe, true, "Only canonical domain progress and retained receipts govern confirmation safety");
+    assert.equal(source.captured.some((row) => row.method === "eth_getTransactionCount"), false);
   }
 });
 
@@ -1091,7 +1089,7 @@ test("constructor proof identity binds every full-plan domain and economic field
   });
 });
 
-test("constructor misses evict rejected or mutated proofs and hits retain fresh chain guards", async () => {
+test("constructor misses evict rejected or mutated proofs while client chain identity is session-bound", async () => {
   const source = await boundPlanningClient(false);
   await withLifecycleReadClient(source, async (client) => {
     const options = { client, plan: source.plan, marketIndex: 0 };
@@ -1108,7 +1106,9 @@ test("constructor misses evict rejected or mutated proofs and hits retain fresh 
     assert.deepEqual(await readPoolBoundHookDeployment({ ...options, plan: candidate }, block), recovered);
   });
   source.source.state.chainDrift = true;
-  await assert.rejects(readPoolBoundHookDeployment({ client: source, plan: source.plan, marketIndex: 0 }, block), { code: "CHAIN_MISMATCH" });
+  await readPoolBoundHookDeployment({ client: source, plan: source.plan, marketIndex: 0 }, block);
+  const rebound = { request: (args) => source.request(args) };
+  await assert.rejects(readPoolBoundHookDeployment({ client: rebound, plan: source.plan, marketIndex: 0 }, block), { code: "CHAIN_MISMATCH" });
   source.source.state.chainDrift = false;
 });
 
@@ -1291,7 +1291,7 @@ test("session cache emits count-only per-invocation diagnostics and isolates obs
   source.onDiagnostic = (event) => events.push(event);
   source.state.chainDrift = true;
   await assert.rejects(withLifecycleReadClient(source, async (client) => {
-    assert.equal(await readLifecycleChainId(client), 4664n);
+    assert.equal(await readLifecycleChainId(client), 4663n, "A client is bound to its observed session chain");
     throw new Error("Observed source failure");
   }), /Observed source failure/);
   assert.ok(events.some((event) => event.stage === "session-cache" && event.phase === "failure"));

@@ -1,4 +1,4 @@
-import { concatHex, decodeFunctionData, encodeAbiParameters, encodeFunctionData, keccak256, stringToHex, toHex, zeroAddress, zeroHash, type Address, type Hash, type Hex } from "viem";
+import { concatHex, decodeFunctionData, encodeAbiParameters, encodeFunctionData, keccak256, stringToHex, toHex, zeroAddress, zeroHash, type Address, type Hex } from "viem";
 import { launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleOracleFactoryAbi, lifecycleRegistryAbi, poolFeeCollectorFactoryV1Abi, poolFeeCollectorFactoryConfigV6Abi, lifecycleV4HookAbi, lifecycleV4LockerAbi, poolHookDeployerV1Abi, poolHookDeployerConfigV6Abi, sharedHookDeployerV1Abi, fixedFeePoolHookV1Abi, fixedFeePoolHookConfigV6Abi, poolMarketAdapterV1Abi, sharedMarketAdapterV1Abi } from "./abi.js";
 import { buildPoolBoundHookParameters, decodePoolBoundV4LifecycleMarketConfig, encodePoolBoundHookParameters, hasLifecycleV4HookPermissions, isPoolBoundV4ConfigVersion, poolBoundHookInitCodeHash, predictPoolBoundHookAddress, validateV4LifecycleMarket, V4_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V5, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V6, type PoolBoundHookParameters, type PoolBoundLifecycleConfigVersion } from "./markets.js";
 import { hashLaunchIdentity, hashLaunchPlan, hashLaunchBounds, hashLaunchDependencies, hashLifecycleProfile, lifecycleTokenComponents, launchProgressV1Components, LifecycleMode, LifecyclePhase, LifecycleVenue, LIFECYCLE_REQUIRED_CAPABILITIES, LIFECYCLE_ERC404_CAPABILITY, LIFECYCLE_MULTI_POSITION_CAPABILITY, type AdapterRegistrationV1, type LaunchPlanV1, type LaunchProgressV1, type MarketIdentityV1, type MarketLiveStateV1, type PreparedMarketV1, type ProfileRegistrationV1, type ProfileTopologyV1, type LaunchEnvelopeV2, type LifecycleDeveloperTerms } from "./schema.js";
@@ -507,7 +507,12 @@ type ReceiptObservation = {
 
 async function readReceipt(reference: LifecycleReceiptReference, options: ReadLaunchProgressOptions, block: LifecycleBlock, readIdentityBlock: (number: bigint) => Promise<LifecycleBlock>): Promise<ReceiptObservation> {
   const effectiveHash = reference.replacementHash ?? reference.transactionHash;
-  const base = { transactionHash: reference.transactionHash, effectiveHash, replaced: reference.replacementHash !== undefined && reference.replacementHash.toLowerCase() !== reference.transactionHash.toLowerCase() };
+  const base: Pick<LifecycleReceiptStatus, "transactionHash" | "effectiveHash" | "replaced" | "nonce"> = {
+    transactionHash: reference.transactionHash, effectiveHash,
+    replaced: reference.replacementHash !== undefined && reference.replacementHash.toLowerCase() !== reference.transactionHash.toLowerCase(),
+    ...(reference.nonce === undefined ? {} : { nonce: reference.nonce }),
+  };
+  if (reference.nonce !== undefined && (typeof reference.nonce !== "bigint" || reference.nonce < 0n || reference.nonce >= 1n << 64n)) throw new LifecyclePlanningError("INVALID_RECEIPT_NONCE", "Observed submitted nonce must be a uint64 bigint");
   const pins: { number: bigint; hash: Hex }[] = [];
   const observedNumber = reference.observedBlockNumber, observedHash = reference.observedBlockHash;
   if (observedNumber !== undefined && observedHash !== undefined) pins.push({ number: observedNumber, hash: observedHash });
@@ -527,13 +532,20 @@ async function readReceipt(reference: LifecycleReceiptReference, options: ReadLa
       lifecycleRpc(options.client, "eth_getTransactionReceipt", [effectiveHash]),
       lifecycleRpc(options.client, "eth_getTransactionByHash", [effectiveHash]),
     ]);
+    const transaction = transactionValue === null ? undefined : rpcObject(transactionValue, "receipt transaction");
+    if (transaction !== undefined) {
+      if (rpcHex(transaction.from, "receipt transaction account").toLowerCase() !== options.planned.account.toLowerCase()) throw new LifecyclePlanningError("RECEIPT_ACCOUNT", "Submitted transaction belongs to a different account");
+      const nonce = rpcQuantity(transaction.nonce, "submitted transaction nonce");
+      if (reference.nonce !== undefined && nonce !== reference.nonce) throw new LifecyclePlanningError("RECEIPT_NONCE", "Submitted or replacement transaction differs from the retained nonce");
+      base.nonce = nonce;
+    }
     if (receiptValue === null) return finish({ ...base, status: "pending", blockNumber: observedNumber, blockHash: observedHash });
     if (transactionValue === null) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Receipt exists without its canonical transaction");
     const receipt = rpcObject(receiptValue, "receipt");
     const blockNumber = rpcQuantity(receipt.blockNumber, "receipt block number");
     const blockHash = rpcHex(receipt.blockHash, "receipt block hash");
     pins.push({ number: blockNumber, hash: blockHash });
-    const matches = await transactionMatchesLaunch(rpcObject(transactionValue, "receipt transaction"), options,
+    const matches = await transactionMatchesLaunch(transaction!, options,
       () => readIdentityBlock(blockNumber));
     const confirmations = block.number >= blockNumber ? block.number - blockNumber + 1n : 0n;
     const required = reference.confirmations ?? 1;
@@ -595,7 +607,7 @@ export async function readLaunchProgress(options: ReadLaunchProgressOptions, pin
   return result;
 }
 
-/** Build-next needs the state machine, receipts and nonce, not display-only live markets. */
+/** Build-next needs the state machine and receipts, not account nonce or display-only markets. */
 export async function readLifecycleExecutionProgress(options: ReadLaunchProgressOptions, block: LifecycleBlock): Promise<CanonicalLaunchProgress> {
   if (!assertLifecycleReadClientOpen(options.client)) throw new LifecyclePlanningError("INVALID_READ_CONTEXT", "Execution progress requires an invocation owner");
   return readLaunchProgressAtBlock(options, options.client, block, false);
@@ -622,13 +634,10 @@ async function readLaunchProgressAtBlock(options: ReadLaunchProgressOptions, cli
     if (hashUfgLaunchConfig(planned.ufg.config) !== planned.ufg.configHash) throw new LifecyclePlanningError("PLAN_MUTATED", "UFG config differs from its finalized commitment");
   } else if (planned.account.toLowerCase() !== planned.plan.creator.toLowerCase()) throw new LifecyclePlanningError("ACCOUNT_MISMATCH", "Execution account must be the committed creator/payer/refund account");
   if (hashLaunchPlan(planned.plan).toLowerCase() !== planned.planHash.toLowerCase() || hashLaunchIdentity(planned.plan).toLowerCase() !== planned.launchId.toLowerCase()) throw new LifecyclePlanningError("PLAN_MUTATED", "Stored economic plan no longer matches its commitment");
-  const [head, confirmedProgress, token, confirmedNonce, headNonce, pendingNonce] = await Promise.all([
+  const [head, confirmedProgress, token] = await Promise.all([
     readLifecycleHeadProgress(client, planned.plan, planned.account, block),
     confirmedNumber === block.number ? undefined : readLifecycleContract<LaunchProgressV1>(client, planned.plan.orchestrator, launchLifecycleAbi, "readLaunchProgress", [planned.launchId], confirmedBlock, planned.account),
     readLifecycleTokenAtBlock(client, planned.plan, block),
-    lifecycleRpc(client, "eth_getTransactionCount", [planned.account, toHex(confirmedBlock.number)]),
-    confirmedNumber === block.number ? undefined : lifecycleRpc(client, "eth_getTransactionCount", [planned.account, toHex(block.number)]),
-    lifecycleRpc(client, "eth_getTransactionCount", [planned.account, "pending"]),
   ]);
   assertActive();
   const canonical = confirmedProgress ?? head;
@@ -638,18 +647,8 @@ async function readLaunchProgressAtBlock(options: ReadLaunchProgressOptions, cli
     if (progress.mode !== (planned.mode === "atomic" ? LifecycleMode.Atomic : LifecycleMode.Staged)) throw new LifecyclePlanningError("MODE_MISMATCH", "Execution mode differs from the already recorded launch");
     if (progress.preparedMarkets > progress.marketCount || progress.phase === LifecyclePhase.Activating || (progress.phase === LifecyclePhase.Ready && progress.preparedMarkets !== progress.marketCount)) throw new LifecyclePlanningError("INVALID_PROGRESS", "Canonical progress violates the committed ordered state machine");
   }
-  if (planned.ufg !== undefined && head.phase !== LifecyclePhase.None) {
-    const [principal, configHash] = await Promise.all([
-      readLifecycleContract<Address>(client, UFG_LAUNCH_PROXY_ADDRESS, ufgLaunchProxyV1Abi, "principalOf", [planned.launchId], block),
-      readLifecycleContract<Hash>(client, UFG_LAUNCH_PROXY_ADDRESS, ufgLaunchProxyV1Abi, "launchConfigHash", [planned.launchId], block),
-    ]);
-    if (principal.toLowerCase() !== planned.account.toLowerCase() || configHash.toLowerCase() !== planned.ufg.configHash.toLowerCase()) throw new LifecyclePlanningError("PLAN_REPLAY", "UFG proxy principal or launch config differs from the stored launch");
-  }
-  const confirmedAccountNonce = rpcQuantity(confirmedNonce, "confirmed account nonce");
-  const headAccountNonce = headNonce === undefined ? confirmedAccountNonce : rpcQuantity(headNonce, "head account nonce");
-  const pendingAccountNonce = rpcQuantity(pendingNonce, "pending account nonce");
   const progressParameters = [{ type: "tuple", components: launchProgressV1Components }] as const;
-  const confirmationSafe = confirmedAccountNonce === headAccountNonce && pendingAccountNonce === headAccountNonce && keccak256(encodeAbiParameters(progressParameters, [canonical])) === keccak256(encodeAbiParameters(progressParameters, [head]));
+  const confirmationSafe = keccak256(encodeAbiParameters(progressParameters, [canonical])) === keccak256(encodeAbiParameters(progressParameters, [head]));
   const receipts = await readReceipts({ ...options, client }, block, confirmationDepth);
   assertActive();
   let markets: LifecycleMarketProgress[] = [];
@@ -676,5 +675,5 @@ async function readLaunchProgressAtBlock(options: ReadLaunchProgressOptions, cli
   }
   if (hashLaunchPlan(planned.plan).toLowerCase() !== planned.planHash.toLowerCase() || hashLaunchIdentity(planned.plan).toLowerCase() !== planned.launchId.toLowerCase()) throw new LifecyclePlanningError("PLAN_MUTATED", "Stored economic plan changed during asynchronous progress reads");
   assertActive();
-  return { canonical, head, confirmationDepth, confirmedBlockNumber: confirmedBlock.number, confirmedBlockHash: confirmedBlock.hash, confirmedAccountNonce, headAccountNonce, pendingAccountNonce, confirmationSafe, token, planHash: planned.planHash, launchId: planned.launchId, chainId, blockNumber: block.number, blockHash: block.hash, markets, receipts };
+  return { canonical, head, confirmationDepth, confirmedBlockNumber: confirmedBlock.number, confirmedBlockHash: confirmedBlock.hash, confirmationSafe, token, planHash: planned.planHash, launchId: planned.launchId, chainId, blockNumber: block.number, blockHash: block.hash, markets, receipts };
 }

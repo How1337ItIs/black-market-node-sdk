@@ -37,8 +37,7 @@ export async function readLifecyclePlanningBlock(client: LifecycleRpcClient, pla
     }
   }
   add(nitroArbSys, nitroArbSysAbi, "arbOSVersion", []);
-  add(nitroGasInfo, nitroGasInfoAbi, "getMaxTxGasLimit", []);
-  add(nitroGasInfo, nitroGasInfoAbi, "getMaxBlockGasLimit", []);
+  add(nitroGasInfo, nitroGasInfoAbi, "getPricesInWei", []);
   await attestLifecycleMulticall(client, block);
   const calls = reads.map((read) => ({ target: read.to, allowFailure: true, callData: encodeFunctionData({ abi: read.abi, functionName: read.functionName, args: read.args }) }));
   const data = encodeFunctionData({ abi: multicall3Abi, functionName: "aggregate3", args: [calls] });

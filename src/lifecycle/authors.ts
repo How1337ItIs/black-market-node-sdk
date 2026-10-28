@@ -1,6 +1,6 @@
 import { decodeEventLog, encodeFunctionData, isAddress, zeroAddress, type Address, type Hex } from "viem";
 import { launchLifecycleAbi, lifecycleFeeHubAbi, lifecycleFeeHubFactoryAbi, lifecycleRegistryAbi } from "./abi.js";
-import { assertLifecycleBlock, lifecycleRpc, readLifecycleBlock, readLifecycleContract, rpcQuantity } from "./rpc.js";
+import { assertLifecycleBlock, lifecycleRpc, readLifecycleBlock, readLifecycleChainId, readLifecycleContract, rpcQuantity } from "./rpc.js";
 import type { SourceTermsV3 } from "./schema.js";
 import { LifecyclePlanningError, type LifecycleBlock, type LifecycleRpcClient } from "./types.js";
 
@@ -50,7 +50,7 @@ function requirePage(offset: bigint, limit: bigint, maximum: bigint): void {
 async function readAuthorContext(options: LifecycleAuthorOptions, block: LifecycleBlock): Promise<LifecycleAuthor> {
   const { client, registry, authorId } = options;
   requireAddress(registry, "Implementation registry"); requireAddress(authorId, "Stable author identity");
-  const chainId = rpcQuantity(await lifecycleRpc(client, "eth_chainId"), "author chain ID");
+  const chainId = await readLifecycleChainId(client);
   const core = await readLifecycleContract<Address>(client, registry, lifecycleRegistryAbi, "core", [], block);
   requireAddress(core, "Registry core");
   if ((await readLifecycleContract<Address>(client, core, launchLifecycleAbi, "registry", [], block)).toLowerCase() !== registry.toLowerCase()) throw new LifecyclePlanningError("REGISTRY_BINDING", "Selected core does not bind this implementation registry");

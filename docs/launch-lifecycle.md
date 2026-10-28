@@ -188,15 +188,15 @@ examples; it does not predict the impact of a $100 or $1,000 buy.
 A larger buy traverses ranges and can acquire a large share of supply.
 
 `prepareAndPlanLifecycleLaunch({ buySlippageBps: 50 })` derives every ordered buy's
-minimum from stateful diagnostic output, then proves the final protected commitment:
+minimum from the covered exact local curve model or native diagnostic output:
 
 ```text
-minTokenOut = floor(simulatedTokenOut × (10000 - buySlippageBps) / 10000)
-50 bps: floor(simulatedTokenOut × 9950 / 10000)
+minTokenOut = floor(tokenOut × (10000 - buySlippageBps) / 10000)
+50 bps: floor(tokenOut × 9950 / 10000)
 ```
 
-This requires activation inside the simulated prefix. The option accepts 0–9,999
-bps and applies only before begin; omitting it preserves your committed minima.
+Native calibration requires activation in the complete executed sequence. The
+option accepts 0–9,999 bps and applies only before begin; omission preserves minima.
 A 1-wei minimum is effectively unprotected. Never submit the diagnostic draft.
 A Kyber conversion minimum protects ETH→quote output, not quote→launch-token output.
 
@@ -204,7 +204,7 @@ A Kyber conversion minimum protects ETH→quote output, not quote→launch-token
 Its `slippageBps` accepts 1–9,999 (default 50). It may stop a buy early; check partial
 fills and refunds. It does not calculate minimum token output.
 `estimateLaunchInitialBuy` is a pure single-position estimate, not a model of
-multi-band traversal, prior buys, or hook execution. Use exact simulation for signing.
+multi-band traversal, prior buys, or hook execution. Use the ordered model or native calibration.
 Final valuation uses the retained supply after burn and the observed post-buy price.
 
 ## Build the plan
@@ -319,80 +319,78 @@ saved deadline or replace committed conversion bytes after begin.
 
 Staging is not rollback. A begun plan remains begun after its deadline until cancelled.
 Activation cannot be split into separate position mints or buys.
-The SDK never switches your requested mode or removes markets to make it fit.
+An atomic request is a preference: conservative capacity bounds or an actual atomic capacity failure may select staged. Explicit staged stays staged. No markets or buys are removed. Review and persist returned `planned.mode`.
 
 | Operation | Options type / purpose |
 | --- | --- |
-| `prepareAndPlanLifecycleLaunch` | `PrepareAndPlanLifecycleLaunchOptions`: `client`, `account`, `plan`, `mode`; optional `ufg: { config }`, `buySlippageBps`, `fixedFinalEnvelope`, `limits`, `fork`, `receipts`, `confirmations`, `signal`, `onProgress`, topology opt-outs. |
+| `prepareAndPlanLifecycleLaunch` | `PrepareAndPlanLifecycleLaunchOptions`: `client`, `account`, `plan`, `mode`; optional `ufg: { config }`, `buySlippageBps`, `limits`, `fork`, `receipts`, `confirmations`, `signal`, `onProgress`, topology opt-outs. |
 | `planLaunch` | `PlanLaunchOptions`: same execution context, including optional `ufg: { config }` and `signal`; re-admits an already-finalized plan without changing salts/minima. |
 | `simulateLaunchPlan` | `client`, `planned`; optional `limits`, `fork`, `receipts`, `confirmations`, `signal`. |
 | `readLaunchProgress` | `client`, `planned`; optional `receipts`, `confirmations`, `signal`. |
-| `buildNextTransaction` | Progress options, plus optional `action`, `limits`, `fork`, `submissionClient`, `reviewedTransaction`. |
+| `buildNextTransaction` | Progress options, plus optional `action`, `limits`, `fork`, `reviewedTransaction`. |
 
 `buildLaunchTransactions` compiles unsigned commands; it does not prove execution.
-Persist `serializeLaunchPlan(planned.plan)`, mode, confirmation policy, receipt
-references, and UFG config if applicable. `parseLaunchPlan` restores bigint values.
+Persist `serializeLaunchPlan(planned.plan)`, returned `planned.mode`, confirmation policy,
+receipt references, and UFG config if applicable. `parseLaunchPlan` restores bigint values.
 Do not serialize the entire `PlannedLaunch`, which can contain live limit callbacks.
 
-Robinhood proof requires native Nitro `eth_simulateV1`. A generic Anvil/Hardhat fork
-can exercise EVM behavior but cannot certify Nitro compute/poster accounting.
-The default aggregate proof window is **50M used gas**, not a per-transaction ceiling.
-Inspect `simulation.deferredTransactionIds` even when `simulation.admitted` is true:
-admission can cover only a prefix. Deferred steps have no gas, price, or admission.
-Buy-output calibration refuses a deferred activation. Start with one market; raise
-`limits.maxSimulationGas` only with a provider that supports the larger window.
+Every launch step uses the native total transaction ceiling:32M on4663, including
+poster gas. Approvals omit gas/fees for wallet preparation. Covered Robinhood
+ArbOS61 templates use capacity bounds and exact local ordered-buy math, never
+component-sized gas limits. Their evidence is `profiled` / `not-run`, not a receipt.
+Conversion-carrying begin/atomic and consuming activation require exact native
+execution. Unknown coverage or uncertain activation gets full-sequence execution
+before begin. Explicit `simulateLaunchPlan` always executes; a generic fork is not Nitro proof.
 
-The full simulated prefix still checks whether later staged commands can execute.
-Only its immediate command receives a final gas/price/estimate/admission. Later
-`simulation.steps` have `provisional: true`: their conservative, affordable
-`gasLimit` is a feasibility budget, not a transaction estimate. Their unsigned
-commands have no gas/price/estimate/admission until `buildNextTransaction` obtains
-a fresh poster quote, sizes that command and validates its exact returned envelope.
-Calibration and separable prior compute observations size proposals, never admission.
-Without one, unvalidated sizing uses affordable per-call ceilings. Only an upfront
-funds refusal permits one second unvalidated attempt sharing the remaining budget.
-No semantic, HTTP or cancellation failure retries, and the final exact validated
-pass never retries or changes its returned gas.
+Review checks the complete sequence, not just a successful prefix. There is no
+SDK-invented 50M aggregate cap. A caller `maxSimulationGas` still tightens policy;
+incomplete execution proof refuses admission. A refused full review cannot begin
+a new launch. Only the immediate command receives final gas/price/estimate/admission.
+Suffix metrics remain provisional; build-next admits only the canonical next command
+at its fresh native-ceiling budget, never reusing a provisional estimate.
+
+See [capacity, native/fork evidence and migration](lifecycle-gas-profiles.md)
+for exact proof fields, upfront affordability and the public capacity-bound helper.
 
 Review the returned final plan/hash, aligned price, burn, retained supply, fees,
 ordered buy outputs/minima, funding, refunds, and complete gas envelope. A fresh
-`buildNextTransaction` proves the immediate next step as canonical progress advances.
-`submissionClient` adds read-only exact-envelope preflight on the sending RPC.
+`buildNextTransaction` admits the immediate next step as canonical progress advances.
+The wallet owns sending-RPC preparation; `submissionClient` has been removed.
 
-`planned.transactions[0]` already contains the immediate exact `from/to/data/value`,
-`nonce`, `gas` and `gasPrice` when that step has admitted execution proof. There is
-no need for another unreviewed build just to discover its envelope. The envelope
-is reviewable and reusable; its block-bound admission is historical, not permission
+`planned.transactions[0]` contains exact immediate `from/to/data/value` and, for
+launch commands, native-ceiling `gas` and current `gasPrice`. Approvals omit both.
+There is no fixed wallet nonce; the wallet assigns it. The plan identity nonce is unchanged.
+The envelope is reusable, but its block-bound admission is historical, not permission
 to sign later. Pass it as `reviewedTransaction` for fresh immediate admission after
-review or recovery. This is execution revalidation, not a second user review gate.
+review or recovery. This is not a second user review gate.
 Reuse `planned.progress` for the same result's display instead of reading progress
 independently beside the plan.
 
-For an atomic caller with a chosen final gas envelope, prepare with
-`fixedFinalEnvelope: { gas: 31_000_000n }`. This is an explicit chosen gas amount,
-not a universal gas recommendation. `limits.accountGasLimit` remains only a ceiling.
-The option accepts exactly one immediate atomic command with no approval prefix;
-staged mode and approval-first shapes refuse it. Diagnostic and final protection
-share one frozen fee recommendation. Supplying `gasPrice` holds that fee exactly;
-it is never bumped to obtain admission. The final protected calldata still receives
-one natural-child-fee validated replay at the exact chosen envelope. Failure never
-enlarges it or switches mode.
+`fixedFinalEnvelope` and `LifecycleFinalEnvelope` are removed. A reviewed launch gas
+that differs from the native ceiling refuses with `STALE_REVIEWED_GAS`; re-review,
+never silently rewrite it. A lower caller complete-envelope cap refuses rather than
+shrinking gas. Held prices below the pinned fee floor also refuse without bumping.
+On Nitro the floor is max(ArbGasInfo L2 price, header base fee); twice base fee is
+fresh recommendation headroom only. Reserve value plus ceiling×price, without
+adding poster fees again. Actual activation capacity refusal asks the user to
+reduce positions/pools; a large conservative bound alone is not such a refusal.
 
 On chain4663, one RPC L2 header pins the invocation. Token prediction, native/token
-balances, allowances, launch progress and Nitro getters share one Multicall3 call
+balances, allowances, launch progress, Nitro getters and prices share one Multicall3 call
 at that explicit L2 block. Further independent stages use one aggregate, even for
 one or two reads. Multicall3's block-number/hash getters expose L1 values on Nitro
 and must not select the L2 pin.
 The same pin survives salt mining and buy calibration; there are no final chain or
 canonical-header guard reads. Receipt confirmation/reorg checks remain.
 
-Final measurement validates the exact calldata once; there is no later exact-gas
-replay. Poster allocation is estimated only for the immediate final command.
-`buildNextTransaction` preserves the original staged batch spans and proves only
-the next command, rather than simulating the whole remaining launch.
+Required native execution validates the exact calldata once; there is no later
+exact-gas replay. Poster allocation comes from the same-review price tuple and a
+local size bound, not a per-transaction oracle. Build-next encodes only its canonical
+next command, preserving normal/UFG calldata and original/clipped batch spans.
 
 Multicall3 runtime, Nitro backend capability and account-code observations are
-retained for the caller's session. Financial state and execution proof are not.
+retained for the caller's session. Chain identity is observed once per bound client;
+recreate the client on chain changes. Financial state and required proof stay fresh.
 The 4663 preset uses the deployed `hookSaltMiner`; returned salts are verified
 locally. Its deployed `launchLens` supplies dependent progress, market, balance
 and hook-mining reads in the same initial aggregate. Callers need no lens
@@ -401,15 +399,14 @@ configuration. See [read caching](reference.md#cache-static-reads-and-inspect-ti
 ## Sign and confirm
 
 Call `buildNextTransaction` before **every signature**, including approvals and
-cancellation. For a reviewed command, pass `reviewedTransaction` so the SDK replays
-the same gas/fee/nonce rather than rediscovering it. Send the exact returned
-`from/to/data/value/nonce/gas/gasPrice` with a matching explicit viem chain.
+cancellation. Pass `reviewedTransaction` to hold the same gas/fee and intent, not a
+wallet nonce. Send the exact returned `from/to/data/value/gas/gasPrice`.
 `confirmations` defaults to 1; choose and retain your policy before begin.
-SDK affordability is observed at block B, not at the provider's pending state.
-Immediately before signing, the host must freshly compare pending nonce and
-balance with this exact envelope and verify the active provider account/chain
-after asynchronous work. Changed identity, nonce, intent or insufficient pending
-funds blocks the signature; never overwrite the reviewed nonce or replay a write.
+The wallet owns its queue, nonce assignment and sending-RPC preparation. Unrelated
+pending transactions are not an SDK confirmation-safety refusal. Retain the actual
+submitted nonce and let the wallet advance locally; unknown reload recovery may
+need one host-owned queue read, never a per-plan nonce gate. Check the active wallet
+account/provider chain after asynchronous work, and never automatically replay a write.
 The following local-account loop signs only when explicitly called by your application.
 Use a new owner-only journal path inside a private directory; on reload, restore the
 original plan and receipt references before calling it. Journal records contain secrets.
@@ -437,7 +434,7 @@ export async function executeLaunch(
     confirmations: planned.confirmations, ufg: planned.ufg, receipts });
   for (;;) {
     const next = await buildNextTransaction({
-      client, planned, receipts, submissionClient: client,
+      client, planned, receipts,
     });
     if (!next) {
       const progress = await readLaunchProgress({ client, planned, receipts });
@@ -448,29 +445,21 @@ export async function executeLaunch(
       }
       return { progress, activationHash };
     }
-    if (!next.admission?.admitted || next.gas === undefined || next.gasPrice === undefined) {
+    const approval = next.kind === "approve" || next.kind === "approve-reset";
+    if (!next.admission?.admitted || !approval && (next.gas === undefined || next.gasPrice === undefined)) {
       throw new Error("Immediate transaction is not admitted");
     }
-    const [nonce, pendingBalance] = await Promise.all([
-      client.getTransactionCount({ address: next.from, blockTag: "pending" }),
-      client.getBalance({ address: next.from, blockTag: "pending" }),
-    ]);
-    const dataFee = next.estimate?.dataFee;
-    if (next.nonce === undefined || BigInt(nonce) !== next.nonce || dataFee === undefined
-      || pendingBalance < next.value + next.gas * next.gasPrice + dataFee) {
-      throw new Error("Pending nonce or complete affordability changed; revalidate");
-    }
+    const request = await wallet.prepareTransactionRequest({
+      chain: wallet.chain, account: wallet.account,
+      to: next.to, data: next.data, value: next.value, gas: next.gas, gasPrice: next.gasPrice,
+    });
     const [address] = await wallet.getAddresses();
     if (wallet.chain.id !== next.chainId || await wallet.getChainId() !== next.chainId
-      || await client.getChainId() !== next.chainId
       || address?.toLowerCase() !== next.from.toLowerCase()
       || wallet.account.address.toLowerCase() !== planned.account.toLowerCase()) {
       throw new Error("Wallet account or chain changed");
     }
-    const raw = await wallet.signTransaction({
-      chain: wallet.chain, account: wallet.account, nonce,
-      to: next.to, data: next.data, value: next.value, gas: next.gas, gasPrice: next.gasPrice,
-    });
+    const raw = await wallet.signTransaction(request);
     const hash = keccak256(raw);
     await record({ transactionId: next.id, kind: next.kind, hash, raw });
     const sent = await client.sendRawTransaction({ serializedTransaction: raw });
@@ -483,7 +472,7 @@ export async function executeLaunch(
       throw new Error("Reverted or replaced transaction; reconcile before continuing");
     }
     receipts.push({ transactionHash: hash, confirmations: planned.confirmations,
-      observedBlockNumber: receipt.blockNumber, observedBlockHash: receipt.blockHash });
+      nonce: BigInt(request.nonce), observedBlockNumber: receipt.blockNumber, observedBlockHash: receipt.blockHash });
     if (next.kind === "atomic" || next.kind === "activate") activationHash = hash;
     await record({ receipts, activationHash });
   }
@@ -494,7 +483,7 @@ A send timeout is ambiguous: the hash may already be mined. Stop, query the save
 hash, and reconcile pending nonce/receipt state; do not automatically resend.
 For an interactive review delay, pass the previously displayed command as
 `reviewedTransaction` to a fresh `buildNextTransaction` before signing.
-That directly replays the same immediate envelope at its held nonce, gas and gas price.
+That revalidates the same immediate intent at its held gas/fee; the wallet owns its nonce.
 
 Completion has **four checks**: receipt confirmed → markets active → metadata
 published → API indexed. A successful transaction alone does not establish the last two.

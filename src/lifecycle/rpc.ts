@@ -3,10 +3,19 @@ import { LifecyclePlanningError, type LifecycleBlock, type LifecycleDiagnosticEv
 import { lifecycleRegistryAbi } from "./abi.js";
 import type { ProfileTopologyV1 } from "./schema.js";
 import { robinhoodMainnet } from "../addresses.js";
+import { ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT } from "./presets.js";
 
 // Reviewed chain4663 deployment, independently observed at block 98,136,655.
 const multicall3CodeHash = "0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891";
 const sessionObservations = new WeakMap<object, Map<string, Promise<unknown>>>();
+const clientChainIds = new WeakMap<LifecycleRpcClient, Promise<bigint>>();
+
+function rememberClientChainId(source: LifecycleRpcClient, request: Promise<unknown>): Promise<bigint> {
+  const pending = request.then((value) => rpcQuantity(value, "chain ID"));
+  clientChainIds.set(source, pending);
+  void pending.catch(() => { if (clientChainIds.get(source) === pending) clientChainIds.delete(source); });
+  return pending;
+}
 const canonicalWireValue = (_key: string, value: unknown): unknown => typeof value === "string" && value.startsWith("0x") ? value.toLowerCase() : value;
 type IndependentRead = { params: readonly unknown[]; resolve: (value: unknown) => void; reject: (failure: unknown) => void };
 
@@ -61,7 +70,7 @@ class SessionLifecycleCache implements LifecycleSessionCache {
   }
 }
 
-/** Opt in per caller/session; there is no global or transport-owned lifecycle cache. */
+/** Opt-in pinned read reuse; client-bound identity/capability facts are separate. */
 export function createLifecycleSessionCache(): LifecycleSessionCache {
   return new SessionLifecycleCache();
 }
@@ -153,7 +162,17 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
 
   observeChainId(): Promise<bigint> {
     this.assertOpen();
-    return this.chainId ??= this.run("eth_chainId", []).then((value) => rpcQuantity(value, "chain ID"));
+    if (this.chainId === undefined) {
+      const observed = clientChainIds.get(this.source) ?? rememberClientChainId(this.source, this.run("eth_chainId", []));
+      this.chainId = this.session === undefined ? observed : observed.then((chainId) => {
+        if (!this.closed) {
+          this.observedChainId = chainId;
+          if (this.sessionGroup !== undefined) this.session!.observeChain(this.sessionGroup, chainId);
+        }
+        return chainId;
+      });
+    }
+    return this.chainId;
   }
 
   observeGasPrice(): Promise<unknown> {
@@ -373,16 +392,17 @@ export function lifecycleStaticRpc(client: LifecycleRpcClient, method: "eth_call
 export async function lifecycleRpc(client: LifecycleRpcClient, method: string, params: readonly unknown[] = []): Promise<unknown> {
   return client instanceof InvocationLifecycleClient ? client.run(method, params) : client.request({ method, params });
 }
-/** One invocation's observed identity; wallet submission owns its final chain check. */
+/** Client-bound identity, observed once per underlying client, never a freshness guard. */
 export function readLifecycleChainId(client: LifecycleRpcClient): Promise<bigint> {
-  return client instanceof InvocationLifecycleClient
-    ? client.observeChainId()
-    : lifecycleRpc(client, "eth_chainId").then((value) => rpcQuantity(value, "chain ID"));
+  if (client instanceof InvocationLifecycleClient) return client.observeChainId();
+  return clientChainIds.get(client) ?? rememberClientChainId(client, lifecycleRpc(client, "eth_chainId"));
 }
 
 /** A single operation-local recommendation, never a session or cross-head quote. */
-export function readLifecycleGasPrice(client: LifecycleRpcClient): Promise<unknown> {
-  return client instanceof InvocationLifecycleClient ? client.observeGasPrice() : lifecycleRpc(client, "eth_gasPrice");
+export function readLifecycleGasPrice(client: LifecycleRpcClient, block: LifecycleBlock, chainId: bigint): Promise<bigint> {
+  if (chainId === 4663n) return readNitroPrices(client, block).then((prices) => prices[5]);
+  return (client instanceof InvocationLifecycleClient ? client.observeGasPrice() : lifecycleRpc(client, "eth_gasPrice"))
+    .then((price) => rpcQuantity(price, "gas price"));
 }
 
 /** Only the reviewed immutable factory identity may use an invocation-wide key. */
@@ -472,18 +492,10 @@ export async function readLifecycleBlock(client: LifecycleRpcClient, tag: Hex | 
   if (client instanceof InvocationLifecycleClient) client.observeBlock(block, tag === "latest");
   return block;
 }
-export async function assertLifecycleBlock(client: LifecycleRpcClient, block: Pick<LifecycleBlock, "number" | "hash">, expectedChainId?: bigint): Promise<void> {
+export async function assertLifecycleBlock(client: LifecycleRpcClient, block: Pick<LifecycleBlock, "number" | "hash">): Promise<void> {
   if (client instanceof InvocationLifecycleClient) return;
-  const [chainId, current] = await Promise.all([
-    expectedChainId === undefined ? undefined : lifecycleRpc(client, "eth_chainId"),
-    readLifecycleBlock(client, toHex(block.number)),
-  ]);
-  if (expectedChainId !== undefined && rpcQuantity(chainId, "chain ID") !== expectedChainId) {
-    if (client instanceof InvocationLifecycleClient) client.invalidateSession();
-    throw new LifecyclePlanningError("CHAIN_MISMATCH", "Source RPC chain changed during the pinned operation");
-  }
+  const current = await readLifecycleBlock(client, toHex(block.number));
   if (current.hash.toLowerCase() !== block.hash.toLowerCase()) {
-    if (client instanceof InvocationLifecycleClient) client.invalidateSession();
     throw new LifecyclePlanningError("STATE_REORGED", "Pinned launch state changed during the operation; read canonical progress again");
   }
 }
@@ -514,20 +526,29 @@ export async function readLifecycleProfileTopology(client: LifecycleRpcClient, r
 }
 export const nitroArbSys = "0x0000000000000000000000000000000000000064";
 export const nitroGasInfo = "0x000000000000000000000000000000000000006c";
-export const nitroNodeInterface = "0x00000000000000000000000000000000000000c8";
 export const nitroArbSysAbi = parseAbi(["function arbOSVersion() view returns (uint256)"]);
-export const nitroGasInfoAbi = parseAbi(["function getMaxTxGasLimit() view returns (uint256)", "function getMaxBlockGasLimit() view returns (uint64)"]);
-const nitroNodeInterfaceAbi = parseAbi(["function gasEstimateL1Component(address to, bool contractCreation, bytes data) payable returns (uint64 gasEstimateForL1, uint256 baseFee, uint256 l1BaseFeeEstimate)"]);
+export const nitroGasInfoAbi = parseAbi([
+  // Transaction ceilings are release preset metadata, not guard-only getter reads.
+  "function getPricesInWei() view returns (uint256,uint256,uint256,uint256,uint256,uint256)",
+]);
+export type LifecycleNitroPrices = readonly [bigint, bigint, bigint, bigint, bigint, bigint];
 const maxUint64 = (1n << 64n) - 1n;
 
-/** A poster quote is an envelope budget, never an execution/compute proof. */
-export async function readNitroPosterGas(transaction: LifecycleTransaction, context: LifecycleLimitContext): Promise<{ posterGas: bigint; baseFee: bigint; l1BaseFeeEstimate: bigint }> {
-  const data = encodeFunctionData({ abi: nitroNodeInterfaceAbi, functionName: "gasEstimateL1Component", args: [transaction.to, false, transaction.data] });
-  const result = rpcHex(await lifecycleStaticRpc(context.client, "eth_call", [{ from: transaction.from, to: nitroNodeInterface, data, value: toHex(transaction.value) }, toHex(context.block.number)], context.block), "Nitro poster estimate");
-  if (result.length !== 194) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Nitro poster estimate must contain exactly three ABI words");
-  const [posterGas, baseFee, l1BaseFeeEstimate] = decodeFunctionResult({ abi: nitroNodeInterfaceAbi, functionName: "gasEstimateL1Component", data: result });
-  if (posterGas < 0n || posterGas > maxUint64 || baseFee <= 0n || l1BaseFeeEstimate < 0n) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Nitro poster estimate has invalid gas or fee values");
-  return { posterGas, baseFee, l1BaseFeeEstimate };
+/** Seeded by the planning aggregate; standalone simulation batches this with limits. */
+export function readNitroPrices(client: LifecycleRpcClient, block: LifecycleBlock): Promise<LifecycleNitroPrices> {
+  return readLifecycleContract(client, nitroGasInfo, nitroGasInfoAbi, "getPricesInWei", [], block, undefined, true, true);
+}
+
+/** EOA legacy/1559 serialization and Nitro's Brotli allocation bound, not a
+ * per-transaction oracle quote. Wallet-added access/auth lists and AA wrappers
+ * need their own wallet envelope; they are outside the direct-EOA profile. */
+export function nitroPosterGasBound(transaction: Pick<LifecycleTransaction, "data">, prices: LifecycleNitroPrices): { posterGas: bigint; feeBound: bigint } {
+  const serializedBytes = BigInt((transaction.data.length - 2) / 2) + 384n;
+  const compressedBytes = serializedBytes + 8n * (serializedBytes / 1024n) + 64n;
+  const feeBound = compressedBytes * prices[1];
+  if (feeBound === 0n) return { posterGas: 0n, feeBound };
+  if (prices[5] === 0n) throw new LifecyclePlanningError("NITRO_PRICES_UNAVAILABLE", "Positive poster fees cannot be converted at a zero L2 gas price");
+  return { posterGas: 2n * ((feeBound + prices[5] - 1n) / prices[5]), feeBound };
 }
 
 async function readNitroScalar(context: LifecycleLimitContext, to: Address, abi: Abi, functionName: string): Promise<bigint> {
@@ -583,33 +604,24 @@ async function resolveLifecycleLimitsFresh(context: LifecycleLimitContext, sourc
     throw new LifecyclePlanningError("LIMIT_CONTEXT_MISMATCH", "Supplied execution policy provenance differs from the canonical chain/account/core/block context");
   }
   const protocol = context.chainId === 4663n ? "nitro" : "evm";
-  const maxSimulationGas = configuration.maxSimulationGas ?? (context.chainId === 4663n ? 50_000_000n : undefined);
-  let arbOSVersion: bigint | undefined; let maxTxComputeGas: bigint | undefined; let maxBlockComputeGas: bigint | undefined;
+  const maxSimulationGas = configuration.maxSimulationGas;
+  let arbOSVersion: bigint | undefined;
   if (protocol === "nitro") {
     try {
-      const [rawVersion, txComputeGas, blockComputeGas] = await Promise.all([
-        readNitroScalar(context, nitroArbSys, nitroArbSysAbi, "arbOSVersion"),
-        readNitroScalar(context, nitroGasInfo, nitroGasInfoAbi, "getMaxTxGasLimit"),
-        readNitroScalar(context, nitroGasInfo, nitroGasInfoAbi, "getMaxBlockGasLimit"),
-      ]);
+      const rawVersion = await readNitroScalar(context, nitroArbSys, nitroArbSysAbi, "arbOSVersion");
       // ArbSys alone adds 55 to the logical Nitro ArbOS version.
       if (typeof rawVersion !== "bigint" || rawVersion < 105n) throw new Error("ArbOS version 50 or newer is required (ArbSys raw version >= 105)");
       arbOSVersion = rawVersion - 55n;
-      maxTxComputeGas = txComputeGas;
-      maxBlockComputeGas = blockComputeGas;
-      if ([maxTxComputeGas, maxBlockComputeGas].some((limit) => typeof limit !== "bigint" || limit <= 0n || limit > maxUint64)) throw new Error("Nitro compute getters must be positive uint64 values");
     } catch (failure) {
       if (failure instanceof Error && failure.name === "AbortError") throw failure;
-      throw new LifecyclePlanningError("NITRO_LIMITS_UNAVAILABLE", `Pinned Nitro compute limits could not be established: ${lifecycleFailureReason(failure)}; header gasLimit is not a fallback`);
+      throw new LifecyclePlanningError("NITRO_LIMITS_UNAVAILABLE", `Pinned Nitro version could not be established: ${lifecycleFailureReason(failure)}`);
     }
     if (configuration.estimateDataFee !== undefined) throw new LifecyclePlanningError("INVALID_LIMITS", "Nitro poster fees are already included in gas; an external data-fee estimator would double-charge them");
   }
   const envelopeCaps = [configuration.chainGasLimit, configuration.rpcGasLimit, configuration.accountGasLimit].filter((limit): limit is bigint => limit !== undefined);
   if (protocol === "evm") envelopeCaps.push(context.block.gasLimit);
   const transactionGasCeiling = envelopeCaps.length === 0 ? undefined : envelopeCaps.reduce((minimum, limit) => limit < minimum ? limit : minimum);
-  const executionGasCeiling = maxTxComputeGas !== undefined && maxBlockComputeGas !== undefined
-    ? (maxTxComputeGas < maxBlockComputeGas ? maxTxComputeGas : maxBlockComputeGas)
-    : transactionGasCeiling ?? context.block.gasLimit;
+  const executionGasCeiling = protocol === "nitro" ? ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT : transactionGasCeiling ?? context.block.gasLimit;
   const unknownExecutionConstraints = [
     ...(protocol === "evm" && configuration.chainGasLimit === undefined ? ["Independent chain per-transaction execution cap is unknown; proof is bounded by the pinned header and validated backend"] : []),
     ...(configuration.rpcGasLimit === undefined ? ["RPC transaction gas-envelope cap is unknown"] : []),
@@ -621,7 +633,7 @@ async function resolveLifecycleLimitsFresh(context: LifecycleLimitContext, sourc
   return {
     configuration, assertCurrent,
     limits: Object.freeze({
-      protocol, executionGasCeiling, transactionGasCeiling, arbOSVersion, maxTxComputeGas, maxBlockComputeGas, headroomBps,
+      protocol, executionGasCeiling, transactionGasCeiling, arbOSVersion, headroomBps,
       maxCalldataBytes: configuration.maxCalldataBytes, maxSimulationGas,
       blockGasLimit: context.block.gasLimit, chainGasLimit: configuration.chainGasLimit,
       rpcGasLimit: configuration.rpcGasLimit, accountGasLimit: configuration.accountGasLimit,

@@ -3,13 +3,13 @@
 # Abyss TypeScript SDK
 
 Use `@black-market/sdk` with [viem](https://viem.sh) to launch tokens, swap, and read lending markets.
-This guide targets SDK **0.14.1** on Robinhood Chain mainnet (**4663**).
+This guide targets SDK **0.15.0** on Robinhood Chain mainnet (**4663**).
 The package supports Node 20+; running the checkout's TypeScript examples requires **Node 24+**.
 
 ## Install
 
 ```sh
-pnpm add @black-market/sdk@0.14.1 viem
+pnpm add @black-market/sdk@0.15.0 viem
 ```
 
 To run the examples, use a checkout:
@@ -97,7 +97,7 @@ quotes are WETH unless USDG is listed. Positions are permanently locked.
 ## Choose an offering for your integration
 
 Use `listKnownLifecycleProfiles` for the release's supported offerings and deployment wiring.
-Planning batches current state and proves exact calldata; live registry discovery is optional.
+Planning batches current state and uses native-ceiling budgets, exact local curve quotes and required native execution; live registry discovery is optional. On4663 every launch step uses32M total gas, including poster; approvals leave gas preparation to the wallet. An atomic preference may select staged, so retain returned `planned.mode`.
 
 | Offering | Choose it for | Guide |
 | --- | --- | --- |
@@ -120,4 +120,5 @@ The runner saves artifacts under `launch-results/`; retain its owner-only recove
 - [Launch guide](docs/launch-lifecycle.md): pricing → planning → signing → publication → fees and recovery.
 - [Runner reference](examples/README.md): environment, eleven cases, artifacts, and resume behavior.
 - [SDK reference](docs/reference.md): addresses, codecs, limits, Nitro gas, and author APIs.
+- [Gas and RPC evidence](docs/lifecycle-gas-profiles.md): native ceilings, capacity bounds, exact execution boundaries, measured budgets and0.15.0 migration.
 - [Changelog](CHANGELOG.md) · [MIT license](LICENSE)

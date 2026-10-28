@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.15.0
+
+- Remove wallet nonce reads from lifecycle planning/build-next and remove fixed nonces from unsigned `LifecycleTransaction` envelopes. The plan identity nonce is unchanged. Learn the submitted nonce from the wallet/transaction, retain optional exact `LifecycleReceiptReference.nonce`, and keep queue/reload recovery with the wallet. Progress no longer exposes confirmed/head/pending account nonce gates.
+- Cache chain identity once per bound client object, including author paths. Recreate the client on a chain switch; planning never depends on fresh stage/final `eth_chainId`.
+- Every launch command (begin, prepare, activate, atomic and cancel) uses the native total transaction ceiling: `ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT = 32_000_000n` on4663, exposed as `getKnownLifecycleDeployment(...).nativeTransactionGasLimit`. Poster gas is included, never added. Other chains retain the resolved generic ceiling. Unused gas is refunded; admission still requires balance for value plus the full ceiling fee.
+- Delete per-component transaction gas sizing, stored compute hints, unvalidated sizing and funds-only sizing retries. Approvals omit `gas`, `gasPrice` and estimates so the wallet prepares them. Remove `LifecycleFinalEnvelope`, `fixedFinalEnvelope`, `gasProfile.estimates`, `computeGasRequired` and guard-only Nitro maximum-gas getters.
+- Gas profiles now provide capacity bounds only. Export `computeLifecycleLaunchGasBounds` with compute-only atomic/activation upper bounds. An atomic request is a preference and may select staged; explicit staged remains staged. Persist/review returned `planned.mode`, not the request. An oversized conservative upper bound is uncertainty, not proof of failure.
+- Keep exact native execution for conversion-carrying begin/atomic and consuming activation/buys, plus full-sequence admission before begin when activation capacity is uncertain. Actual activation capacity refusal exposes `capacityConstraint: "activation"` and an actionable reduce-positions/pools reason. Never authorize begin from a successful prefix; caller aggregate policies remain enforced.
+- Preserve exact integer ordered opening-buy math. Conditional `backend/confidence: "profiled"`, `executionProof: "not-run"` and `protocolFit: "profiled"` remain distinct from actual execution. `gasProfile` carries `bounds` and local `initialBuys`; the immediate fixed-ceiling budget is `simulation.estimate`, with `feeConfidence: "native-ceiling-and-data"` and no fabricated `gasUsed`.
+- A reviewed launch gas differing from the resolved native ceiling refuses with `STALE_REVIEWED_GAS`; re-review rather than rewriting it. Held gas price below the pinned required floor refuses without bumping. On Nitro the floor is the greater of same-block `ArbGasInfo` L2 price and header base fee; twice base fee remains recommendation headroom, not a held-price floor.
+- Read `ArbGasInfo.getPricesInWei` in the existing initial aggregate and bound EOA serialization/Brotli poster allocation locally. Remove per-transaction `gasEstimateL1Component` and separate4663 `eth_gasPrice`; `totalFee` already includes poster.
+- Build only the canonical immediate command, preserving normal/UFG calldata and original/clipped preparation spans. Exact suffix proof metrics stay provisional, with no future executable estimates. Each next step refreshes its own price/admission at the native ceiling; there are no smaller-envelope affordability rescues.
+- Remove `BuildNextTransactionOptions.submissionClient` and proof `transportPreflight`; the wallet owns sending-RPC preparation. Remove redundant started-stage UFG principal/config mapping guards while preserving committed config and actual begin receipt attribution.
+- Retire `transactionGasEstimate`; preparation packing and unsigned command compilation remain available. Preserve launch economics, identity, deployed ABIs and calldata. See `docs/lifecycle-gas-profiles.md` for retained native/fork evidence, limits, RPC budgets and migration.
+
 ## 0.14.1
 
 - Enable the deployed Robinhood 4663 LaunchLens through the SDK-owned `launchLens` preset. Callers configure no lens address.
