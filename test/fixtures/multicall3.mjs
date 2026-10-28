@@ -11,6 +11,13 @@ export async function emulateMulticall3(client, params) {
   const results = [];
   for (const call of args[0]) {
     try {
+      if (call.target.toLowerCase() === MULTICALL3) {
+        const { functionName, args } = decodeFunctionData({ abi: multicall3Abi, data: call.callData });
+        if (functionName !== "getEthBalance") throw new Error("Nitro block metadata must come from the L2 RPC header");
+        const value = BigInt(await client.request({ method: "eth_getBalance", params: [args[0], params[1]], fixtureSubcall: true }));
+        results.push({ success: true, returnData: encodeFunctionResult({ abi: multicall3Abi, functionName, result: value }) });
+        continue;
+      }
       results.push({ success: true, returnData: await client.request({ method: "eth_call", params: [{ to: call.target, from: MULTICALL3, data: call.callData }, params[1]], fixtureSubcall: true }) });
     } catch {
       results.push({ success: false, returnData: "0x" });

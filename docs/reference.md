@@ -2,7 +2,7 @@
 
 Use the [launch guide](launch-lifecycle.md) for the end-to-end flow and the
 [runner reference](../examples/README.md) for environment and recovery artifacts.
-This page covers SDK **0.13.0** addresses, limits, wire formats, fees, and diagnostics.
+This page covers SDK **0.14.0** addresses, limits, wire formats, fees, and diagnostics.
 
 ## Deployed infrastructure
 
@@ -165,9 +165,28 @@ Failed getters cannot fall back to the large header gas limit or a hard-coded 32
 
 `transactionGasCeiling`, when set, is the minimum complete-envelope chain/RPC/account
 restriction. It is separate from compute. NodeInterface (`0xc8`)
-`gasEstimateL1Component` estimates poster allocation using the exact sender/target/
-calldata/value at the same block. Returned transaction gas can exceed compute gas
-because it includes poster allocation. Exact native replay, not the estimate, proves fit.
+`gasEstimateL1Component` estimates poster allocation once for the next final
+transaction, using its exact sender/target/calldata/value at the same block.
+Compute-only calibration and fresh poster allocation size the immediate envelope
+before native validation. `step.computeGasRequired` retains a separable compute
+observation, never the old poster charge or provisional budget. A fresh poster
+quote is combined once when that command becomes next. Both unvalidated sizing
+and the final exact pass use affordable pinned envelopes; validation:false does
+not disable Nitro's upfront funds check. The final pass uses exactly returned gas.
+Sizing starts with per-call ceilings because unused gas is refunded between calls.
+Only a genuine upfront-funds refusal permits one second unvalidated sizing attempt
+with the budget shared across the sequence. Other failures do not retry; the final
+exact validated pass is never replayed.
+
+A tight payer balance can cover smaller exact staged envelopes yet not the
+discovery margin. This may return `failureCategory: "affordability"` even though
+the underlying launch could fit. The refused RPC exposes no successful-prefix
+results; the SDK does not invent them or add more metering attempts.
+
+Suffix steps are marked `provisional: true` and have no transaction estimate:
+their conservative complete budgets check sequence feasibility, bounded across
+the pinned affordable remaining balance. `buildNextTransaction` never reuses
+those budgets as estimates; it freshly quotes and proves only the next command.
 
 On Nitro, `estimate.posterGas` / `posterFee` are buffered allocations **inside**
 `gasLimit`; `dataFeeIncludedInGas` is true, `dataFee` is zero, and `totalFee` equals
@@ -187,13 +206,27 @@ fixed transaction fees or proof that every permitted topology fits.
 | `LifecycleRpcClient` option | Behavior |
 | --- | --- |
 | `supportsReadBatching: true` | Opt into at most eight concurrent SDK reads per invocation; set only when your transport batches concurrent requests. |
-| `sessionCache: createLifecycleSessionCache()` | Caller-owned reuse of SDK-selected static reads at one canonical chain/block; default has no cross-invocation cache. |
+| `sessionCache: createLifecycleSessionCache()` | Caller-owned reuse of SDK-selected static reads at one pin; successful deployment/backend observations also survive across blocks. Without it, those observations belong to the supplied client object. |
 | `onDiagnostic(event)` | Local opt-in stage/RPC timing listener; no automatic console output or telemetry. |
 
 Call `sessionCache.invalidate()` on wallet/chain switches and after each confirmed
-transaction. `sessionCache.block` is readonly `{ number, hash }` or undefined.
+transaction to discard pinned static values. Session deployment/backend facts are
+keyed by chain and account where applicable and live until the session owner is
+discarded. `sessionCache.block` is readonly `{ number, hash }` or undefined.
+Planning pins retain the actual RPC L2 block number and header hash. EVM
+`BLOCKNUMBER`/`BLOCKHASH`, including Multicall3's metadata getters, expose L1 values
+on Nitro and are not L2 pin sources.
 Balances, allowances, current progress, receipts, nonces, policy callbacks, and
 stateful execution proof stay fresh. Session caching does not extend admission.
+
+One RPC L2 header supplies number, hash, timestamp, gas limit and base fee.
+The initial Multicall3 call uses that explicit L2 block and includes native balance,
+funding/progress and Nitro getters. Independent getters are aggregated with no
+minimum-count threshold. Runtime code is attested once per
+session. The optional preset `launchLens` remains unset until deployment; once set,
+one `launchLensAbi.snapshot` call replaces dependent token/hook/market/funding reads
+inside that aggregate. The deployed preset `hookSaltMiner` replaces local mining
+during combined preparation; every returned winner is verified locally.
 
 Diagnostic events carry `stage`, `phase`, optional `durationMs`, `queueMs`,
 `requestId`, allowlisted RPC `method`, and cache `hits` / `misses` / `reuses`.

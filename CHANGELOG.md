@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.14.0
+
+- Pin one RPC L2 header and batch same-block planning reads/native balances into one explicitly pinned chain4663 Multicall3 stage, even for fewer than three getters. Never derive L2 pins from EVM `BLOCKNUMBER`/`BLOCKHASH`, which expose L1 values on Nitro.
+- Retain successful Multicall3 code attestation, Nitro backend capability and per-account code observations for the caller's session. Financial state, receipts, nonces and exact execution remain fresh.
+- Keep one planning pin through hook mining and buy calibration. Remove final source-chain/canonical re-reads and the redundant exact-gas replay after final validated measurement.
+- Estimate Nitro poster allocation only for the immediate final transaction, once. Build-next recompiles the next determined command from receipt/progress, original batch spans, allowance and nonce, then simulates only that command.
+- Use the deployed HookSaltMiner `findMany` for pool-bound preparation and verify returned CREATE2 salts locally. Preserve the public local miner for deployments without a miner preset.
+- Add optional `LifecycleDeploymentPreset.launchLens` and `launchLensAbi` integration for dependent reads and mining in the initial aggregate. The preset remains unset until deployment; setting its address enables the path.
+- Preserve launch economics, deployed contract ABIs and committed transaction calldata.
+- Diagnostic migration: remove `simulation.replay` and `simulation.envelope` from `LifecycleDiagnosticStage` listeners/exhaustive switches. Both stages are replaced by `simulation.measure`, which now includes the authoritative validated execution at the exact returned gas envelope. Buy calibration or an unvalidated sizing pass can also emit `simulation.measure`; neither is execution admission.
+- Staged admission still checks the full simulated sequence for feasibility, using conservative suffix gas budgets bounded by the pinned balance. Only the immediate command receives a final exact gas/price estimate and admission. Later `simulation.steps` have `provisional: true` and no estimate; their transaction gas/price/estimate/admission stay unset until `buildNextTransaction` re-sizes and proves that command with a fresh poster quote. Never reuse a provisional `gasLimit` as a transaction estimate.
+- Bound unvalidated sizing/calibration envelopes by pinned affordability too: Nitro still checks upfront funds with `validation: false`. Retain separable `LifecycleSimulationStep.computeGasRequired` so build-next combines compute with the fresh poster quote, not a previous complete observation containing an old poster charge.
+- Size each discovery command against its per-transaction compute/complete ceiling and spendable balance, not an equal share of a sequence budget. Unused gas is refunded before the next call. An affordability-capped preparation failure cannot trigger an extra preparation transaction below the native ceiling.
+- Only a genuine upfront-funds refusal may retry unvalidated sizing once with a shared sequence budget, before the sole exact validated pass. Contract reverts, HTTP failures, cancellations and final validation never retry; repeated funds refusals cannot select another backend.
+- Sizing limitation (also present in 0.13.0): a payer may cover smaller exact staged envelopes but not the discovery ceiling margin. If the sole shared-budget retry exhausts its lower envelope, return `failureCategory: "affordability"` without claiming the transaction itself cannot execute. A top-level RPC refusal exposes no successful-prefix gas, so no prefix observations are synthesized and no extra metering calls are made.
+
 ## 0.13.0
 
 - Finalize each lifecycle invocation with one fresh source-chain guard and one canonical check per used proof pin, including after optional submission estimation. Reuse the initial chain observation for nested hook metadata/discovery, one fee recommendation per operation, and known immutable factory predictions across construction/execution pins.

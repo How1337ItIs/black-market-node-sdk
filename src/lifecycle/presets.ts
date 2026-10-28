@@ -61,6 +61,9 @@ export type LifecycleDeploymentPreset = {
   readonly tokenFactory: Address;
   readonly tokenFactoryCodeHash: Hex;
   readonly fundingEscrow: Address;
+  /** Optional read-only acceleration contracts. An unset lens is not a deployed feature. */
+  readonly hookSaltMiner?: Address;
+  readonly launchLens?: Address;
   readonly profiles: readonly LifecycleProfilePreset[];
   readonly provenance: {
     readonly sourceCommit: string;
@@ -325,6 +328,7 @@ const knownDeployment: LifecycleDeploymentPreset = Object.freeze({
   tokenFactory: "0xd3cE64E49224a9a96075633f63761FE6BE22FE30",
   tokenFactoryCodeHash: "0x6bbbdfe93ec615b7f1e70bac5e69aa890eba5e5f248f25e7022e866b4064d541",
   fundingEscrow: "0x7bc77946CeF52A178583FCe1EEB7751983cEC703",
+  hookSaltMiner: "0x2f06176ba739b609b6a7334e2e6647558ba78ad5",
   profiles: Object.freeze([
     abyssPreset(KnownLifecycleProfile.Abyss0, "0x49b2ed65e2021247951193dd2c671b40867b6e064af65a2d98a70f57556412fc"),
     abyssPreset(KnownLifecycleProfile.Abyss1, "0x2f6f494f8810473b3c0ac6b03b1a1353d067ffa5c86d3cba16b04c6b61f73c05"),

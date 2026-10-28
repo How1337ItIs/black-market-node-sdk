@@ -22,11 +22,11 @@ description: Integrate the Abyss TypeScript SDK using the correct deployment gra
 ## Construct locally; prove against current state
 
 1. Use `getKnownLifecycleDeployment`, `getKnownLifecycleProfile` and
-   `listKnownLifecycleProfiles` for shipped construction metadata. These pure
-   selectors avoid remote enumeration for known profiles; they do not grant admission.
-2. Use `readLifecycleProfiles({ client, orchestrator })` when explicit live discovery
-   or an unlisted offering is needed. Check `admitted` and any refusal `reason`,
-   schema/version, topology, bounds, dependency graph and author terms.
+   `listKnownLifecycleProfiles` for shipped profiles and deployment wiring. Profiles
+   registered after the SDK release need not appear until the next SDK update.
+2. Use `readLifecycleProfiles({ client, orchestrator })` only for explicit live
+   registry inspection. Normal planning uses presets and exact native simulation;
+   it does not require a registry crawl or redundant admission getter mirrors.
 3. Build the complete `LaunchPlanV1`: explicit creator/core/nonce, token behavior,
    fee policies, funding, all markets/positions and ordered buys. Read the sibling
    `token-launch/SKILL.md` and `launch-pricing/SKILL.md` before choosing economics.
@@ -40,9 +40,10 @@ description: Integrate the Abyss TypeScript SDK using the correct deployment gra
    execution mode, confirmation policy and actual included/replacement hashes.
 
 Do not add a second application-owned mining/admission loop around these operations.
-Known presets are construction shortcuts, not permission to remove live continuity,
-receipt, nonce, affordability or simulation checks. Do not resurrect
-`preparePoolBoundLifecyclePlan` or `PlannedLaunch.atomicAttempt`.
+Known presets supply construction wiring; the onchain contracts, wallet and final
+exact-calldata simulation enforce execution. Planning has one pin and no final
+chain/canonical guard re-reads. Receipt and nonce recovery checks remain.
+Do not resurrect `preparePoolBoundLifecyclePlan` or `PlannedLaunch.atomicAttempt`.
 
 Atomic/staged mode is explicit; refusal does not authorize fallback, smaller budgets,
 fewer positions, dropped buys or a different hook. Staging partitions preparation,
