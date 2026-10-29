@@ -8,6 +8,7 @@ import { lifecyclePinnedRpc, lifecycleSessionRead, nitroPosterGasBound, readNitr
 import { LifecycleFundingKind, LifecycleRewardMode, LifecycleTokenKind, type LaunchPlanV1 } from "./schema.js";
 import { buildLifecycleCommand } from "./transactions.js";
 import { UFG_LAUNCH_PROXY_ADDRESS, ufgPlanPrincipal, type UfgLaunchConfig } from "./ufg-config.js";
+import { isAutoCompoundProfile } from "./auto-compound.js";
 import type { NextTransactionEnvelope } from "./simulation.js";
 import { LifecyclePlanningError, type LifecycleBlock, type LifecycleLaunchGasBounds, type LifecycleOpeningBuyQuote, type LifecycleSimulation, type LifecycleTransaction, type SimulateLaunchPlanOptions } from "./types.js";
 
@@ -22,6 +23,8 @@ type MarketGas = { abyss: boolean; hmm: boolean; ufgHook: boolean; positions: nu
 
 function covered(plan: LaunchPlanV1): boolean {
   return plan.chainId === 4663n && hasProfiledOpeningMath(plan) &&
+    // New compounding templates require exact execution until capacity is calibrated.
+    !plan.markets.some((market) => isAutoCompoundProfile(market.profileId)) &&
     plan.markets.every((market) => profiledQuotes.has(market.quoteAsset.toLowerCase())) &&
     plan.funding.every((funding) => funding.kind !== LifecycleFundingKind.ERC20 || profiledQuotes.has(funding.inputAsset.toLowerCase()));
 }

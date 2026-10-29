@@ -133,8 +133,42 @@ UFG adds a canonical dynamic tuple via `encodeUfgLaunchConfig`:
 `abi.encode((uint16,uint16,address[]))`, including the leading `0x20` offset.
 `decodeUfgLaunchConfig` rejects alternate encodings and extra bytes;
 `hashUfgLaunchConfig` hashes the tuple. Config6 appends typed `ufgLaunchConfig`
-for UFG profiles only; Abyss carries no UFG tail. Full plan hashes bind auxiliary
-tails; hook-constructor economics hashes bind the zero-salt prefix only.
+for UFG profiles only; Abyss carries no UFG tail. Full plan hashes bind every
+auxiliary tail. HMM/UFG constructor economics hash the zero-salt prefix; the
+auto-compounding profiles below hash the zero-salt prefix **and** their tail.
+
+## Auto-compounding profiles
+
+| `KnownLifecycleProfile` | Profile ID |
+| --- | --- |
+| `V4AutoCompoundStaticPool` | `0xdd53c2c686f822b2d17536ccf4f9db954b4976d1be80404bc74571253179fae0` |
+| `V4AutoCompoundDynamicPool` | `0x46b81bfe9316fbaa90e930c6f1d5ad5e6ecfced2c886fd5520ca2bae11b92744` |
+
+`AUTO_COMPOUND_STATIC_V1_PROFILE_ID` / `AUTO_COMPOUND_DYNAMIC_V1_PROFILE_ID`
+export these identities. The presets freeze the admitted envelope, adapter,
+registration, topology and exact hook creation code. The generator checks preserved
+admission bytes and successful receipts against registry `profile`,
+`profileTopology`, `profileEnvelope`, adapter metadata, module identity and runtime
+hashes at Robinhood block **100,486,085**
+(`0xa41849e3e83fb977ed2fbfc7ff71c639bdf1fc34489dc46878128c021fdb6c44`).
+These are construction snapshots, not a claim of current admission.
+The disabled `0x1e41…1d68` / `0x53dd…e0d7` profiles are not supported.
+
+`AutoCompoundConfigV1` contains `compoundShareBps` (integer 0–10,000).
+`encodeAutoCompoundTail` / `decodeAutoCompoundTail` encode exactly
+`abi.encode(bytes32 version, uint16 compoundShareBps)` (64 bytes), where
+`AUTO_COMPOUND_CONFIG_VERSION = keccak256("black-market.auto-compound.config.v1")`.
+The decoder requires the exact version, length and canonical narrow-integer
+padding. Config6's typed `autoCompoundConfig` selects this tail only for these
+two profiles; HMM and UFG tails cannot be combined with it.
+`validateAutoCompoundConfig`, the market codec and `validateV4LifecycleMarket`
+reject invalid shares; the market boundaries also require zero LP/developer fees.
+Both InputToken and QuoteOnly fee modes are supported.
+
+`hashPoolBoundV4MarketCommitment` includes the entire canonical zero-salt config
+for these profiles. Never mine against a prefix-only commitment or append a share
+after mining. Use [the launch guide](launch-lifecycle.md#configure-auto-compounding)
+for selection and gas behavior.
 
 ## Choose a fee tier
 
@@ -312,6 +346,26 @@ legacy tooling, not mutated V2 plans. The SDK does not upgrade existing markets.
 From the checkout root, `pnpm test` runs offline tests and `pnpm examples` performs
 read-only deployed discovery. The following checks require separate infrastructure;
 run write-capable checks only with explicit permission on disposable services.
+
+### Auto-compounding read-only checks
+
+After `pnpm build`, compare both profiles and fee modes with the live collector
+factory's metadata/decoder and the reference Python encoder (no signing or sends):
+
+```sh
+BLACK_MARKET_REFERENCE_ROOT=/path/to/black-market \
+  node --test test/integration/auto-compound.live.test.mjs
+```
+
+The reference checkout must contain `scripts/auto_compound_config.py` and its
+Python dependencies. Regenerate the frozen deployment modules offline with:
+
+```sh
+node --experimental-transform-types scripts/generate-auto-compound-presets.mjs
+# Explicitly refresh readback from a new pinned L2 header plus preserved admission evidence:
+node --experimental-transform-types scripts/generate-auto-compound-presets.mjs \
+  --readback /path/to/black-market
+```
 
 ### UFG owned-fork check
 

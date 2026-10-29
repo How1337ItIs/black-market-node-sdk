@@ -106,10 +106,11 @@ Planning batches current state and uses native-ceiling budgets, exact local curv
 | Dynamic V4 | Oracle-velocity hook fee between your minimum and maximum; LP fee 0 | [Fee configuration](docs/reference.md#pool-bound-v4-version-6) |
 | HMM V2 | Fee-funded auxiliary bids/asks; LP and developer fees 0 | [Configure HMM V2](docs/launch-lifecycle.md#configure-hmm-v2) |
 | UFG | Quote-fee treasury and holder redemption; reward-free ERC20 only | [Launch a UFG treasury](docs/launch-lifecycle.md#launch-a-ufg-treasury) |
+| Auto-compounding | Static/dynamic hook fees fund permanently locked full-range liquidity; LP and developer fees 0 | [Configure auto-compounding](docs/launch-lifecycle.md#configure-auto-compounding) |
 
-The eleven launch wrappers do not launch HMM or UFG. Start those integrations with
-[`hmm-launch-config.ts`](examples/hmm-launch-config.ts) or [`ufg-launch-config.ts`](examples/ufg-launch-config.ts)
-and the linked guide. They are pure configuration examples, not deployment commands.
+The eleven launch wrappers do not launch HMM, UFG, or auto-compounding. Start HMM/UFG integrations with
+[`hmm-launch-config.ts`](examples/hmm-launch-config.ts) or [`ufg-launch-config.ts`](examples/ufg-launch-config.ts);
+for auto-compounding, use the typed config6 example in the linked guide. These are configuration paths, not deployment commands.
 
 ## Recover and integrate
 
