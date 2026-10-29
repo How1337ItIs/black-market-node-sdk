@@ -1,5 +1,7 @@
 # Lifecycle gas, capacity, execution evidence and RPC budgets
 
+Current capacity-v4 admission correction and test receipts: [canonical sixteen-market issue #21](canonical16-capacity-correction.md). This is conservative accounting, not a launch-enabling contract fix; current planning does not simulate launch calldata. Historical execution-fallback descriptions below predate the capacity-only planner.
+
 Version 0.15.0 separates the native transaction ceiling, conservative capacity bounds, exact curve quotes and actual execution proof. A local quote or submitted hash is not an execution receipt.
 
 ## One native ceiling, not component-sized gas
