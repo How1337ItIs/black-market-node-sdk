@@ -50,9 +50,9 @@ function tokenCreationGas(token: LaunchPlanV1["token"]): bigint {
 const activationCosts = {
   call: 1_500_000n,
   // Restore the per-market allowances from capacity-v2 (29e1445).
-  // v3 halved these while retaining depth-based calibration; issue #21's
-  // 7 V4 + 9 Abyss one-position markets falsify that breadth extrapolation.
-  // This conservative rollback is not a newly measured successful gas bound.
+  // Issue #21 motivates conservative breadth policy pending native calibration.
+  // Its empty activation revert does not establish the exact failure cause.
+  // These restored allowances are not a measured successful gas bound.
   abyss: { market: 1_000_000n, position: 1_250_000n },
   v4: { market: 500_000n, position: 500_000n },
   hmm: 1_000_000n,

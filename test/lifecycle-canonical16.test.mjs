@@ -12,7 +12,7 @@ const fixture = JSON.parse(bytes);
 const plan = parseLaunchPlan(JSON.stringify(fixture.plan));
 const predictedToken = plan.feeAssets.find(({ asset }) => !plan.markets.some(({ quoteAsset }) => quoteAsset.toLowerCase() === asset.toLowerCase())).asset;
 
-test("canonical16 issue21 activation budget does not admit a known native out-of-gas shape", () => {
+test("canonical16 issue21 activation budget refuses the known native activation-failure fixture", () => {
   assert.equal(plan.markets.length, 16);
   assert.equal(plan.markets.filter(({ configVersion }) => configVersion === 1).length, 9);
   assert.equal(plan.buys.length, 0);
