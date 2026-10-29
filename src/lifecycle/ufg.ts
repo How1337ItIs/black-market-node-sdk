@@ -10,7 +10,7 @@ import { buildUfgFeeAssetPolicies, encodeUfgLaunchConfig, hashUfgLaunchConfig, i
 
 export { UFG_LAUNCH_PROXY_ADDRESS, UFG_TREASURY_FACTORY_ADDRESS, UFG_UPSTREAM_FACTORY_ADDRESS, UFG_ORCHESTRATOR_ADDRESS, UFG_FIXED_PROFILE_ID, UFG_DYNAMIC_PROFILE_ID, UFG_FIXED_ADAPTER_ID, UFG_DYNAMIC_ADAPTER_ID, isUfgProfile, ufgLaunchConfigComponents, encodeUfgLaunchConfig, decodeUfgLaunchConfig, hashUfgLaunchConfig, validateUfgLaunchConfig, ufgLaunchNonce, buildUfgFeeAssetPolicies, type UfgLaunchConfig } from "./ufg-config.js";
 
-/** Offline proxy-specific admission. Live token/reserve code, registry and transfer checks still require simulation. */
+/** Offline proxy-specific intent checks. Registry, transfers and reserve behavior are enforced on-chain. */
 export function validateUfgLaunchPlan(plan: LaunchPlanV1, config: UfgLaunchConfig, predictedToken: Address): void {
   try {
     ufgPlanPrincipal(plan);

@@ -1,9 +1,8 @@
-import { decodeFunctionResult, keccak256, type Address } from "viem";
-import { launchLifecycleAbi } from "./abi.js";
+import { keccak256, type Address } from "viem";
 import { buildPoolBoundHookParameters, decodePoolBoundV4LifecycleMarketConfig, isPoolBoundV4ConfigVersion, poolBoundHookInitCodeHash, poolBoundV4LifecycleConfigSchema, predictPoolBoundHookAddress, type PoolBoundHookParameters, type PoolBoundLifecycleConfigVersion } from "./markets.js";
 import { getKnownLifecycleProfile, type LifecycleProfilePreset } from "./presets.js";
-import { type LaunchPlanV1, type LaunchReceiptV1 } from "./schema.js";
-import { LifecyclePlanningError, type PlannedLaunch, type PoolBoundHookDeployment } from "./types.js";
+import type { LaunchPlanV1 } from "./schema.js";
+import { LifecyclePlanningError, type PoolBoundHookDeployment } from "./types.js";
 
 const verifiedCreationCode = new WeakSet<LifecycleProfilePreset>();
 
@@ -39,22 +38,3 @@ export function validateBuySlippageBps(bps: number): void {
   if (!Number.isSafeInteger(bps) || bps < 0 || bps >= 10000) throw new LifecyclePlanningError("INVALID_BUY_SLIPPAGE", "Buy slippage must be an integer between zero and 9999 basis points");
 }
 
-/** Actual ordered receipt outputs, never reserve geometry or caller-supplied quotes. */
-export function protectOrderedBuyMinimums(planned: PlannedLaunch, bps: number): LaunchPlanV1 {
-  validateBuySlippageBps(bps);
-  const { simulation, plan } = planned;
-  if (simulation.deferredTransactionIds.length !== 0) throw new LifecyclePlanningError("LAUNCH_DIAGNOSTIC_FAILED", "Buy slippage calibration requires actual activation outputs beyond the proven RPC prefix; use a higher aggregate simulation cap/provider or preserve already committed minima without buySlippageBps", simulation);
-  if (simulation.confidence !== "stateful" || simulation.backend === "unavailable" || simulation.steps.length !== planned.transactions.length || simulation.steps.some((step, index) => !step.success || step.transactionId !== planned.transactions[index]?.id)) throw new LifecyclePlanningError("LAUNCH_DIAGNOSTIC_FAILED", simulation.reason ?? "The complete diagnostic launch sequence did not execute successfully", simulation);
-  const activation = planned.transactions.find((transaction) => transaction.kind === "atomic" || transaction.kind === "activate");
-  const step = simulation.steps.find((candidate) => candidate.transactionId === activation?.id);
-  if (activation === undefined || step?.returnData === undefined) throw new LifecyclePlanningError("MISSING_BUY_OUTPUTS", "Diagnostic execution omitted the actual activation receipt", simulation);
-  const receipt = decodeFunctionResult({ abi: launchLifecycleAbi, functionName: activation.kind === "atomic" ? "launchAtomic" : "activateLaunch", data: step.returnData }) as LaunchReceiptV1;
-  if (receipt.planHash.toLowerCase() !== planned.planHash.toLowerCase() || receipt.launchId.toLowerCase() !== planned.launchId.toLowerCase() || receipt.token.toLowerCase() !== planned.predictedToken.toLowerCase() || receipt.marketCount !== plan.markets.length || receipt.tokenOut.length !== plan.buys.length || receipt.quoteSpent.length !== plan.buys.length) throw new LifecyclePlanningError("MISSING_BUY_OUTPUTS", "Diagnostic receipt differs from the complete committed launch and ordered buys", simulation);
-  const factor = BigInt(10000 - bps);
-  return { ...plan, buys: plan.buys.map((buy, index) => {
-    const output = receipt.tokenOut[index]!;
-    const minTokenOut = output * factor / 10000n;
-    if (receipt.quoteSpent[index]! > buy.quoteAmountIn || output < buy.minTokenOut || minTokenOut <= 0n) throw new LifecyclePlanningError("INVALID_BUY_OUTPUT", "Each actual buy must satisfy its budget and produce a positive protected minimum", simulation);
-    return { ...buy, minTokenOut };
-  }) };
-}

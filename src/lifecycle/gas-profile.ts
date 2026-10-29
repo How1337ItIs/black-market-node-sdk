@@ -1,30 +1,19 @@
-import { toHex, zeroAddress, type Address } from "viem";
-import { AUCTION_QUOTE_OPTIONS } from "../auction.js";
+import { toHex, type Address } from "viem";
 import { getTickAtSqrtRatio } from "../launch.js";
 import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig } from "./markets.js";
 import { computeLifecycleOpeningBuys, hasProfiledOpeningMath } from "./opening-buys.js";
 import { getKnownLifecycleProfile, hmmV2ForwardingReserve } from "./presets.js";
-import { lifecyclePinnedRpc, lifecycleSessionRead, nitroPosterGasBound, readNitroPrices, registerLifecycleFinalCheck, resolveLifecycleLimits, rpcHex, rpcQuantity } from "./rpc.js";
+import { lifecyclePinnedRpc, lifecycleSourceClient, nitroPosterGasBound, readLifecycleGasPrice, readNitroPrices, registerLifecycleFinalCheck, resolveLifecycleLimits, rpcQuantity } from "./rpc.js";
 import { LifecycleFundingKind, LifecycleRewardMode, LifecycleTokenKind, type LaunchPlanV1 } from "./schema.js";
-import { buildLifecycleCommand } from "./transactions.js";
+import { buildLifecycleCommand, preparationGasEstimate } from "./transactions.js";
 import { UFG_LAUNCH_PROXY_ADDRESS, ufgPlanPrincipal, type UfgLaunchConfig } from "./ufg-config.js";
-import type { NextTransactionEnvelope } from "./simulation.js";
-import { LifecyclePlanningError, type LifecycleBlock, type LifecycleLaunchGasBounds, type LifecycleOpeningBuyQuote, type LifecycleSimulation, type LifecycleTransaction, type SimulateLaunchPlanOptions } from "./types.js";
+import { LifecyclePlanningError, type LifecycleBlock, type LifecycleLaunchGasBounds, type LifecycleLimitSource, type LifecycleOpeningBuyQuote, type LifecyclePlanningAssessment, type LifecycleRpcClient, type LifecycleTransaction, type PlannedLaunch } from "./types.js";
 
-export const LIFECYCLE_GAS_PROFILE_VERSION = "robinhood-4663-arbos61-v1";
-
-// Coverage, not token admission: unlisted currencies still use exact execution.
-const profiledQuotes = new Set<string>();
-for (const quote of AUCTION_QUOTE_OPTIONS) if (quote.address !== zeroAddress) profiledQuotes.add(quote.address.toLowerCase());
+export const LIFECYCLE_GAS_PROFILE_VERSION = "robinhood-4663-capacity-v2";
+export type NextTransactionEnvelope = Readonly<{ gas: bigint; gasPrice: bigint }>;
 const ceil = (value: bigint, divisor: bigint) => (value + divisor - 1n) / divisor;
 const approval = (transaction: LifecycleTransaction) => transaction.kind === "approve" || transaction.kind === "approve-reset";
 type MarketGas = { abyss: boolean; hmm: boolean; ufgHook: boolean; positions: number; spacing: number; openingTick: number; ticks: number[] };
-
-function covered(plan: LaunchPlanV1): boolean {
-  return plan.chainId === 4663n && hasProfiledOpeningMath(plan) &&
-    plan.markets.every((market) => profiledQuotes.has(market.quoteAsset.toLowerCase())) &&
-    plan.funding.every((funding) => funding.kind !== LifecycleFundingKind.ERC20 || profiledQuotes.has(funding.inputAsset.toLowerCase()));
-}
 
 function marketGas(plan: LaunchPlanV1): MarketGas[] {
   return plan.markets.map((market) => {
@@ -58,12 +47,14 @@ function tokenCreationGas(token: LaunchPlanV1["token"]): bigint {
     22_000n * BigInt(Math.ceil(utf8Bytes(token.name) / 32) + Math.ceil(utf8Bytes(token.symbol) / 32) + Math.ceil(utf8Bytes(token.metadataURI) / 32));
 }
 
-/** Capacity classification only. No value returned here ever sets a transaction gas limit. */
+/** Empirical template compute budgets, never transaction gas limits or execution evidence. */
 function capacityBasis(plan: LaunchPlanV1, transaction: LifecycleTransaction, markets: readonly MarketGas[], quotes: readonly LifecycleOpeningBuyQuote[], ufgRoute: boolean): bigint {
   const atomic = transaction.kind === "atomic";
-  let gas = atomic ? 19_500_000n + tokenCreationGas(plan.token) + (ufgRoute ? 6_500_000n : 0n) : 1_000_000n;
+  let gas = atomic ? 19_500_000n + tokenCreationGas(plan.token) + (ufgRoute ? 6_500_000n : 0n) : 1_500_000n;
   for (const [index, market] of markets.entries()) {
-    if (!atomic) gas += market.abyss ? 2_500_000n + 1_600_000n * BigInt(market.positions) : 2_000_000n + 600_000n * BigInt(market.positions);
+    // One shared activation overhead, not a full independent-call overhead per pool.
+    // Retained 8-position minima: Abyss13.52M, dynamic V4 6.90M; Abyss32 exceeds47M.
+    if (!atomic) gas += market.abyss ? 1_000_000n + 1_300_000n * BigInt(market.positions) : 500_000n + 600_000n * BigInt(market.positions);
     else gas += (index === 0 ? market.hmm ? 7_000_000n : market.ufgHook ? 1_000_000n : market.abyss ? 500_000n : 0n
       : market.hmm ? 15_000_000n : market.ufgHook ? 9_000_000n : 8_000_000n) +
       (market.abyss ? 1_500_000n : 600_000n) * BigInt(market.positions - 1);
@@ -86,90 +77,105 @@ function capacityBasis(plan: LaunchPlanV1, transaction: LifecycleTransaction, ma
 type CapacityOptions = { plan: LaunchPlanV1; predictedToken: Address; ufg?: { config: UfgLaunchConfig }; headroomBps?: number };
 export type ProfiledLaunchCapacity = {
   bounds: LifecycleLaunchGasBounds; initialBuys: readonly LifecycleOpeningBuyQuote[]; headroomBps: number;
-  atomic: LifecycleTransaction; activation: LifecycleTransaction;
+  atomic?: LifecycleTransaction; activation: LifecycleTransaction;
 };
 
-/** Internal shared computation; callers reuse both compiled commands and ordered math. */
+/** No quote-token allowlist: costs and exact curve math belong to the release template. */
 export function deriveLifecycleLaunchCapacity(options: CapacityOptions, openingBuys?: readonly LifecycleOpeningBuyQuote[]): ProfiledLaunchCapacity | undefined {
   const { plan, ufg } = options;
-  if (!covered(plan) || plan.funding.some((funding) => funding.kind === LifecycleFundingKind.Swap) ||
-    (plan.creator.toLowerCase() === UFG_LAUNCH_PROXY_ADDRESS.toLowerCase()) !== (ufg !== undefined)) return undefined;
+  if (!hasProfiledOpeningMath(plan) || (plan.creator.toLowerCase() === UFG_LAUNCH_PROXY_ADDRESS.toLowerCase()) !== (ufg !== undefined)) return undefined;
   const headroomBps = options.headroomBps ?? 1500;
-  if (!Number.isSafeInteger(headroomBps) || headroomBps < 0 || headroomBps > 10000) throw new LifecyclePlanningError("INVALID_LIMITS", "Headroom must be between zero and10000 basis points");
+  if (!Number.isSafeInteger(headroomBps) || headroomBps < 0 || headroomBps > 10000) throw new LifecyclePlanningError("INVALID_LIMITS", "Headroom must be between zero and 10000 basis points");
   const initialBuys = openingBuys ?? computeLifecycleOpeningBuys(options);
   const route = ufg === undefined ? undefined : { account: ufgPlanPrincipal(plan), config: ufg.config };
-  const atomic = buildLifecycleCommand(plan, { kind: "atomic" }, route), activation = buildLifecycleCommand(plan, { kind: "activate" }, route);
+  const atomic = plan.markets.length === 1 && !plan.funding.some((funding) => funding.kind === LifecycleFundingKind.Swap)
+    ? buildLifecycleCommand(plan, { kind: "atomic" }, route) : undefined;
+  const activation = buildLifecycleCommand(plan, { kind: "activate" }, route);
   const markets = marketGas(plan), reserve = hmmV2ForwardingReserve(plan);
   const bound = (transaction: LifecycleTransaction) => {
     const basis = capacityBasis(plan, transaction, markets, initialBuys, ufg !== undefined);
     const buffered = ceil(basis * BigInt(10000 + headroomBps), 10000n);
     return buffered > basis + reserve ? buffered : basis + reserve;
   };
-  return { bounds: { atomicComputeGasUpperBound: bound(atomic), activationComputeGasUpperBound: bound(activation) }, initialBuys, headroomBps, atomic, activation };
+  return { bounds: { ...(atomic === undefined ? {} : { atomicComputeGasUpperBound: bound(atomic) }), activationComputeGasUpperBound: bound(activation) }, initialBuys, headroomBps, atomic, activation };
 }
 
-/** Pure, versioned conservative compute bounds for mode/builder capacity, excluding poster gas.
- * Undefined means unprofiled, not unavailable functionality. A large upper bound is uncertain. */
+/** Pure release-template budgets with headroom, excluding poster allocation.
+ * Missing coverage refuses planning; there is no execution fallback. */
 export function computeLifecycleLaunchGasBounds(options: CapacityOptions): LifecycleLaunchGasBounds | undefined {
   return deriveLifecycleLaunchCapacity(options)?.bounds;
 }
 
-export type ProfiledLifecycleTransactions = { simulation: LifecycleSimulation; profileOnly: boolean };
+export type LifecycleBudgetOptions = { client: LifecycleRpcClient; planned: PlannedLaunch; limits?: LifecycleLimitSource; signal?: AbortSignal };
 
-/** Native ceilings determine every launch envelope. Profiles decide capacity only;
- * conversions and uncertain activation shapes still require exact execution. */
-export async function profileLifecycleTransactions(options: SimulateLaunchPlanOptions, transactions: readonly LifecycleTransaction[], block: LifecycleBlock,
-  reviewed?: NextTransactionEnvelope, openingBuys?: readonly LifecycleOpeningBuyQuote[], capacity?: ProfiledLaunchCapacity): Promise<ProfiledLifecycleTransactions | undefined> {
+/** Checks pinned inputs and deterministic capacity only. Never executes launch calldata. */
+export async function assessLifecycleTransactions(options: LifecycleBudgetOptions, transactions: readonly LifecycleTransaction[], block: LifecycleBlock,
+  reviewed?: NextTransactionEnvelope, openingBuys?: readonly LifecycleOpeningBuyQuote[], capacity?: ProfiledLaunchCapacity): Promise<LifecyclePlanningAssessment> {
   const { client, planned } = options, plan = planned.plan;
-  const onlyApprovals = transactions.every(approval);
-  if (planned.chainId !== 4663n || !onlyApprovals && !covered(plan)) return undefined;
   const context = { client, account: planned.account, orchestrator: plan.orchestrator, block, chainId: planned.chainId };
   const observed = await resolveLifecycleLimits(context, options.limits === undefined ? planned.limits : options.limits);
-  if (!onlyApprovals && observed.limits.arbOSVersion !== 61n) return undefined;
-  const [prices, balanceValue, accountCode] = await Promise.all([
-    readNitroPrices(client, block),
+  const [recommendation, balanceValue, prices] = await Promise.all([
+    readLifecycleGasPrice(client, block, planned.chainId),
     lifecyclePinnedRpc(client, "eth_getBalance", [planned.account, toHex(block.number)], block),
-    lifecycleSessionRead(client, `${planned.chainId}:account-code:${planned.account.toLowerCase()}`, () => lifecyclePinnedRpc(client, "eth_getCode", [planned.account, toHex(block.number)], block)),
+    observed.limits.protocol === "nitro" ? readNitroPrices(client, block) : undefined,
   ]);
-  if (rpcHex(accountCode, "account code") !== "0x") return undefined;
   options.signal?.throwIfAborted(); observed.assertCurrent(); registerLifecycleFinalCheck(client, observed.assertCurrent);
-  const { limits } = observed, baseFee = block.baseFeePerGas ?? 0n;
-  const requiredGasPrice = prices[5] > baseFee ? prices[5] : baseFee;
-  const gasPrice = reviewed?.gasPrice ?? (prices[5] > baseFee * 2n ? prices[5] : baseFee * 2n);
-  if (reviewed !== undefined && !onlyApprovals && reviewed.gas !== limits.executionGasCeiling) throw new LifecyclePlanningError("STALE_REVIEWED_GAS", "Reviewed gas differs from the native transaction ceiling; review the launch again");
-  const needsBuys = transactions.some((transaction) => transaction.kind === "atomic" || transaction.kind === "activate");
-  const currentCapacity = needsBuys ? capacity?.headroomBps === limits.headroomBps ? capacity : deriveLifecycleLaunchCapacity({ plan, predictedToken: planned.predictedToken, ufg: planned.ufg, headroomBps: limits.headroomBps }, openingBuys) : undefined;
-  if (needsBuys && currentCapacity === undefined) return undefined;
-  const quotes = currentCapacity?.initialBuys ?? [], bounds = currentCapacity?.bounds;
-  let profileOnly = !plan.funding.some((funding) => funding.kind === LifecycleFundingKind.Swap) ||
-    !transactions.some((transaction) => transaction.kind === "begin" || transaction.kind === "atomic" || transaction.kind === "activate");
-  for (const transaction of transactions) {
-    if (transaction.kind !== "atomic" && transaction.kind !== "activate") continue;
-    const compute = transaction.kind === "atomic" ? bounds!.atomicComputeGasUpperBound : bounds!.activationComputeGasUpperBound;
-    if (compute + nitroPosterGasBound(transaction, prices).posterGas > limits.executionGasCeiling) profileOnly = false;
+  const { limits } = observed, baseFee = block.baseFeePerGas ?? 0n, gasLimit = limits.executionGasCeiling;
+  const requiredGasPrice = limits.protocol === "nitro" && recommendation > baseFee ? recommendation : baseFee;
+  const gasPrice = reviewed?.gasPrice ?? (recommendation > baseFee * 2n ? recommendation : baseFee * 2n);
+  if (reviewed !== undefined && reviewed.gas !== gasLimit) throw new LifecyclePlanningError("STALE_REVIEWED_GAS", "Reviewed gas differs from the native transaction ceiling. Refresh the review before continuing.");
+  const cancelOnly = transactions.every((transaction) => transaction.kind === "cancel");
+  const currentCapacity = cancelOnly ? undefined : capacity?.headroomBps === limits.headroomBps ? capacity
+    : deriveLifecycleLaunchCapacity({ plan, predictedToken: planned.predictedToken, ufg: planned.ufg, headroomBps: limits.headroomBps }, openingBuys);
+  const immediate = transactions[0], launch = transactions.find((transaction) => !approval(transaction));
+  const poster = (transaction: LifecycleTransaction) => prices === undefined ? 0n : nitroPosterGasBound(transaction, prices).posterGas;
+  const assessment: LifecyclePlanningAssessment = { ready: true, blockNumber: block.number, blockHash: block.hash,
+    account: planned.account, chainId: planned.chainId, limits,
+    ...(currentCapacity === undefined ? {} : { gasProfile: { version: LIFECYCLE_GAS_PROFILE_VERSION, bounds: currentCapacity.bounds, initialBuys: currentCapacity.initialBuys } }) };
+  const refuse = (code: string, reason: string, failureCategory: LifecyclePlanningAssessment["failureCategory"], capacityConstraint?: LifecyclePlanningAssessment["capacityConstraint"], failedTransactionId?: string): LifecyclePlanningAssessment =>
+    ({ ...assessment, ready: false, code, reason, failureCategory, capacityConstraint, failedTransactionId });
+  if (!cancelOnly && currentCapacity === undefined) return refuse("UNKNOWN_GAS_PROFILE", "Gas budgets are unavailable for this launch profile. Use a supported profile or update the SDK.", "capacity");
+  if (!cancelOnly && currentCapacity!.bounds.activationComputeGasUpperBound + poster(currentCapacity!.activation) > gasLimit) {
+    return refuse("ACTIVATION_GAS_LIMIT", "Too many positions or pools for one activation. Reduce them to fit the native transaction ceiling.", "capacity", "activation", "activate");
   }
-  const launch = transactions.find((transaction) => !approval(transaction));
-  const immediate = transactions[0], gasLimit = limits.executionGasCeiling;
-  const envelopeFailure = launch !== undefined && limits.transactionGasCeiling !== undefined && gasLimit > limits.transactionGasCeiling;
-  const calldataFailure = transactions.find((transaction) => limits.maxCalldataBytes !== undefined && (transaction.data.length - 2) / 2 > limits.maxCalldataBytes);
-  const feeFailure = reviewed !== undefined && gasPrice < requiredGasPrice;
-  const affordabilityFailure = launch !== undefined && launch.value + gasLimit * gasPrice > rpcQuantity(balanceValue, "creator native balance");
-  const semanticFailure = quotes.find((quote) => quote.tokenOut < plan.buys[quote.buyIndex]!.minTokenOut);
-  const expired = block.timestamp > plan.deadline && transactions.some((transaction) => transaction.kind !== "cancel");
-  const refused = envelopeFailure || calldataFailure !== undefined || feeFailure || affordabilityFailure || semanticFailure !== undefined || expired;
-  const poster = immediate === undefined || approval(immediate) ? undefined : nitroPosterGasBound(immediate, prices).posterGas;
-  const simulation: LifecycleSimulation = {
-    backend: "profiled", confidence: "profiled", executionProof: "not-run", protocolFit: "profiled", admitted: profileOnly && !refused,
-    blockNumber: block.number, blockHash: block.hash, account: planned.account, chainId: planned.chainId, limits, steps: [], deferredTransactionIds: [],
-    ...(bounds === undefined ? {} : { gasProfile: { version: LIFECYCLE_GAS_PROFILE_VERSION, bounds, initialBuys: quotes } }),
-    ...(immediate === undefined || approval(immediate) ? {} : { estimate: { gasLimit, gasPrice, executionFee: gasLimit * gasPrice, dataFee: 0n, totalFee: gasLimit * gasPrice,
-      posterGas: poster, posterFee: poster! * gasPrice, dataFeeIncludedInGas: true, feeConfidence: "native-ceiling-and-data" as const } }),
-    ...(envelopeFailure ? { failureCategory: "capacity" as const, capacityConstraint: "gas-envelope" as const, failedTransactionId: launch!.id, reason: "Native transaction ceiling exceeds the supplied complete gas policy" } : {}),
-    ...(calldataFailure === undefined ? {} : { failureCategory: "capacity" as const, capacityConstraint: "calldata" as const, failedTransactionId: calldataFailure.id, reason: "Encoded command exceeds the caller's calldata byte policy" }),
-    ...(affordabilityFailure ? { failureCategory: "affordability" as const, failedTransactionId: launch!.id, reason: "Creator native balance cannot reserve transaction value and the native gas ceiling" } : {}),
-    ...(semanticFailure === undefined ? {} : { failureCategory: "semantic" as const, failedTransactionId: transactions.find((transaction) => transaction.kind === "atomic" || transaction.kind === "activate")?.id, reason: "Opening curve output is below the committed minimum" }),
-    ...(expired ? { failureCategory: "semantic" as const, failedTransactionId: transactions.find((transaction) => transaction.kind !== "cancel")?.id, reason: "Launch deadline has expired at the pinned block" } : {}),
-    ...(feeFailure ? { failedTransactionId: immediate?.id, reason: "Reviewed gas price is below the pinned required fee" } : {}),
-  };
-  return { simulation, profileOnly: profileOnly || refused };
+  for (const transaction of transactions) {
+    if (transaction.kind === "atomic" && (currentCapacity?.bounds.atomicComputeGasUpperBound === undefined || currentCapacity.bounds.atomicComputeGasUpperBound + poster(transaction) > gasLimit))
+      return refuse("STAGED_EXECUTION_REQUIRED", "This launch requires staged execution. Refresh the review before continuing.", "capacity", "gas-envelope", transaction.id);
+    if (transaction.kind === "prepare" && ceil(preparationGasEstimate(plan, transaction.marketStart!, transaction.marketCount!) * BigInt(10000 + limits.headroomBps), 10000n) + poster(transaction) > gasLimit)
+      return refuse("PREPARATION_GAS_LIMIT", "This preparation batch exceeds the gas budget. Refresh the review to split it.", "capacity", "preparation", transaction.id);
+    if (limits.maxCalldataBytes !== undefined && (transaction.data.length - 2) / 2 > limits.maxCalldataBytes)
+      return refuse("CALLDATA_LIMIT", "The launch exceeds the transaction data limit. Reduce its positions or pools.", "capacity", "calldata", transaction.id);
+  }
+  if (launch !== undefined && limits.transactionGasCeiling !== undefined && gasLimit > limits.transactionGasCeiling)
+    return refuse("GAS_POLICY_LIMIT", "The configured gas limit is below the chain's native transaction ceiling.", "capacity", "gas-envelope", launch.id);
+  if (reviewed !== undefined && gasPrice < requiredGasPrice) return refuse("REVIEWED_FEE_TOO_LOW", "The reviewed gas price is below the current required fee. Refresh the review before continuing.", "semantic", undefined, immediate?.id);
+  const quotes = currentCapacity?.initialBuys ?? [];
+  if (quotes.some((quote) => quote.tokenOut < plan.buys[quote.buyIndex]!.minTokenOut))
+    return refuse("BUY_MINIMUM_NOT_MET", "An opening buy is below its minimum output. Refresh the review before continuing.", "semantic");
+  if (block.timestamp > plan.deadline && !cancelOnly) return refuse("PLAN_EXPIRED", "The launch deadline has passed. Cancel an unfinished launch to recover its funds.", "semantic");
+  const inputs = new Map<string, { required: bigint; balance: bigint }>();
+  for (const prerequisite of planned.prerequisites) {
+    if (prerequisite.allowance === undefined) continue;
+    const key = prerequisite.funding.inputAsset.toLowerCase(), total = inputs.get(key) ?? { required: 0n, balance: prerequisite.inputBalance };
+    total.required += prerequisite.requiredInput; inputs.set(key, total);
+  }
+  if ([...inputs.values()].some((input) => input.required > input.balance)) return refuse("INSUFFICIENT_FUNDING_BALANCE", "There are not enough tokens to fund this launch. Add funds or reduce the purchase.", "affordability");
+  const balance = rpcQuantity(balanceValue, "creator native balance");
+  if (gasPrice >= 1n << 256n || launch !== undefined && launch.value + gasLimit * gasPrice >= 1n << 256n) throw new LifecyclePlanningError("INVALID_GAS_ENVELOPE", "Transaction value and native-ceiling fee must fit uint256");
+  if (launch !== undefined && launch.value + gasLimit * gasPrice > balance) return refuse("INSUFFICIENT_NATIVE_BALANCE", "There is not enough native currency for the launch amount and gas budget. Add funds or reduce the purchase.", "affordability", undefined, launch.id);
+  if (immediate !== undefined && !approval(immediate)) {
+    const source = lifecycleSourceClient(client);
+    const dataFee = limits.protocol === "nitro" ? 0n : observed.configuration.estimateDataFee === undefined ? undefined
+      : await observed.configuration.estimateDataFee({ ...immediate, gas: gasLimit, gasPrice }, source === client ? context : { ...context, client: source });
+    if (dataFee !== undefined && (typeof dataFee !== "bigint" || dataFee < 0n || dataFee >= 1n << 256n)) throw new LifecyclePlanningError("INVALID_DATA_FEE", "Data-fee estimate must be a nonnegative uint256 amount");
+    const executionFee = gasLimit * gasPrice, required = immediate.value + executionFee + (dataFee ?? 0n);
+    if (required >= 1n << 256n) throw new LifecyclePlanningError("INVALID_GAS_ENVELOPE", "Transaction value and gas/data fee budget must fit uint256");
+    if (required > balance) return refuse("INSUFFICIENT_NATIVE_BALANCE", "There is not enough native currency for the launch amount and gas budget. Add funds or reduce the purchase.", "affordability", undefined, immediate.id);
+    const posterGas = prices === undefined ? undefined : poster(immediate);
+    assessment.estimate = { gasLimit, gasPrice, executionFee, dataFee, totalFee: dataFee === undefined ? undefined : executionFee + dataFee,
+      posterGas, posterFee: posterGas === undefined ? undefined : posterGas * gasPrice, dataFeeIncludedInGas: limits.protocol === "nitro",
+      feeConfidence: dataFee === undefined ? "native-ceiling-only" : "native-ceiling-and-data" };
+  }
+  options.signal?.throwIfAborted(); observed.assertCurrent();
+  return assessment;
 }

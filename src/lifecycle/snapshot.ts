@@ -5,7 +5,7 @@ import { getKnownLifecycleDeployment, type LifecycleDeploymentPreset } from "./p
 import { lifecycleTokenPredictionAbi } from "./progress.js";
 import { launchLensAbi, observeLifecycleLens, type LifecycleLensSnapshot } from "./lens.js";
 import { hashLaunchIdentity, LifecycleFundingKind, type LaunchPlanV1 } from "./schema.js";
-import { attestLifecycleMulticall, lifecycleRpc, nitroArbSys, nitroArbSysAbi, nitroGasInfo, nitroGasInfoAbi, readLifecycleBlock, readLifecycleChainId, rpcHex, seedLifecycleRead } from "./rpc.js";
+import { attestLifecycleMulticall, lifecycleRpc, nitroGasInfo, nitroGasInfoAbi, readLifecycleBlock, readLifecycleChainId, rpcHex, seedLifecycleRead } from "./rpc.js";
 import { LifecyclePlanningError, type LifecycleBlock, type LifecycleRpcClient } from "./types.js";
 import { UFG_LAUNCH_PROXY_ADDRESS } from "./ufg-config.js";
 
@@ -36,7 +36,6 @@ export async function readLifecyclePlanningBlock(client: LifecycleRpcClient, pla
       if (escrow !== undefined) add(asset, lifecycleErc20Abi, "allowance", [account, escrow]);
     }
   }
-  add(nitroArbSys, nitroArbSysAbi, "arbOSVersion", []);
   add(nitroGasInfo, nitroGasInfoAbi, "getPricesInWei", []);
   await attestLifecycleMulticall(client, block);
   const calls = reads.map((read) => ({ target: read.to, allowFailure: true, callData: encodeFunctionData({ abi: read.abi, functionName: read.functionName, args: read.args }) }));

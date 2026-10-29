@@ -5,13 +5,10 @@ import type {
   MarketLiveStateV1, PreparedMarketV1, ProfileRegistrationV1, ProfileTopologyV1, LaunchEnvelopeV2, LifecycleDeveloperTerms,
 } from "./schema.js";
 
-/** Local opt-in timing only: never contains request arguments, addresses, results or errors.
- * Since 0.14.0, removed replay/envelope stages are represented by simulation.measure,
- * which includes the final validated execution at the returned gas envelope. */
+/** Local opt-in timing only: never contains request arguments, addresses, results or errors. */
 export type LifecycleDiagnosticStage =
   | "plan" | "plan.context" | "plan.domain" | "plan.progress" | "plan.inputs" | "rpc"
-  | "profile.certification" | "simulation.context" | "simulation.nitro"
-  | "simulation.poster" | "simulation.measure" | "session-cache";
+  | "profile.certification" | "session-cache";
 export type LifecycleDiagnosticEvent = {
   stage: LifecycleDiagnosticStage;
   phase: "queued" | "start" | "success" | "failure" | "reuse";
@@ -31,13 +28,13 @@ export type LifecycleRpcClient = {
   request(args: { method: string; params?: readonly unknown[] }): Promise<unknown>;
   /** Opt in to bounded parallel reads only when the supplied transport batches concurrent requests. */
   supportsReadBatching?: boolean;
-  /** Optional local observer. Listener failures cannot change execution or admission. */
+  /** Optional local observer. Listener failures cannot change planning or sending. */
   onDiagnostic?: LifecycleDiagnosticListener;
   /** Caller-owned, opt-in static observations; create with createLifecycleSessionCache(). */
   sessionCache?: LifecycleSessionCache;
 };
 export type LifecycleBlock = { number: bigint; hash: Hash; timestamp: bigint; gasLimit: bigint; baseFeePerGas?: bigint };
-/** A session retains pinned static reads and deployment/backend capability observations. */
+/** A session retains pinned static reads and deployment metadata observations. */
 export type LifecycleSessionCache = {
   readonly block: Readonly<Pick<LifecycleBlock, "number" | "hash">> | undefined;
   /** Call on wallet/chain changes and after every confirmed transaction. */
@@ -48,8 +45,6 @@ export type LifecycleLimits = {
   /** Optional tightening caps on the complete transaction gas envelope, including Nitro poster gas. */
   headroomBps?: number; chainGasLimit?: bigint; rpcGasLimit?: bigint; accountGasLimit?: bigint;
   maxCalldataBytes?: number;
-  /** Optional aggregate gas-used policy ceiling for one simulation request; no SDK-invented default window. */
-  maxSimulationGas?: bigint;
   chainId?: bigint; orchestrator?: Address; account?: Address; observedBlockNumber?: bigint; observedBlockHash?: Hash;
   /** External data fee not already charged in gas, called with exact calldata and the pinned block.
    * Nitro poster fees are already included in gas, bounded locally from same-review ArbGasInfo prices. */
@@ -59,17 +54,9 @@ export type LifecycleLimitSource = LifecycleLimits | ((context: LifecycleLimitCo
 export type ResolvedLifecycleLimits = {
   /** Fixed native transaction ceiling, including poster gas; caller caps may refuse but never resize it. */
   executionGasCeiling: bigint; transactionGasCeiling?: bigint; protocol: "evm" | "nitro";
-  arbOSVersion?: bigint;
-  headroomBps: number; maxCalldataBytes?: number; maxSimulationGas?: bigint;
+  headroomBps: number; maxCalldataBytes?: number;
   blockGasLimit: bigint; chainGasLimit?: bigint; rpcGasLimit?: bigint; accountGasLimit?: bigint;
   unknownExecutionConstraints: readonly string[]; unknownConstraints: readonly string[];
-};
-/** Only explicitly disposable RPCs may execute snapshot-isolated simulation transactions. */
-export type ControlledLifecycleFork = {
-  client: LifecycleRpcClient; isolation: "disposable"; allowTransactions: true;
-  expectedChainId?: bigint; expectedBlockHash?: Hash; impersonation?: "anvil" | "hardhat" | "none";
-  receiptTimeoutMs?: number;
-  sourceRpcUrl: string; forkRpcUrl: string; resetMethod?: "anvil_reset" | "hardhat_reset";
 };
 export type LifecycleTransactionKind = "approve-reset" | "approve" | "atomic" | "begin" | "prepare" | "activate" | "cancel";
 export type LifecyclePostcondition =
@@ -81,70 +68,42 @@ export type LifecycleTransaction = {
   marketStart?: number; marketCount?: number; gas?: bigint; gasPrice?: bigint;
   /** Exact encoded byte count; populated on SDK-built commands, including approvals. */
   calldataBytes?: number;
-  /** Only the immediate command receives its current fee and admission.
-   * Executable launch gas is the native ceiling; approvals leave gas to the wallet. */
-  admission?: LifecycleAdmission;
+  /** Only the immediate command receives current planning checks and fees.
+   * Launch gas is the native ceiling; approvals leave gas to the wallet. */
+  assessment?: LifecyclePlanningAssessment;
   estimate?: LifecycleTransactionEstimate;
 };
 export type LifecycleTransactionEstimate = {
-  /** Present only for measured execution; a ceiling budget never fabricates gas usage. */
-  gasUsed?: bigint; gasLimit: bigint; gasPrice: bigint; executionFee: bigint; dataFee?: bigint; totalFee?: bigint;
-  /** Estimated poster allocation within gasLimit, never an exact compute measurement or an extra fee. */
+  gasLimit: bigint; gasPrice: bigint; executionFee: bigint; dataFee?: bigint; totalFee?: bigint;
+  /** Estimated poster allocation within gasLimit, never a measured or additional fee. */
   posterGas?: bigint; posterFee?: bigint; dataFeeIncludedInGas: boolean;
-  feeConfidence: "execution-and-data" | "execution-only" | "native-ceiling-and-data";
+  feeConfidence: "native-ceiling-and-data" | "native-ceiling-only";
 };
-/** Proof scopes are independent: current execution is not guaranteed wallet submission. */
-export type LifecycleProofOutcomes = {
-  executionProof: "proved" | "failed" | "unavailable" | "not-run";
-  protocolFit: "proved" | "failed" | "unknown" | "profiled";
-};
-export type LifecycleAdmission = LifecycleProofOutcomes & {
-  admitted: boolean; confidence: "stateful" | "provisional" | "profiled";
-  blockNumber: bigint; blockHash: Hash; account: Address; chainId: bigint;
-  reason?: string; limits: ResolvedLifecycleLimits;
-};
-export type LifecycleFailureCategory = "semantic" | "capacity" | "opaque" | "source" | "postcondition" | "affordability";
-export type LifecycleCapacityConstraint = "compute" | "gas-envelope" | "calldata" | "simulation-gas" | "activation";
-export type LifecycleSimulationStep = {
-  transactionId: string; success: boolean; gasUsed?: bigint; gasLimit?: bigint; gasRequired?: bigint;
-  returnData?: Hex; error?: string; estimate?: LifecycleTransactionEstimate;
-  /** Suffix proof is historical and provisional; only a fresh build admits
-   * its immediate transaction, still at the native ceiling and current fee. */
-  provisional?: boolean;
-  failureCategory?: LifecycleFailureCategory; decodedError?: string;
-  /** Safe failed-call facts only; native messages and error-data bytes are never copied here. */
-  nativeErrorCode?: number;
-  nativeErrorKind?: "out-of-gas" | "execution-reverted" | "vm-error" | "other" | "missing";
-  nativeErrorDataBytes?: number;
-  /** Explicit native simulator report, not inferred from gas consumption or the requested limit. */
-  nativeGasCapped?: boolean;
-};
+export type LifecycleFailureCategory = "semantic" | "capacity" | "affordability";
+export type LifecycleCapacityConstraint = "gas-envelope" | "calldata" | "activation" | "preparation";
 export type LifecycleOpeningBuyQuote = {
   buyIndex: number; marketIndex: number; quoteAmountIn: bigint; quoteSpent: bigint;
   tokenOut: bigint; sqrtPriceAfterX96: bigint;
 };
-/** Conservative compute bounds used for mode/capacity decisions, never gas-limit sizing.
- * An upper bound above the ceiling is uncertain, not proof of impossibility. */
+/** Versioned compute budgets with headroom, never transaction gas-limit sizing.
+ * Atomic budget is absent when conversion work is outside the template model. */
 export type LifecycleLaunchGasBounds = {
-  atomicComputeGasUpperBound: bigint; activationComputeGasUpperBound: bigint;
+  atomicComputeGasUpperBound?: bigint; activationComputeGasUpperBound: bigint;
 };
-export type LifecycleGasProfileEvidence = {
+export type LifecycleGasProfile = {
   version: string; bounds: LifecycleLaunchGasBounds;
   initialBuys: readonly LifecycleOpeningBuyQuote[];
 };
-export type LifecycleSimulation = LifecycleProofOutcomes & {
-  backend: "eth_simulateV1" | "controlled-fork" | "unavailable" | "profiled";
-  /** Stateful execution or versioned profile coverage; only the immediate envelope is final. */
-  confidence: "stateful" | "provisional" | "profiled"; admitted: boolean;
+/** Pinned input and gas-budget checks only. No transaction is simulated or proved. */
+export type LifecyclePlanningAssessment = {
+  ready: boolean;
   blockNumber: bigint; blockHash: Hash; account: Address; chainId: bigint;
-  steps: readonly LifecycleSimulationStep[]; limits: ResolvedLifecycleLimits;
-  /** Immediate fixed-ceiling fee budget; absent for wallet-prepared approvals. */
+  limits: ResolvedLifecycleLimits;
+  /** Immediate native-ceiling fee budget; absent for wallet-prepared approvals. */
   estimate?: LifecycleTransactionEstimate;
-  gasProfile?: LifecycleGasProfileEvidence;
-  /** Work outside the returned admission, including an RPC-cap failed suffix. */
-  deferredTransactionIds: readonly string[];
-  reason?: string; failedTransactionId?: string;
-  /** A payer must reserve the native ceiling up front even if actual gas usage is lower. */
+  gasProfile?: LifecycleGasProfile;
+  /** Controlled SDK code and user-safe actionable reason, never raw provider errors. */
+  code?: string; reason?: string; failedTransactionId?: string;
   failureCategory?: LifecycleFailureCategory; capacityConstraint?: LifecycleCapacityConstraint;
 };
 export type LifecycleFundingPrerequisite = {
@@ -190,24 +149,24 @@ export type PlannedLaunch = {
   account: Address; chainId: bigint; mode: LaunchExecutionMode; confirmations: number;
   /** Opt-in proxy routing; the committed creator remains the proxy, account is its principal. */
   ufg?: { config: UfgLaunchConfig; configHash: Hash };
-  /** Only transactions[0] has fresh immediate admission/fees. Launch gas is fixed
-   * at the native ceiling; wallet-assigned nonce and approval gas are omitted. */
+  /** Only transactions[0] has fresh immediate planning checks/fees. Launch gas is
+   * the native ceiling; wallet-assigned nonce and approval gas are omitted. */
   transactions: readonly LifecycleTransaction[]; prerequisites: readonly LifecycleFundingPrerequisite[];
   /** Sum of exact calldata bytes across the returned remaining commands, including approvals. */
   totalCalldataBytes: number;
-  profiles: readonly (LifecycleProfile | LifecycleConstructionProfile)[]; simulation: LifecycleSimulation;
+  profiles: readonly (LifecycleProfile | LifecycleConstructionProfile)[]; assessment: LifecyclePlanningAssessment;
   /** Exact CREATE2 metadata captured from the final committed bound markets. */
   hookDeployments: readonly LifecyclePoolBoundHookDeployment[];
   progress: CanonicalLaunchProgress;
   limits?: LifecycleLimitSource;
-  /** Unstarted-launch admission choices only; never part of the committed plan or calldata. */
+  /** Unstarted-launch construction choices; never part of committed calldata. */
   allowTopologyGaps?: boolean; allowMissingPermanentTail?: boolean;
 };
 export type PlanLaunchOptions = {
   client: LifecycleRpcClient; account: Address; plan: LaunchPlanV1;
-  /** Atomic is a preference: conservative capacity may select staged before begin.
-   * Explicit staged and an already-started launch's recorded mode are retained. */
-  mode: LaunchExecutionMode; limits?: LifecycleLimitSource; fork?: ControlledLifecycleFork; receipts?: readonly LifecycleReceiptReference[];
+  /** Atomic requires one market, no conversion and a known budget fitting with headroom.
+   * All other unstarted launches are staged; started launches retain canonical mode. */
+  mode: LaunchExecutionMode; limits?: LifecycleLimitSource; receipts?: readonly LifecycleReceiptReference[];
   confirmations?: number; signal?: AbortSignal;
   /** Opt in to the pinned UFG proxy; sender must match the nonce's principal namespace. */
   ufg?: { config: UfgLaunchConfig };
@@ -218,8 +177,8 @@ export type PlanLaunchOptions = {
 };
 export type PrepareAndPlanLifecycleLaunchOptions = PlanLaunchOptions & {
   onProgress?: (progress: PoolBoundLifecyclePreparationProgress) => void;
-  /** Protect ordered buys from exact local curve outputs or native diagnostics,
-   * rounded down. Omitted preserves committed minima; unstarted launches only. */
+  /** Protect ordered buys from exact local curve outputs, rounded down.
+   * Omitted preserves committed minima; unstarted launches only. */
   buySlippageBps?: number;
 };
 export type BuildLaunchTransactionsOptions = {
@@ -227,29 +186,21 @@ export type BuildLaunchTransactionsOptions = {
   /** Positive ordered preparation counts covering every market exactly. Staged only. */
   preparationBatches?: readonly number[];
 };
-export type SimulateLaunchPlanOptions = {
-  client: LifecycleRpcClient; planned: PlannedLaunch; limits?: LifecycleLimitSource; fork?: ControlledLifecycleFork;
-  /** Submitted receipt evidence and confirmation depth are inherited from the
-   * stored plan when omitted, exactly as build-next consumes them; resimulation
-   * never silently drops submitted-transaction context. */
-  receipts?: readonly LifecycleReceiptReference[]; confirmations?: number;
-  signal?: AbortSignal;
-};
 export type ReadLaunchProgressOptions = {
   client: LifecycleRpcClient; planned: Pick<PlannedLaunch, "plan" | "planHash" | "launchId" | "predictedToken" | "account" | "mode" | "confirmations" | "ufg">;
   receipts?: readonly LifecycleReceiptReference[]; confirmations?: number;
   signal?: AbortSignal;
 };
 export type BuildNextTransactionOptions = ReadLaunchProgressOptions & {
-  planned: PlannedLaunch; action?: "continue" | "cancel"; limits?: LifecycleLimitSource; fork?: ControlledLifecycleFork;
+  planned: PlannedLaunch; action?: "continue" | "cancel"; limits?: LifecycleLimitSource;
   /** Untrusted reviewed intent/fee. Gas differing from the native ceiling is stale;
    * never resize it, bump a held fee or assign a wallet nonce. */
   reviewedTransaction?: LifecycleTransaction;
 };
 export class LifecyclePlanningError extends Error {
   readonly code: string;
-  readonly simulation?: LifecycleSimulation;
-  constructor(code: string, message: string, simulation?: LifecycleSimulation) {
-    super(message); this.name = "LifecyclePlanningError"; this.code = code; this.simulation = simulation;
+  readonly assessment?: LifecyclePlanningAssessment;
+  constructor(code: string, message: string, assessment?: LifecyclePlanningAssessment) {
+    super(message); this.name = "LifecyclePlanningError"; this.code = code; this.assessment = assessment;
   }
 }
