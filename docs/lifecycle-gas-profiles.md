@@ -42,7 +42,7 @@ Unknown curve behavior retains a separate provisional, unvalidated buy-output di
 
 ## Retained empirical evidence
 
-`robinhood-4663-arbos61-v1` covers shipped Abyss configuration-v1 and current pool-bound V4 configuration-v6 templates, including HMM/UFG, on ArbOS61 with an EOA payer and known release quote implementations. This is capacity coverage, not a currency admission allowlist. Unknown currencies remain supported through exact execution; smart-account proof is not claimed.
+`robinhood-4663-arbos61-v1` covers shipped Abyss configuration-v1 and the calibrated fixed/dynamic V4 configuration-v6 templates, including HMM/UFG, on ArbOS61 with an EOA payer and known release quote implementations. Auto-compounding presets are not covered by these capacity bounds and require exact execution. This is capacity coverage, not a currency admission allowlist. Unknown currencies remain supported through exact execution; smart-account proof is not claimed.
 
 Research retained176 lifecycle receipts, including75 successful current-template atomic/activation observations with opening buys. Isolated forks extend depth, buys and combinations; failed CREATE2 cases were not counted as successful coverage. One Abyss and one fixed-V4 historical native/fork calibration matched compute exactly (19,272,603 and18,130,251 gas), while minimum successful envelopes were higher (20,527,230 and19,356,279). These two calibrations do not establish general Anvil/Nitro equivalence. Compute and poster components remain separate. Profiles are empirical capacity bounds, never transaction gas sizing or proof about arbitrary upgrades/future ArbOS rules.
 

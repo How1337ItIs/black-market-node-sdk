@@ -4,6 +4,7 @@ import { computeLifecycleOpeningBuys, hasProfiledOpeningMath } from "./opening-b
 import { hmmV2ForwardingReserve } from "./presets.js";
 import { lifecyclePinnedRpc, lifecycleSourceClient, nitroPosterGasBound, readLifecycleGasPrice, readNitroPrices, registerLifecycleFinalCheck, resolveLifecycleLimits, rpcQuantity } from "./rpc.js";
 import { LifecycleFundingKind, LifecycleRewardMode, LifecycleTokenKind, type LaunchPlanV1 } from "./schema.js";
+import { isAutoCompoundProfile } from "./auto-compound.js";
 import { buildLifecycleCommand, LIFECYCLE_CAPACITY_PADDING_BPS, preparationCalldataGas, preparationGasEstimate } from "./transactions.js";
 import { UFG_LAUNCH_PROXY_ADDRESS, isUfgProfile, ufgPlanPrincipal, type UfgLaunchConfig } from "./ufg-config.js";
 import { LifecyclePlanningError, type LifecycleBlock, type LifecycleLaunchGasBounds, type LifecycleLimitSource, type LifecycleOpeningBuyQuote, type LifecyclePlanningAssessment, type LifecycleRpcClient, type LifecycleTransaction, type PlannedLaunch } from "./types.js";
@@ -86,6 +87,8 @@ export type ProfiledLaunchCapacity = {
 export function deriveLifecycleLaunchCapacity(options: CapacityOptions, openingBuys?: readonly LifecycleOpeningBuyQuote[]): ProfiledLaunchCapacity | undefined {
   const { plan, ufg } = options;
   if (!hasProfiledOpeningMath(plan) || (plan.creator.toLowerCase() === UFG_LAUNCH_PROXY_ADDRESS.toLowerCase()) !== (ufg !== undefined)) return undefined;
+  // Auto-compounding templates have no measured gas yet; never invent their budgets.
+  if (plan.markets.some((market) => isAutoCompoundProfile(market.profileId))) return undefined;
   const headroomBps = options.headroomBps ?? 1500;
   if (!Number.isSafeInteger(headroomBps) || headroomBps < 0 || headroomBps > 10000) throw new LifecyclePlanningError("INVALID_LIMITS", "Headroom must be between zero and 10000 basis points");
   const initialBuys = openingBuys ?? computeLifecycleOpeningBuys(options);

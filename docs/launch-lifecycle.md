@@ -18,6 +18,7 @@ staking, or dividends. A pool profile selects the admitted venue/hook implementa
 | Dynamic V4 | `V4DynamicFeePool` | Oracle-velocity fee between minimum and maximum; LP and developer fees 0. |
 | HMM V2 | `V4HmmFixedPool`, `V4HmmDynamicPool` | Auxiliary fee-funded bids/asks; LP and developer fees 0; explicit risk guards. |
 | UFG | Abyss QUOTE/QUOTE_ORACLE or `V4UfgFixedPool`, `V4UfgDynamicPool` | Treasury route; ERC20 without rewards; quote-only fees, executor bounty 0. |
+| Auto-compounding | `V4AutoCompoundStaticPool`, `V4AutoCompoundDynamicPool` | Net hook fees fund permanently locked full-range liquidity; both fee modes; LP and developer fees 0. |
 
 SDK presets are the source of supported profiles and deployment wiring. Profiles
 registered after this release appear with a subsequent SDK update.
@@ -653,6 +654,48 @@ Holders burn tokens for a pro-rata share of **current collected reserves**, less
 exit fee; this is not a guaranteed USD floor. Accrued pool fees are not collected
 backing. Inspect collection failure events as well as receipt success; a fork check
 needed at least 750k gas for `collect()`, not a universal mainnet gas limit.
+
+## Configure auto-compounding
+
+Select `V4AutoCompoundStaticPool` for a fixed hook fee or
+`V4AutoCompoundDynamicPool` for the existing minimum/maximum/sensitivity schedule.
+Both use pool-bound config6, LP fee **0**, developer fee **0**, and either
+`feeMode: 0` (InputToken) or `feeMode: 1` (QuoteOnly).
+
+```ts
+import {
+  getAddresses, getKnownLifecycleProfile, KnownLifecycleProfile,
+  encodeAutoCompoundTail, type AutoCompoundConfigV1,
+} from "@black-market/sdk";
+
+const preset = getKnownLifecycleProfile({
+  chainId: 4663, orchestrator: getAddresses(4663).launchOrchestrator,
+  key: KnownLifecycleProfile.V4AutoCompoundStaticPool,
+})!;
+const autoCompoundConfig: AutoCompoundConfigV1 = { compoundShareBps: 5000 };
+console.log(preset.profile.id, encodeAutoCompoundTail(autoCompoundConfig));
+```
+
+The 50% share is illustrative, not a recommended allocation. Put
+`autoCompoundConfig` in `V4PoolBoundLifecycleMarketConfigV6`; the market encoder
+appends the canonical **64-byte** version/share tail automatically. Shares may be
+0–10,000 bps. Missing tails, wrong versions, extra bytes, nonzero LP/developer fees,
+or invalid shares fail locally before funding. Copy the selected preset's exact
+profile ID, terms, beneficiary, treasury, denominator and deployment graph.
+
+Use the ordinary `prepareAndPlanLifecycleLaunch` flow to mine and admit the full
+market config. The compound share is part of the hook's constructor commitment:
+changing it requires a newly mined salt and reviewed plan. The retired profiles
+are not selectable. [Pinned identities and codecs](reference.md#auto-compounding-profiles)
+include the recorded readback and read-only verification command.
+
+The hook owns its new full-range liquidity permanently; the non-compounding
+remainder follows the launch's normal fee-asset policies. It burns the allocated
+launch-token fees and uses quote fees to buy and compound. Every post-opening swap
+performs compounding in `afterSwap`; insufficient gas reverts with
+`CompoundOutOfGas()` rather than silently skipping work. Do not cap swap gas below
+`eth_estimateGas`. Launch transactions retain the SDK's native ceiling; these new
+templates require exact execution admission, not uncalibrated fixed-hook capacity bounds.
 
 <a id="0100-release-hmm-v2-only"></a>
 ## Configure HMM V2

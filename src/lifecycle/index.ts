@@ -5,6 +5,7 @@ export * from "./abi.js";
 export * from "./markets.js";
 export * from "./hmm.js";
 export * from "./ufg.js";
+export * from "./auto-compound.js";
 export { ABYSS_LIFECYCLE_CONFIG_SCHEMA, readLifecycleTokenAtBlock, readLifecycleHeadProgress, predictLifecycleToken,
   validateV4LifecycleOracle, readLifecycleProfiles, readPoolBoundHookDeployment,
   buildPoolBoundHookDeploymentTransaction, validateLifecycleMarketIdentity, readLaunchProgress } from "./progress.js";
