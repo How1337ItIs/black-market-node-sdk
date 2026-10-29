@@ -5,10 +5,9 @@ import { launchLifecycleAbi, lifecycleAdapterAbi, lifecycleErc20Abi } from "./ab
 import { hashLaunchIdentity, hashLaunchPlan, LifecycleFundingKind, LifecyclePhase, LifecycleRewardMode, LifecycleTokenKind, LIFECYCLE_MAX_REWARD_ERC20_SUPPLY, LIFECYCLE_MAX_ERC404_SUPPLY, parseLaunchPlan, serializeLaunchPlan, type LaunchPlanV1 } from "./schema.js";
 import { readLaunchProgress, readLifecycleExecutionProgress, readLifecycleHeadProgress, readLifecycleProfiles, readLifecycleTokenAtBlock, readPoolBoundHookDeployment } from "./progress.js";
 import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, isPoolBoundV4ConfigVersion, type AbyssLifecycleMarketConfig, type V4LifecycleMarketConfig, type V4PoolBoundLifecycleMarketConfig } from "./markets.js";
-import { assertLifecycleReadClientOpen, lifecyclePinnedRpc, lifecycleStaticRpc, lifecycleStage, nitroPosterGasBound, readLifecycleChainId, readLifecycleContract, readNitroPrices, registerLifecycleFinalCheck, resolveLifecycleLimits, rpcHex, rpcQuantity, withLifecycleReadClient } from "./rpc.js";
-import { observedFields, prepareLaunchSimulation, type NextTransactionEnvelope } from "./simulation.js";
-import { LifecyclePlanningError, type BuildNextTransactionOptions, type CanonicalLaunchProgress, type LifecycleBlock, type LifecycleConstructionProfile, type LifecycleFundingPrerequisite, type LifecyclePoolBoundHookDeployment, type LifecycleProfile, type LifecycleRpcClient, type LifecycleSimulation, type LifecycleTransaction, type PlannedLaunch, type PlanLaunchOptions, type PrepareAndPlanLifecycleLaunchOptions, type SimulateLaunchPlanOptions } from "./types.js";
-import { deriveKnownPoolBoundHookDeployment, protectOrderedBuyMinimums, validateBuySlippageBps } from "./calibration.js";
+import { lifecyclePinnedRpc, lifecycleStaticRpc, lifecycleStage, nitroPosterGasBound, readLifecycleChainId, readLifecycleContract, readNitroPrices, registerLifecycleFinalCheck, resolveLifecycleLimits, rpcHex, rpcQuantity, withLifecycleReadClient } from "./rpc.js";
+import { LifecyclePlanningError, type BuildNextTransactionOptions, type CanonicalLaunchProgress, type LifecycleBlock, type LifecycleConstructionProfile, type LifecycleFundingPrerequisite, type LifecyclePoolBoundHookDeployment, type LifecycleProfile, type LifecycleRpcClient, type LifecyclePlanningAssessment, type LifecycleTransaction, type PlannedLaunch, type PlanLaunchOptions, type PrepareAndPlanLifecycleLaunchOptions, type ResolvedLifecycleLimits } from "./types.js";
+import { deriveKnownPoolBoundHookDeployment, validateBuySlippageBps } from "./calibration.js";
 import { getKnownLifecycleDeployment, getKnownLifecycleProfile } from "./presets.js";
 import { buildLifecycleCommand, packPreparationBatches, type LifecycleCommand } from "./transactions.js";
 import { assertLifecycleMarketAllocation, assertLifecycleSupplyAllocation } from "./allocations.js";
@@ -17,7 +16,7 @@ import { buildUfgCancelTransaction, validateUfgLaunchPlan } from "./ufg.js";
 import { readLifecyclePlanningBlock } from "./snapshot.js";
 import { mineLifecycleHooks } from "./mining.js";
 import { computeLifecycleOpeningBuys, hasProfiledOpeningMath } from "./opening-buys.js";
-import { deriveLifecycleLaunchCapacity, profileLifecycleTransactions, type ProfiledLaunchCapacity } from "./gas-profile.js";
+import { assessLifecycleTransactions, deriveLifecycleLaunchCapacity, type NextTransactionEnvelope, type ProfiledLaunchCapacity } from "./gas-profile.js";
 import type { LifecycleOpeningBuyQuote } from "./types.js";
 
 type ValidatedPlanShape = {
@@ -26,11 +25,33 @@ type ValidatedPlanShape = {
   marketConfigs: (AbyssLifecycleMarketConfig | V4LifecycleMarketConfig | V4PoolBoundLifecycleMarketConfig)[];
 };
 type PlanReadContext = {
-  block?: LifecycleBlock; progress?: CanonicalLaunchProgress; diagnostic?: boolean;
-  finalEnvelope?: NextTransactionEnvelope; capacity?: ProfiledLaunchCapacity;
-  openingBuys?: readonly LifecycleOpeningBuyQuote[]; forceSimulation?: boolean; immediate?: boolean;
+  block?: LifecycleBlock;
+  openingBuys?: readonly LifecycleOpeningBuyQuote[];
 };
 const defaultPlanReadContext: PlanReadContext = {};
+
+function observedFields<T extends object>(value: T): () => boolean {
+  const keys = Object.keys(value) as (keyof T)[];
+  const values = keys.map((key) => value[key]);
+  return () => keys.length === Object.keys(value).length && keys.every((key, index) => value[key] === values[index]);
+}
+
+async function selectLaunchMode(requested: "atomic" | "staged", plan: LaunchPlanV1, capacity: ProfiledLaunchCapacity | undefined,
+  limits: ResolvedLifecycleLimits, client: LifecycleRpcClient, block: LifecycleBlock): Promise<"atomic" | "staged"> {
+  if (requested !== "atomic" || plan.markets.length !== 1 || plan.funding.some((funding) => funding.kind === LifecycleFundingKind.Swap) ||
+    capacity?.atomic === undefined || capacity.bounds.atomicComputeGasUpperBound === undefined) return "staged";
+  const poster = limits.protocol === "nitro" ? nitroPosterGasBound(capacity.atomic, await readNitroPrices(client, block)).posterGas : 0n;
+  return capacity.bounds.atomicComputeGasUpperBound + poster <= limits.executionGasCeiling ? "atomic" : "staged";
+}
+
+async function preparationBatches(plan: LaunchPlanV1, prepared: number, ufg: PlanLaunchOptions["ufg"], limits: ResolvedLifecycleLimits,
+  client: LifecycleRpcClient, block: LifecycleBlock): Promise<number[]> {
+  if (prepared === plan.markets.length) return prepared === 0 ? [] : [prepared];
+  const route = ufg === undefined ? undefined : { account: ufgPlanPrincipal(plan), config: ufg.config };
+  const sample = buildLifecycleCommand(plan, { kind: "prepare", first: prepared, count: 1 }, route);
+  const poster = limits.protocol === "nitro" ? nitroPosterGasBound(sample, await readNitroPrices(client, block)).posterGas : 0n;
+  return packPreparationBatches(plan, prepared, limits.executionGasCeiling - poster, limits.headroomBps);
+}
 
 function validatePlanShape(plan: LaunchPlanV1): ValidatedPlanShape {
   // Encoding checks all exact integer widths, addresses, byte strings and tuple fields.
@@ -164,14 +185,12 @@ function orderedTransactions(plan: LaunchPlanV1, mode: "atomic" | "staged", prog
   return transactions.map((transaction, index) => ({ ...transaction, calldataBytes: (transaction.data.length - 2) / 2, dependencies: index === 0 ? [] : [transactions[index - 1]!.id] }));
 }
 
-function attachEstimates(transactions: readonly LifecycleTransaction[], simulation: LifecycleSimulation): LifecycleTransaction[] {
+function attachEstimates(transactions: readonly LifecycleTransaction[], assessment: LifecyclePlanningAssessment): LifecycleTransaction[] {
   return transactions.map((transaction, index) => {
     if (index !== 0) return transaction;
-    const admission = { admitted: simulation.admitted, confidence: simulation.confidence, executionProof: simulation.executionProof, protocolFit: simulation.protocolFit,
-      blockNumber: simulation.blockNumber, blockHash: simulation.blockHash, account: simulation.account, chainId: simulation.chainId, reason: simulation.reason, limits: simulation.limits };
-    if (transaction.kind === "approve" || transaction.kind === "approve-reset") return { ...transaction, admission };
-    const estimate = simulation.steps.find((step) => step.transactionId === transaction.id)?.estimate ?? simulation.estimate;
-    return { ...transaction, calldataBytes: (transaction.data.length - 2) / 2, gas: estimate?.gasLimit, gasPrice: estimate?.gasPrice, estimate, admission };
+    if (transaction.kind === "approve" || transaction.kind === "approve-reset") return { ...transaction, assessment };
+    const estimate = assessment.estimate;
+    return { ...transaction, calldataBytes: (transaction.data.length - 2) / 2, gas: estimate?.gasLimit, gasPrice: estimate?.gasPrice, estimate, assessment };
   });
 }
 type ReviewedNextTransaction = Pick<LifecycleTransaction, "id" | "kind" | "chainId" | "from" | "to" | "data" | "value"> & Partial<NextTransactionEnvelope>;
@@ -203,16 +222,16 @@ function matchesReviewedNextTransaction(next: LifecycleTransaction | ReviewedNex
 function assertReviewedTransactionUnchanged(options: BuildNextTransactionOptions, reviewed: ReviewedNextTransaction | undefined, next: LifecycleTransaction): void {
   if (options.planned.ufg !== undefined) assertUfgLaunchAccount(options.planned.plan, options.planned.account);
   if (options.planned.account.toLowerCase() !== next.from.toLowerCase() || options.planned.ufg === undefined && options.planned.plan.creator.toLowerCase() !== next.from.toLowerCase()) {
-    throw new LifecyclePlanningError("ACCOUNT_MISMATCH", "Execution account changed during fresh execution or submission proof");
+    throw new LifecyclePlanningError("ACCOUNT_MISMATCH", "Execution account changed while preparing the reviewed transaction");
   }
   if (options.planned.chainId !== BigInt(next.chainId) || options.planned.plan.chainId !== BigInt(next.chainId)) {
-    throw new LifecyclePlanningError("CHAIN_MISMATCH", "Execution chain changed during fresh execution or submission proof");
+    throw new LifecyclePlanningError("CHAIN_MISMATCH", "Execution chain changed while preparing the reviewed transaction");
   }
   const current = readReviewedNextTransaction(options.reviewedTransaction);
   if (reviewed === undefined ? current !== undefined : current === undefined || !matchesReviewedNextTransaction(current, reviewed) || !matchesReviewedNextTransaction(next, reviewed) ||
     reviewed.kind !== "approve" && reviewed.kind !== "approve-reset" &&
     (current.gas !== reviewed.gas || current.gasPrice !== reviewed.gasPrice || next.gas !== reviewed.gas || next.gasPrice !== reviewed.gasPrice)) {
-    throw new LifecyclePlanningError("REVIEWED_TRANSACTION_CHANGED", "Reviewed transaction changed during fresh execution or submission proof");
+    throw new LifecyclePlanningError("REVIEWED_TRANSACTION_CHANGED", "Reviewed transaction changed while preparing it");
   }
 }
 
@@ -227,16 +246,6 @@ async function readTokenFactoryBinding(client: LifecycleRpcClient, orchestrator:
   return { tokenFactory, tokenFactoryCodeHash: keccak256(code) };
 }
 
-function assertPlannedDeploymentBindings(stored: PlannedLaunch, current: PlannedLaunch): void {
-  if (hashLaunchPlan(stored.plan).toLowerCase() !== stored.planHash.toLowerCase() || current.planHash.toLowerCase() !== stored.planHash.toLowerCase() || current.launchId.toLowerCase() !== stored.launchId.toLowerCase()) throw new LifecyclePlanningError("PLAN_MUTATED", "Stored economic plan no longer matches its finalized commitment");
-  if (stored.ufg === undefined ? current.ufg !== undefined : current.ufg === undefined || hashUfgLaunchConfig(stored.ufg.config) !== stored.ufg.configHash || current.ufg.configHash !== stored.ufg.configHash) throw new LifecyclePlanningError("PLAN_MUTATED", "Stored UFG route or treasury config no longer matches its finalized commitment");
-  if (current.predictedToken.toLowerCase() !== stored.predictedToken.toLowerCase() || current.tokenFactory.toLowerCase() !== stored.tokenFactory.toLowerCase() || current.tokenFactoryCodeHash.toLowerCase() !== stored.tokenFactoryCodeHash.toLowerCase()) throw new LifecyclePlanningError("TOKEN_FACTORY_BINDING", "Final token prediction or its immutable factory code binding changed before execution");
-  if (!current.simulation.admitted || current.progress.canonical.phase === LifecyclePhase.Active || current.progress.canonical.phase === LifecyclePhase.Cancelled) return;
-  if (stored.hookDeployments.length !== current.hookDeployments.length || stored.hookDeployments.some((deployment, index) => {
-    const fresh = current.hookDeployments[index];
-    return fresh === undefined || fresh.marketIndex !== deployment.marketIndex || fresh.deployer.toLowerCase() !== deployment.deployer.toLowerCase() || fresh.initCodeHash.toLowerCase() !== deployment.initCodeHash.toLowerCase() || fresh.salt.toLowerCase() !== deployment.salt.toLowerCase() || fresh.predictedHook.toLowerCase() !== deployment.predictedHook.toLowerCase();
-  })) throw new LifecyclePlanningError("HOOK_DEPLOYMENT_CHANGED", "Final bound-hook deployer, initcode, salt or prediction changed before wallet execution");
-}
 
 function assertPlanningActive(signal?: AbortSignal): void {
   if (signal?.aborted) throw Object.assign(new Error("Lifecycle launch planning cancelled"), { name: "AbortError" });
@@ -289,18 +298,9 @@ function assertFinalPlan(planned: PlannedLaunch, signal?: AbortSignal): void {
   if (planned.ufg !== undefined && hashUfgLaunchConfig(planned.ufg.config) !== planned.ufg.configHash) throw new LifecyclePlanningError("PLAN_MUTATED", "UFG treasury config changed during asynchronous planning");
 }
 
-async function evaluateLaunchTransactions(options: SimulateLaunchPlanOptions, transactions: readonly LifecycleTransaction[], block: LifecycleBlock, controls: PlanReadContext = defaultPlanReadContext): Promise<LifecycleSimulation> {
-  const profile = controls.diagnostic ? undefined : await profileLifecycleTransactions(options, transactions, block, controls.finalEnvelope, controls.openingBuys, controls.capacity);
-  if (!controls.forceSimulation && profile?.profileOnly) return profile.simulation;
-  const prepared = prepareLaunchSimulation(options, block, transactions.length !== 0, controls.immediate);
-  try {
-    const simulation = controls.diagnostic ? await prepared.measure(transactions) : await prepared(transactions, controls.finalEnvelope);
-    return profile === undefined ? simulation : { ...simulation, gasProfile: profile.simulation.gasProfile };
-  } finally { prepared.close(); }
-}
 
-/** One owner constructs and mines, optionally measures actual ordered buy outputs,
- * then proves only the final protected commitment. No cached execution certificates. */
+/** One owner mines constructor-bound salts and protects ordered buys with exact
+ * local curve math. Launch calldata is never executed during planning. */
 export async function prepareAndPlanLifecycleLaunch(options: PrepareAndPlanLifecycleLaunchOptions): Promise<PlannedLaunch> {
   const { commitment, ufgConfigHash } = validatePlanningIntent(options);
   if (options.buySlippageBps !== undefined) validateBuySlippageBps(options.buySlippageBps);
@@ -334,9 +334,11 @@ export async function prepareAndPlanLifecycleLaunch(options: PrepareAndPlanLifec
     }
     assertDraft();
     let plan: LaunchPlanV1 = { ...draft, markets };
-    let ownedProgress: CanonicalLaunchProgress | undefined;
     let openingBuys: PlanReadContext["openingBuys"];
-    if (needsProtection && hasProfiledOpeningMath(plan)) {
+    if (needsProtection) {
+      if (!hasProfiledOpeningMath(plan)) throw new LifecyclePlanningError("OPENING_BUY_NOT_PROFILED", "Exact opening-buy math is unavailable for this profile. Use a supported profile or update the SDK.");
+      const head = await readLifecycleHeadProgress(client, plan, options.account, block);
+      if (head.phase !== LifecyclePhase.None) throw new LifecyclePlanningError("LAUNCH_ALREADY_STARTED", "Buy protection cannot replace an already committed launch plan");
       const predictedToken = await readLifecycleTokenAtBlock(client, plan, block);
       openingBuys = computeLifecycleOpeningBuys({ plan, predictedToken });
       const factor = BigInt(10000 - options.buySlippageBps!);
@@ -345,19 +347,8 @@ export async function prepareAndPlanLifecycleLaunch(options: PrepareAndPlanLifec
         if (minTokenOut <= 0n) throw new LifecyclePlanningError("INVALID_BUY_OUTPUT", "Each opening buy must produce a positive protected minimum");
         return { ...buy, minTokenOut };
       }) };
-    } else if (needsProtection) {
-      // A diagnostic minimum is never returned as an admitted or executable plan.
-      // Price guards, funding minima, recipients and all ordered budgets stay exact.
-      const diagnosticPlan = { ...plan, buys: plan.buys.map((buy) => ({ ...buy, minTokenOut: 1n })) };
-      const diagnostic = await lifecycleStage(client, "plan", () => planLaunchWithReads({ ...options, plan: diagnosticPlan }, client, { block, diagnostic: true }));
-      assertDraft();
-      if (diagnostic.progress.canonical.phase !== LifecyclePhase.None || diagnostic.progress.head.phase !== LifecyclePhase.None) throw new LifecyclePlanningError("LAUNCH_ALREADY_STARTED", "Buy protection cannot replace an already committed launch plan");
-      plan = protectOrderedBuyMinimums(diagnostic, options.buySlippageBps!);
-      // This is the real SDK-owned None observation, not an assumed new-launch
-      // state. No onchain commitment existed at this exact snapshot to replace.
-      ownedProgress = { ...diagnostic.progress, planHash: hashLaunchPlan(plan) };
     }
-    const planned = await lifecycleStage(client, "plan", () => planLaunchWithReads({ ...options, plan }, client, { block, progress: ownedProgress, openingBuys }));
+    const planned = await lifecycleStage(client, "plan", () => planLaunchWithReads({ ...options, plan }, client, { block, openingBuys }));
     assertDraft();
     assertFinalPlan(planned, options.signal);
     if (planned.progress.canonical.phase !== LifecyclePhase.Active && planned.progress.canonical.phase !== LifecyclePhase.Cancelled) {
@@ -366,7 +357,7 @@ export async function prepareAndPlanLifecycleLaunch(options: PrepareAndPlanLifec
         if (final === undefined || final.deployer.toLowerCase() !== mined.deployer.toLowerCase() || final.initCodeHash.toLowerCase() !== mined.initCodeHash.toLowerCase() || final.salt.toLowerCase() !== mined.salt.toLowerCase() || final.predictedHook.toLowerCase() !== mined.predictedHook.toLowerCase()) throw new LifecyclePlanningError("HOOK_DEPLOYMENT_CHANGED", "Final exact constructor binding differs from the one locally mined candidate");
       }
     }
-    if (needsProtection && !planned.simulation.admitted) throw new LifecyclePlanningError("PROTECTED_PLAN_NOT_ADMITTED", planned.simulation.reason ?? "The final protected launch did not establish exact execution proof", planned.simulation);
+    if (needsProtection && !planned.assessment.ready) throw new LifecyclePlanningError(planned.assessment.code ?? "PLAN_NOT_READY", planned.assessment.reason ?? "The launch could not be prepared. Refresh the review before continuing.", planned.assessment);
     return planned;
   });
   assertDraft();
@@ -374,7 +365,7 @@ export async function prepareAndPlanLifecycleLaunch(options: PrepareAndPlanLifec
   return result;
 }
 
-/** Independently fresh current-state admission of an already finalized commitment. No broadcasts. */
+/** Fresh pinned input and deterministic gas-budget checks. No simulation or broadcasts. */
 export async function planLaunch(options: PlanLaunchOptions): Promise<PlannedLaunch> {
   const result = await withLifecycleReadClient(options.client, async (client) => {
     const planned = await lifecycleStage(client, "plan", () => planLaunchWithReads(options, client));
@@ -386,44 +377,34 @@ export async function planLaunch(options: PlanLaunchOptions): Promise<PlannedLau
 }
 
 async function planLaunchWithReads(options: PlanLaunchOptions, client: LifecycleRpcClient, readContext: PlanReadContext = defaultPlanReadContext): Promise<PlannedLaunch> {
-  const { block: pinnedBlock, progress: ownedProgress, diagnostic = false, openingBuys, forceSimulation = false } = readContext;
-  const { plan, account, mode: requestedMode, ufg } = options;
-  let mode = requestedMode;
+  const { block: pinnedBlock, openingBuys } = readContext;
+  const { plan, account, ufg } = options;
   const { commitment: planHash, marketConfigs, ufgConfigHash } = validatePlanningIntent(options);
   const launchId = hashLaunchIdentity(plan);
   const [block, chainId] = await lifecycleStage(client, "plan.context", () => Promise.all([
     pinnedBlock ?? readLifecyclePlanningBlock(client, plan, account, ufg !== undefined), readLifecycleChainId(client),
   ]));
   if (chainId !== plan.chainId) throw new LifecyclePlanningError("CHAIN_MISMATCH", "RPC chain differs from the committed plan");
-  // Only preparation/build-next can supply freshly observed progress from this
-  // still-open SDK invocation. Stored/query DTOs never enter this continuation.
-  if (ownedProgress !== undefined) {
-    if (!assertLifecycleReadClientOpen(client) || pinnedBlock !== block || ownedProgress.blockNumber !== block.number ||
-      ownedProgress.blockHash.toLowerCase() !== block.hash.toLowerCase() || ownedProgress.chainId !== plan.chainId ||
-      ownedProgress.confirmationDepth !== (options.confirmations ?? 1)) throw new LifecyclePlanningError("INVALID_READ_CONTEXT", "Owned progress differs from its active planning snapshot");
-    if (ownedProgress.planHash.toLowerCase() !== planHash.toLowerCase() || ownedProgress.launchId.toLowerCase() !== launchId.toLowerCase()) throw new LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed after its canonical progress was read");
-  }
   assertPlanningActive(options.signal);
   const preset = getKnownLifecycleDeployment({ chainId: plan.chainId, orchestrator: plan.orchestrator });
   const [{ tokenFactory, tokenFactoryCodeHash }, { limits }, { identity, progress }] = await lifecycleStage(client, "plan.domain", () => Promise.all([
     preset ?? readTokenFactoryBinding(client, plan.orchestrator, block),
     resolveLifecycleLimits({ client, account, orchestrator: plan.orchestrator, block, chainId: plan.chainId }, options.limits),
     lifecycleStage(client, "plan.progress", async () => {
-      const [predictedToken] = await Promise.all([
-        readLifecycleTokenAtBlock(client, plan, block),
-        ownedProgress === undefined ? readLifecycleHeadProgress(client, plan, account, block) : undefined,
+      const [predictedToken, head] = await Promise.all([
+        readLifecycleTokenAtBlock(client, plan, block), readLifecycleHeadProgress(client, plan, account, block),
       ]);
+      const mode = head.phase === LifecyclePhase.None ? options.mode : head.mode === 1 ? "staged" as const : "atomic" as const;
       const identity = { plan, planHash, launchId, predictedToken, account, mode, confirmations: options.confirmations ?? 1,
         ...(ufg === undefined ? {} : { ufg: { config: ufg.config, configHash: ufgConfigHash! } }) };
       if (ufg !== undefined) validateUfgLaunchPlan(plan, ufg.config, predictedToken);
-      const progress = ownedProgress ?? await readLaunchProgress({ client, planned: identity, receipts: options.receipts, signal: options.signal }, block);
-      if (ownedProgress !== undefined && progress.token.toLowerCase() !== predictedToken.toLowerCase()) throw new LifecyclePlanningError("TOKEN_IDENTITY", "Predicted token changed after its canonical progress was read");
+      const progress = await readLaunchProgress({ client, planned: identity, receipts: options.receipts, signal: options.signal }, block);
       return { identity, progress };
     }),
   ]));
   assertPlanningActive(options.signal);
-  const placeholder: LifecycleSimulation = { backend: "unavailable", confidence: "provisional", admitted: false, executionProof: "unavailable", protocolFit: "unknown", blockNumber: block.number, blockHash: block.hash, account, chainId: plan.chainId, limits, steps: [], deferredTransactionIds: [] };
-  let planned: PlannedLaunch = { ...identity, tokenFactory, tokenFactoryCodeHash, chainId: plan.chainId, transactions: [], totalCalldataBytes: 0, prerequisites: [], profiles: [], hookDeployments: [], progress, simulation: placeholder, limits: options.limits,
+  const placeholder: LifecyclePlanningAssessment = { ready: false, blockNumber: block.number, blockHash: block.hash, account, chainId: plan.chainId, limits };
+  let planned: PlannedLaunch = { ...identity, tokenFactory, tokenFactoryCodeHash, chainId: plan.chainId, transactions: [], totalCalldataBytes: 0, prerequisites: [], profiles: [], hookDeployments: [], progress, assessment: placeholder, limits: options.limits,
     allowTopologyGaps: options.allowTopologyGaps === true, allowMissingPermanentTail: options.allowMissingPermanentTail === true };
   const receiptsPending = progress.receipts.some((receipt) => receipt.status === "pending" || receipt.status === "unconfirmed");
   if (!progress.confirmationSafe || receiptsPending) {
@@ -434,72 +415,35 @@ async function planLaunchWithReads(options: PlanLaunchOptions, client: Lifecycle
       const known = deriveKnownPoolBoundHookDeployment({ plan, token: identity.predictedToken, marketIndex });
       hookDeployments.push({ marketIndex, ...(known?.deployment ?? await readPoolBoundHookDeployment({ client, plan, marketIndex }, block)) });
     }
-    const waiting = { ...placeholder, confidence: "stateful" as const, reason: !progress.confirmationSafe ? "Canonical launch progress has not reached the selected confirmation depth" : "Wait for canonical receipt confirmations or resolve replacement before requesting another transaction" };
-    
-    return { ...planned, hookDeployments, simulation: waiting };
+    return { ...planned, hookDeployments, assessment: { ...placeholder,
+      code: !progress.confirmationSafe ? "UNCONFIRMED_STATE" : "RECEIPT_PENDING",
+      reason: !progress.confirmationSafe ? "Wait for the selected launch confirmation depth before continuing." : "Wait for the pending transaction to confirm or resolve its replacement." } };
   }
   if (progress.canonical.phase === LifecyclePhase.Active || progress.canonical.phase === LifecyclePhase.Cancelled) {
-    
-    return { ...planned, simulation: { ...placeholder, confidence: "stateful", executionProof: "proved", protocolFit: "proved", admitted: true, reason: "Canonical launch is terminal; no transaction remains" } };
+    return { ...planned, assessment: { ...placeholder, ready: true } };
   }
-  // Topology is a creation policy, not a retroactive obstacle to recovery of
-  // immutable onchain commitments. Waiting and terminal launches returned above.
   if (progress.canonical.phase === LifecyclePhase.None && progress.head.phase === LifecyclePhase.None) validatePlanTopology(options, marketConfigs, identity.predictedToken);
   const [funding, metadata] = await lifecycleStage(client, "plan.inputs", () => Promise.all([
     progress.canonical.phase === LifecyclePhase.None ? readFunding(client, plan, block, ufg === undefined ? plan.creator : account, ufg !== undefined) : { prerequisites: [], approvals: [] },
     readPlanMetadata(client, plan, identity.predictedToken, block),
   ]));
   assertFinalPlan(planned, options.signal);
-  const capacity = limits.protocol === "nitro" && limits.arbOSVersion === 61n
-    ? deriveLifecycleLaunchCapacity({ plan, predictedToken: identity.predictedToken, ufg, headroomBps: limits.headroomBps }, openingBuys) : undefined;
-  if (!forceSimulation && progress.canonical.phase === LifecyclePhase.None && mode === "atomic" && capacity !== undefined) {
-    const prices = await readNitroPrices(client, block);
-    if (capacity.bounds.atomicComputeGasUpperBound + nitroPosterGasBound(capacity.atomic, prices).posterGas > limits.executionGasCeiling) mode = "staged";
-  }
+  const capacity = deriveLifecycleLaunchCapacity({ plan, predictedToken: identity.predictedToken, ufg, headroomBps: limits.headroomBps }, openingBuys);
+  const mode = progress.canonical.phase === LifecyclePhase.None
+    ? await selectLaunchMode(options.mode, plan, capacity, limits, client, block) : identity.mode;
   planned = { ...planned, mode, prerequisites: funding.prerequisites, profiles: metadata.profiles, hookDeployments: metadata.hookDeployments };
-  const prepared = progress.canonical.preparedMarkets, computeCap = limits.executionGasCeiling;
-  let batches: number[] = mode === "staged" ? packPreparationBatches(plan, prepared, computeCap) : [];
-  let transactions = orderedTransactions(plan, mode, progress, funding.approvals, batches, ufg, capacity);
-  if (metadata.reasons.length > 0) {
-    
-    return { ...planned, simulation: { ...placeholder, confidence: "stateful", reason: metadata.reasons.join("; "), failureCategory: "semantic" }, transactions, totalCalldataBytes: transactions.reduce((total, transaction) => total + (transaction.data.length - 2) / 2, 0) };
+  if (metadata.reasons.length > 0) return { ...planned, assessment: { ...placeholder, code: "PROFILE_UNAVAILABLE", failureCategory: "semantic",
+    reason: "The selected launch profile could not be read or is unavailable. Refresh the review before continuing." } };
+  let batches: number[];
+  try { batches = mode === "staged" ? await preparationBatches(plan, progress.canonical.preparedMarkets, ufg, limits, client, block) : []; }
+  catch (failure) {
+    if (!(failure instanceof LifecyclePlanningError) || failure.code !== "PREPARATION_GAS_LIMIT") throw failure;
+    return { ...planned, assessment: { ...placeholder, code: failure.code, reason: failure.message, failureCategory: "capacity", capacityConstraint: "preparation" } };
   }
-  const execute = (candidate: readonly LifecycleTransaction[], quotes = openingBuys) => evaluateLaunchTransactions(
-    { client, planned, limits: options.limits, fork: options.fork, signal: options.signal }, candidate, block,
-    { diagnostic, openingBuys: quotes, capacity, forceSimulation });
-  let simulation = await execute(transactions);
+  const transactions = orderedTransactions(plan, mode, progress, funding.approvals, batches, ufg, capacity);
+  const assessment = await assessLifecycleTransactions({ client, planned, limits: options.limits, signal: options.signal }, transactions, block, undefined, openingBuys, capacity);
   assertFinalPlan(planned, options.signal);
-  if (!diagnostic && !forceSimulation && requestedMode === "atomic" && mode === "atomic" && progress.canonical.phase === LifecyclePhase.None &&
-    simulation.executionProof === "failed" && simulation.failureCategory === "capacity" && simulation.capacityConstraint === "compute") {
-    mode = "staged"; planned = { ...planned, mode };
-    batches = packPreparationBatches(plan, prepared, computeCap);
-    transactions = orderedTransactions(plan, mode, progress, funding.approvals, batches, ufg, capacity);
-    simulation = await execute(transactions);
-    assertFinalPlan(planned, options.signal);
-  }
-  if (mode === "staged") {
-    // Only pressure at the native ceiling can invalidate packing. A smaller
-    // affordability/RPC/account envelope is not evidence for another wallet write.
-    while (!simulation.admitted && simulation.failedTransactionId?.startsWith("prepare:")) {
-      const failedIndex = transactions.findIndex((transaction) => transaction.id === simulation.failedTransactionId);
-      const failedTransaction = transactions[failedIndex];
-      const step = simulation.steps.find((candidate) => candidate.transactionId === simulation.failedTransactionId);
-      const count = failedTransaction?.marketCount ?? 0;
-      if (count <= 1 || step?.gasUsed === undefined || step.gasLimit === undefined || step.gasLimit < limits.executionGasCeiling || step.gasUsed * 100n < limits.executionGasCeiling * 95n) break;
-      let first = 0;
-      const batchIndex = batches.findIndex((batch) => { const matches = first === failedTransaction?.marketStart; first += batch; return matches; });
-      const left = Math.ceil(count / 2);
-      batches.splice(batchIndex, 1, left, count - left);
-      transactions = orderedTransactions(plan, mode, progress, funding.approvals, batches, ufg, capacity);
-      simulation = await execute(transactions, simulation.gasProfile?.initialBuys);
-      assertFinalPlan(planned, options.signal);
-    }
-    if (!simulation.admitted && simulation.failedTransactionId === "activate" && simulation.failureCategory === "capacity") simulation = {
-      ...simulation, capacityConstraint: "activation", reason: "Too many positions or pools for one activation. Reduce them to fit the native transaction ceiling." };
-  } else if (!diagnostic && !simulation.admitted) {
-    simulation = { ...simulation, reason: simulation.reason ?? "The exact atomic launch is not admitted" };
-  }
-  return { ...planned, simulation, transactions: attachEstimates(transactions, simulation), totalCalldataBytes: transactions.reduce((total, transaction) => total + (transaction.data.length - 2) / 2, 0) };
+  return { ...planned, assessment, transactions: attachEstimates(transactions, assessment), totalCalldataBytes: transactions.reduce((total, transaction) => total + (transaction.data.length - 2) / 2, 0) };
 }
 
 function finalizeNextTransaction(options: BuildNextTransactionOptions, next: LifecycleTransaction, reviewed?: ReviewedNextTransaction): LifecycleTransaction {
@@ -508,63 +452,48 @@ function finalizeNextTransaction(options: BuildNextTransactionOptions, next: Lif
   return { ...next, dependencies: [] };
 }
 
-/** Recovery observes real canonical receipts, then evaluates only unfinished
- * execution; the wallet owns its nonce and assignment at send time. */
+/** Recovery observes actual canonical receipts, then constructs and budgets only
+ * the next command. No launch transaction is executed during planning. */
 export async function buildNextTransaction(options: BuildNextTransactionOptions): Promise<LifecycleTransaction | undefined> {
   const original = options.planned, matches = observedFields(original);
-  const fullReviewAdmitted = original.simulation?.admitted === true;
   const assertInput = () => {
     if (options.planned !== original || !matches()) throw new LifecyclePlanningError("PLAN_MUTATED", "Stored launch context changed while constructing its next transaction");
     assertFinalPlan(original, options.signal);
   };
   const supplied = readReviewedNextTransaction(options.reviewedTransaction);
-  // Snapshot only the reviewed wire fields; caller proofs and commands are never
-  // reused, and final checks compare the mutable input with this one local copy.
   const walletApproval = supplied?.kind === "approve" || supplied?.kind === "approve-reset";
   const reviewed = supplied === undefined ? undefined : Object.freeze({ id: supplied.id, kind: supplied.kind, chainId: supplied.chainId,
     from: supplied.from, to: supplied.to, data: supplied.data, value: supplied.value, ...(walletApproval ? {} : { gas: supplied.gas, gasPrice: supplied.gasPrice }) });
   const envelope = reviewed === undefined || walletApproval ? undefined : reviewed as NextTransactionEnvelope;
   const result = await withLifecycleReadClient(options.client, async (client) => {
     registerLifecycleFinalCheck(client, assertInput);
-    const block = await readLifecyclePlanningBlock(client, options.planned.plan, options.planned.account, options.planned.ufg !== undefined);
-    const limitSource = options.limits === undefined ? options.planned.limits : options.limits;
-    if (getKnownLifecycleDeployment({ chainId: options.planned.chainId, orchestrator: options.planned.plan.orchestrator }) !== undefined && typeof limitSource !== "function") {
-      await Promise.all([
-        readLifecycleTokenAtBlock(client, options.planned.plan, block),
-        readLifecycleHeadProgress(client, options.planned.plan, options.planned.account, block),
-        resolveLifecycleLimits({ client, account: options.planned.account, orchestrator: options.planned.plan.orchestrator, block, chainId: options.planned.chainId }, limitSource),
-      ]);
-    }
+    const block = await readLifecyclePlanningBlock(client, original.plan, original.account, original.ufg !== undefined);
+    const limitSource = options.limits === undefined ? original.limits : options.limits;
     const progress = await readLifecycleExecutionProgress({ ...options, client }, block);
-    if (progress.canonical.phase === LifecyclePhase.Active || progress.canonical.phase === LifecyclePhase.Cancelled) {
-      // Only the confirmed canonical terminal phase is terminal; a head-only
-      // Active observation is not, and the launch-state/receipt confirmation
-      // policy below remains in force for every nonterminal case.
-      
-      return undefined;
-    }
-    if (!progress.confirmationSafe) throw new LifecyclePlanningError("UNCONFIRMED_STATE", "Wait for the selected canonical launch confirmation depth before constructing the next transaction");
-    if (progress.receipts.some((receipt) => receipt.status === "pending" || receipt.status === "unconfirmed")) throw new LifecyclePlanningError("RECEIPT_PENDING", "Wait for canonical receipt confirmations or resolve replacement before requesting another transaction");
+    if (progress.canonical.phase === LifecyclePhase.Active || progress.canonical.phase === LifecyclePhase.Cancelled) return undefined;
+    if (!progress.confirmationSafe) throw new LifecyclePlanningError("UNCONFIRMED_STATE", "Wait for the selected launch confirmation depth before continuing.");
+    if (progress.receipts.some((receipt) => receipt.status === "pending" || receipt.status === "unconfirmed")) throw new LifecyclePlanningError("RECEIPT_PENDING", "Wait for the pending transaction to confirm or resolve its replacement.");
     assertPlanningActive(options.signal);
+    const { limits } = await resolveLifecycleLimits({ client, account: original.account, orchestrator: original.plan.orchestrator, block, chainId: original.chainId }, limitSource);
     if (options.action === "cancel") {
       if (progress.canonical.phase === LifecyclePhase.None) throw new LifecyclePlanningError("NOT_STARTED", "An unstarted plan has no launch escrow to cancel");
-      const { planned } = options;
-      assertFinalPlan(planned, options.signal);
+      const planned = { ...original, progress };
       const transaction: LifecycleTransaction = planned.ufg !== undefined ? buildUfgCancelTransaction({ plan: planned.plan, preparedMarkets: progress.canonical.preparedMarkets })
         : { id: "cancel", kind: "cancel", chainId: Number(planned.chainId), from: planned.account, to: planned.plan.orchestrator, data: encodeFunctionData({ abi: launchLifecycleAbi, functionName: "cancelLaunch", args: [planned.plan] }), value: 0n, dependencies: [], postconditions: [{ kind: "launch", phase: "Cancelled", preparedMarkets: progress.canonical.preparedMarkets }] };
-      if (reviewed !== undefined && !matchesReviewedNextTransaction(transaction, reviewed)) throw new LifecyclePlanningError("REVIEWED_TRANSACTION_MISMATCH", "Reviewed transaction differs from the current canonical cancellation");
-      const simulation = await evaluateLaunchTransactions({ client, planned, limits: options.limits === undefined ? planned.limits : options.limits, fork: options.fork, signal: options.signal }, [transaction], block, { finalEnvelope: envelope, immediate: true });
-      if (!simulation.admitted) throw new LifecyclePlanningError("CANCEL_NOT_ADMITTED", simulation.reason ?? "Cancellation could not be proved against current canonical state", simulation);
-      const next = attachEstimates([transaction], simulation)[0];
-      if (next === undefined) throw new LifecyclePlanningError("MISSING_GAS_PROOF", "Cancellation omitted its exact simulation admission", simulation);
-      return finalizeNextTransaction(options, next, reviewed);
+      if (reviewed !== undefined && !matchesReviewedNextTransaction(transaction, reviewed)) throw new LifecyclePlanningError("REVIEWED_TRANSACTION_MISMATCH", "Reviewed transaction differs from the current cancellation");
+      const assessment = await assessLifecycleTransactions({ client, planned, limits: limitSource, signal: options.signal }, [transaction], block, envelope);
+      if (!assessment.ready) throw new LifecyclePlanningError(assessment.code ?? "CANCEL_NOT_READY", assessment.reason ?? "Cancellation could not be prepared. Refresh before continuing.", assessment);
+      return finalizeNextTransaction(options, attachEstimates([transaction], assessment)[0]!, reviewed);
     }
-    const { planned } = options;
-    assertFinalPlan(planned, options.signal);
-    if (progress.canonical.phase === LifecyclePhase.None && !fullReviewAdmitted) throw new LifecyclePlanningError("PLAN_NOT_ADMITTED", "Complete an admitted full launch review before starting or approving funding; next-only construction does not replan the remaining sequence");
     const funding = progress.canonical.phase === LifecyclePhase.None
-      ? await readFunding(client, planned.plan, block, planned.account, planned.ufg !== undefined)
+      ? await readFunding(client, original.plan, block, original.account, original.ufg !== undefined)
       : { prerequisites: [], approvals: [] };
+    const planned = { ...original, progress, prerequisites: funding.prerequisites };
+    const capacity = deriveLifecycleLaunchCapacity({ plan: planned.plan, predictedToken: planned.predictedToken, ufg: planned.ufg, headroomBps: limits.headroomBps });
+    if (progress.canonical.phase === LifecyclePhase.None &&
+      await selectLaunchMode(planned.mode, planned.plan, capacity, limits, client, block) !== planned.mode) {
+      throw new LifecyclePlanningError("MODE_REVIEW_REQUIRED", "This launch requires staged execution. Refresh the review before continuing.");
+    }
     let candidate = funding.approvals[0];
     if (candidate === undefined) {
       const prepared = progress.canonical.preparedMarkets;
@@ -574,46 +503,25 @@ export async function buildNextTransaction(options: BuildNextTransactionOptions)
         let count: number;
         if (reviewed?.kind === "prepare") {
           const span = /^prepare:(\d+):(\d+)$/.exec(reviewed.id);
-          const first = Number(span?.[1]);
+          if (Number(span?.[1]) !== prepared) throw new LifecyclePlanningError("REVIEWED_TRANSACTION_MISMATCH", "Reviewed preparation does not start at the unfinished market");
           count = Number(span?.[2]);
-          if (first !== prepared) throw new LifecyclePlanningError("REVIEWED_TRANSACTION_MISMATCH", "Reviewed preparation does not start at the canonical unfinished market");
         } else {
-          const stored = planned.transactions.find((transaction) => transaction.kind === "prepare" && transaction.marketStart! <= prepared && transaction.marketStart! + transaction.marketCount! > prepared);
-          if (stored !== undefined) count = stored.marketStart! + stored.marketCount! - prepared;
-          else {
-            const { limits } = await resolveLifecycleLimits({ client, account: planned.account, orchestrator: planned.plan.orchestrator, block, chainId: planned.chainId }, limitSource);
-            const cap = limits.transactionGasCeiling !== undefined && limits.transactionGasCeiling < limits.executionGasCeiling ? limits.transactionGasCeiling : limits.executionGasCeiling;
-            count = packPreparationBatches(planned.plan, prepared, cap)[prepared > 0 ? 1 : 0]!;
-          }
+          const batches = await preparationBatches(planned.plan, prepared, planned.ufg, limits, client, block);
+          count = batches[prepared > 0 ? 1 : 0]!;
         }
-        if (!Number.isSafeInteger(count) || count <= 0 || prepared + count > planned.plan.markets.length) throw new LifecyclePlanningError("INVALID_PREPARATION_BATCHES", "Next preparation must be a positive contiguous canonical market span");
+        if (!Number.isSafeInteger(count) || count <= 0 || prepared + count > planned.plan.markets.length) throw new LifecyclePlanningError("INVALID_PREPARATION_BATCHES", "Next preparation must cover a positive contiguous unfinished market span");
         command = { kind: "prepare", first: prepared, count };
       } else command = { kind: "activate" };
       candidate = buildLifecycleCommand(planned.plan, command, planned.ufg === undefined ? undefined : { account: ufgPlanPrincipal(planned.plan), config: planned.ufg.config });
     }
-    if (reviewed !== undefined && !matchesReviewedNextTransaction(candidate, reviewed)) throw new LifecyclePlanningError("REVIEWED_TRANSACTION_MISMATCH", "Reviewed transaction differs from the current canonical unfinished next step");
-    const simulation = await evaluateLaunchTransactions({ client, planned, limits: limitSource, fork: options.fork, signal: options.signal }, [candidate], block, { finalEnvelope: envelope, immediate: true });
+    if (reviewed !== undefined && !matchesReviewedNextTransaction(candidate, reviewed)) throw new LifecyclePlanningError("REVIEWED_TRANSACTION_MISMATCH", "Reviewed transaction differs from the current next step");
+    const assessment = await assessLifecycleTransactions({ client, planned, limits: limitSource, signal: options.signal }, [candidate], block, envelope, undefined, capacity);
     assertFinalPlan(planned, options.signal);
-    if (!simulation.admitted) throw new LifecyclePlanningError("PLAN_NOT_ADMITTED", simulation.reason ?? "Next exact launch transaction is not admitted", simulation);
-    const next = attachEstimates([candidate], simulation)[0]!;
-    return finalizeNextTransaction(options, next, reviewed);
+    if (!assessment.ready) throw new LifecyclePlanningError(assessment.code ?? "PLAN_NOT_READY", assessment.reason ?? "The next launch step could not be prepared. Refresh before continuing.", assessment);
+    return finalizeNextTransaction(options, attachEstimates([candidate], assessment)[0]!, reviewed);
   });
   assertInput();
   if (result !== undefined) assertReviewedTransactionUnchanged(options, reviewed, result);
   return result;
 }
 
-/** Re-simulates only canonical unfinished work with the same submitted receipt
- * evidence and confirmation depth as build-next, never silently dropping context. */
-export async function simulateLaunchPlan(options: SimulateLaunchPlanOptions): Promise<LifecycleSimulation> {
-  const { client, planned } = options;
-  if (hashLaunchPlan(planned.plan).toLowerCase() !== planned.planHash.toLowerCase() || hashLaunchIdentity(planned.plan).toLowerCase() !== planned.launchId.toLowerCase()) throw new LifecyclePlanningError("PLAN_MUTATED", "Stored economic plan no longer matches its commitment");
-  const current = await withLifecycleReadClient(client, (readClient) => planLaunchWithReads({
-    client, plan: planned.plan, account: planned.account, mode: planned.mode,
-    limits: options.limits === undefined ? planned.limits : options.limits, fork: options.fork,
-    receipts: options.receipts, confirmations: options.confirmations ?? planned.confirmations, signal: options.signal,
-    ufg: planned.ufg, allowTopologyGaps: planned.allowTopologyGaps, allowMissingPermanentTail: planned.allowMissingPermanentTail,
-  }, readClient, { forceSimulation: true }));
-  assertPlannedDeploymentBindings(planned, current);
-  return current.simulation;
-}

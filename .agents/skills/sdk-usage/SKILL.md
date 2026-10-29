@@ -19,7 +19,7 @@ description: Integrate the Abyss TypeScript SDK using the correct deployment gra
   can target an older immutable stack even when the application itself is current.
   A package version or a profile name alone does not prove deployment identity.
 
-## Construct locally; prove against current state
+## Construct locally; check pinned inputs and budgets
 
 1. Use `getKnownLifecycleDeployment`, `getKnownLifecycleProfile` and
    `listKnownLifecycleProfiles` for shipped profiles and deployment wiring. Profiles
@@ -33,27 +33,28 @@ description: Integrate the Abyss TypeScript SDK using the correct deployment gra
 4. `buildLaunchTransactions({ plan, mode })` compiles unsigned calldata only.
    It does not prove balances, fees, gas capacity, quote freshness or execution.
 5. `prepareAndPlanLifecycleLaunch({ client, account, plan, mode, ... })` combines
-   bound-hook salt preparation and selected-mode admission. `planLaunch` admits an
-   already-finalized plan. Review only the returned final plan/commitment and its
-   explicit profiled-versus-executed evidence.
-6. `readLaunchProgress`, `simulateLaunchPlan` and `buildNextTransaction` support
-   canonical recovery; explicit simulation always runs execution, while build-next
-   admits only the immediate command. Persist returned `planned.mode`, confirmation policy and
-   actual included/replacement hashes with optional wallet-observed nonce.
+   bound-hook salt preparation, exact local opening-buy floors and current
+   input/capacity checks. `planLaunch` checks an already-finalized plan.
+   Review the returned final plan/commitment and `planned.assessment`.
+6. `readLaunchProgress` and `buildNextTransaction` support canonical recovery.
+   Build-next constructs and budgets only the immediate command. Persist returned
+   `planned.mode`, confirmation policy and actual included/replacement hashes
+   with optional wallet-observed nonce.
 
-Do not add a second application-owned mining/admission loop around these operations.
-Known presets supply construction wiring and the native transaction ceiling.
-Covered plan-determined steps use capacity profiles and exact local curve math;
-conversions, consuming activation and uncertain activation require exact execution.
+No planning/build-next simulation exists, including conversions; do not add a
+host-owned simulation/mining loop. Routers enforce committed output minima and
+deadlines. Known presets supply construction wiring and native ceilings;
+template budgets and exact local curve math never claim execution evidence.
 There is one pin, no planning nonce read and at most one chain observation per bound client. Recreate that client
 on chain changes. The wallet owns nonce assignment and sending-RPC preparation.
 Do not resurrect `preparePoolBoundLifecyclePlan` or `PlannedLaunch.atomicAttempt`.
 
-Atomic is a preference that may select staged; explicit staged stays staged.
-Never remove positions, buys or hooks to rescue admission. Staging partitions
-preparation, not activation. Launch commands use the preset's total native ceiling
-(32M including poster on4663); approvals omit gas for the wallet. Caller caps
-tighten admission, never resize the envelope. Generic EVM proof is not Nitro proof.
+Multiple markets or conversion funding always select staged. Atomic requires one
+non-conversion market with known headroom; explicit staged stays staged. Never
+remove positions, buys or hooks to fit a budget. Preparation chunks deterministically;
+activation cannot split and an excessive bound refuses before begin. Launch commands
+use32M total including poster on4663; approvals omit gas. Caller caps refuse oversized
+envelopes, never resize them. `assessment.ready` is not execution proof.
 
 ## Representation and integration boundaries
 
@@ -64,8 +65,8 @@ tighten admission, never resize the envelope. Generic EVM proof is not Nitro pro
 - Quotes, fee assets and direct ERC20/native-wrap funding are not a curated-token
   allowlist. Swap-conversion inputs and target/spender roles have separate registry
   admission; inspect the pricing skill before integrating Kyber.
-- Keep local curve quotes, profiled admission, actual execution proof, wallet
-  submission, canonical activation and API publication as separate outcomes.
+- Keep local curve quotes, pinned input/budget assessments, wallet submission,
+  canonical activation and API publication as separate outcomes.
 - Use existing AMM/lending exports and ABIs before writing wrappers. An indexed
   routing candidate is not executable calldata. A successful launch/oracle setup
   is not lending admission: history, liquidity, risk policy and governance remain
@@ -80,9 +81,9 @@ Repository code changes use `pnpm test` and `pnpm typecheck`; HTTP/chain suites 
 their documented disposable services and explicit authorization. For documentation,
 execute the documented pure/read-only consumer path, not a funded launch example.
 
-Reads, pricing, mining, simulation and unsigned compilation do not authorize signing,
-broadcasting, uploads or metadata publication. A controlled fork must be explicitly
-owned/disposable and distinct from the source RPC. Preserve unrelated worktree changes.
+Reads, pricing, mining and unsigned compilation do not authorize signing,
+broadcasting, uploads or metadata publication. Isolated local execution needs explicit
+authorization; launch planning never selects a fork backend. Preserve unrelated worktree changes.
 
 The audit's historical decisions and known regressions are in
 `../token-launch/references/audit-history.md`; current exports and deployed evidence

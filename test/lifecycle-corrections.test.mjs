@@ -4,7 +4,7 @@ import test from "node:test";
 import { encodeAbiParameters, keccak256 } from "viem";
 
 const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
-const { adapterRegistrationV1Components, buildNextTransaction, hashLaunchIdentity, hashLaunchPlan, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleFundingEscrowAbi, lifecycleMarketComponents, LifecyclePhase, lifecycleRegistryAbi, launchProgressV1Components, marketIdentityV1Components, parseLaunchPlan, planLaunch, preparedMarketV1Components, profileRegistrationV1Components, readLaunchProgress, simulateLaunchPlan } = await import(sdkPath);
+const { adapterRegistrationV1Components, buildNextTransaction, hashLaunchIdentity, hashLaunchPlan, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleFundingEscrowAbi, lifecycleMarketComponents, LifecyclePhase, lifecycleRegistryAbi, launchProgressV1Components, marketIdentityV1Components, parseLaunchPlan, planLaunch, preparedMarketV1Components, profileRegistrationV1Components, readLaunchProgress } = await import(sdkPath);
 const fixture = JSON.parse(await readFile(new URL("./fixtures/launch-lifecycle-v1.json", import.meta.url), "utf8"));
 // The portable golden vector predates full allocation; execution fixtures use
 // its exact position maxima without changing the historical codec evidence.
@@ -180,11 +180,11 @@ function canonicalType(input) {
 }
 
 function minimalPlanned(plan) {
-  const simulation = { backend: "unavailable", confidence: "provisional", admitted: false, executionProof: "unavailable", protocolFit: "unknown", blockNumber: HEAD_NUMBER, blockHash: HEAD_HASH, account: plan.creator, chainId: plan.chainId, limits: { protocol: "evm", executionGasCeiling: 30_000_000n, transactionGasCeiling: 30_000_000n, headroomBps: HEADROOM, blockGasLimit: 30_000_000n, unknownExecutionConstraints: [], unknownConstraints: [] }, steps: [] };
+  const assessment = { ready: false, blockNumber: HEAD_NUMBER, blockHash: HEAD_HASH, account: plan.creator, chainId: plan.chainId, limits: { protocol: "evm", executionGasCeiling: 30_000_000n, transactionGasCeiling: 30_000_000n, headroomBps: HEADROOM, blockGasLimit: 30_000_000n, unknownExecutionConstraints: [], unknownConstraints: [] } };
   return {
     plan, planHash: hashLaunchPlan(plan), launchId: hashLaunchIdentity(plan), predictedToken: TOKEN, tokenFactory: ADAPTER, tokenFactoryCodeHash: keccak256(CODE), hookDeployments: [],
     account: plan.creator, chainId: plan.chainId, mode: "staged", confirmations: 1,
-    transactions: [], prerequisites: [], profiles: [], simulation,
+    transactions: [], prerequisites: [], profiles: [], assessment,
     progress: null,
   };
 }
@@ -253,14 +253,14 @@ test("head-only activation is not terminal and still waits for confirmation dept
   assert.equal(client.captured.some((row) => row.method === "eth_call" && row.params[0].data.slice(0, 10) === selectorOf(launchLifecycleAbi, "tokenFactory")), false, "A head-only terminal observation cannot bypass the confirmation gate");
 });
 
-/** F5: resimulation inherits the submitted receipt evidence and confirmation depth. */
-test("simulateLaunchPlan inherits submitted pending receipt evidence instead of dropping it", async () => {
+/** F5: refreshed planning retains submitted receipt evidence and confirmation depth. */
+test("planLaunch retains submitted pending receipts instead of dropping them", async () => {
   const client = scenarioClient({ receipt: () => null });
   const plan = parseLaunchPlan(JSON.stringify(fixture.plan));
   const receipts = [{ transactionHash: TX_HASH, observedBlockNumber: HEAD_NUMBER - 1n, observedBlockHash: OBSERVED_HASH, confirmations: 2 }];
   const evidence = await readLaunchProgress({ client, planned: minimalPlanned(plan), receipts, confirmations: 2 });
   assert.equal(evidence.receipts[0].status, "pending");
-  const resimulated = await simulateLaunchPlan({ client, planned: minimalPlanned(plan), receipts, confirmations: 2 });
-  assert.equal(resimulated.admitted, false, "resimulation must not silently drop the submitted pending receipt evidence");
-  assert.match(resimulated.reason ?? "", /receipt confirmation/i);
+  const refreshed = await planLaunch({ client, plan, account: plan.creator, mode: "staged", receipts, confirmations: 2 });
+  assert.equal(refreshed.assessment.ready, false);
+  assert.equal(refreshed.assessment.code, "RECEIPT_PENDING");
 });

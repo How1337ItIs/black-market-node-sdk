@@ -74,7 +74,7 @@ function context(t, { phase = sdk.LifecyclePhase.Active, mode = "staged", image,
   const fixture = { chainId: "4663", rpcUrl: "https://rpc.example.invalid", apiUrl, orchestrator: core, creator: account.address,
     implementationRegistry: registry, executionLimits: { headroomBps: 1500 }, targetMarketCapUsdX18: 1n };
   const planned = { plan, mode, confirmations: 2, chainId: 4663n, account: plan.creator, planHash: sdk.hashLaunchPlan(plan),
-    launchId: sdk.hashLaunchIdentity(plan), predictedToken: token, transactions: [], profiles: [], simulation: { admitted: true } };
+    launchId: sdk.hashLaunchIdentity(plan), predictedToken: token, transactions: [], profiles: [], assessment: { ready: true } };
   const progress = { canonical: { phase, token }, confirmationSafe: true, receipts: references.map((reference) => ({
     transactionHash: reference.transactionHash, effectiveHash: reference.transactionHash, status: "confirmed",
     blockNumber: reference.observedBlockNumber, blockHash: reference.observedBlockHash })) };
@@ -262,7 +262,7 @@ test("resume preserves the exact economic review admission and committed identit
     if (change === "plan") c.artifacts.recovery.plan.nonce = "1";
     if (change === "creator") c.options.fixture = { ...c.fixture, creator: core };
     if (change === "mode") c.planned.mode = "atomic";
-    if (change === "refused") c.planned.simulation.admitted = false;
+    if (change === "refused") c.planned.assessment.ready = false;
     await assert.rejects(resumeLaunchExample(c.options));
     assert.ok(!c.calls.includes("session")); assert.ok(!c.calls.includes("execute"));
   }

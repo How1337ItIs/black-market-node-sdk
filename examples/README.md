@@ -1,8 +1,8 @@
 # Run the examples
 
-These commands use the checkout's built `@black-market/sdk` **0.14.1** and viem.
+These commands use the checkout's built `@black-market/sdk` **0.15.1** and viem.
 Use **Node 24+** for direct TypeScript execution. Start with the one-market
-`launch-erc20-abyss.ts`; larger cases can exceed the RPC's simulation budget.
+`launch-erc20-abyss.ts`; larger cases require staged preparation and a bounded activation.
 For valuation, token ordering, ranges, and buy protection, read the
 [launch guide](../docs/launch-lifecycle.md#price-the-launch).
 
@@ -44,7 +44,6 @@ Copy `launch-example.ts`, `launch-example-support.ts`, and `launch-example-kyber
 | `EXAMPLE_ACCOUNT_GAS_CAP` | Optional wallet/account transaction gas-envelope ceiling. |
 | `EXAMPLE_MAX_CALLDATA_BYTES` | Optional whole-transaction byte ceiling. |
 | `EXAMPLE_HEADROOM_BPS` | Gas headroom, default `1500`; accepted range 0–10,000. |
-| `EXAMPLE_SIMULATION_GAS_CAP` | Optional aggregate simulation-used gas ceiling; no SDK-invented default window. |
 
 Configure **exactly one** of `PRIVATE_KEY` and `EXAMPLE_KEYSTORE_PATH`.
 A keystore must be a regular file owned by your user with owner-only permissions.
@@ -117,19 +116,20 @@ node examples/launch-erc20-abyss.ts --resume "launch-results/<original-run-dir>"
 
 | Mode | Reads / writes | Identity |
 | --- | --- | --- |
-| No flags | Live discovery, funding quotes, preparation, profiled or executed economic review; unsigned, no API writes | Fresh plan/run directory |
+| No flags | Live discovery, funding quotes, preparation, local economic review and gas-budget checks; unsigned, no API writes | Fresh plan/run directory |
 | `--broadcast` | Signs, spends, stages/uploads metadata, deploys, verifies, and publishes; no further prompt | **Fresh plan**, not the preceding dry run |
 | `--resume <original-run-dir>` | May sign remaining steps or finish publication | Retained plan, receipts, mode, confirmation policy, and API session |
 
-Dry-run needs the signer source, RPC/API, and sufficient funds for execution admission.
+Dry-run needs the signer source, RPC/API, and sufficient funds for current input/gas-budget checks.
 Review its economics, then review the fresh broadcast output too. Mode flags cannot
 be combined or duplicated. Resume is an execution authorization; omit `--broadcast`.
 
-Covered template steps use generous gas profiles and exact local ordered curve math.
-Conversions and activation consuming conversion funding still require exact native
-execution of the complete staged sequence; a successful prefix is not admission.
-An explicit `EXAMPLE_SIMULATION_GAS_CAP` may tighten policy, not authorize partial proof.
-See [coverage and migration](../docs/lifecycle-gas-profiles.md) for evidence and limitations.
+Every launch transaction uses the native ceiling,32M total on4663. Capacity profiles
+only choose mode/chunks and reject oversized activation; exact local ordered math
+protects opening buys. Multiple markets or conversion funding always stage.
+There is no launch simulation, including Kyber. Routers enforce conversion minima
+and deadlines on-chain; `assessment.ready` is not a receipt or guaranteed execution.
+See [coverage and migration](../docs/lifecycle-gas-profiles.md).
 
 ### Fund opening buys
 

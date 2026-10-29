@@ -1,23 +1,22 @@
-// Deliberately executing proof on an owned disposable loopback fixture only.
+// Deliberately executing actual transactions on an owned disposable loopback fixture only.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { decodeEventLog, decodeFunctionResult, encodeFunctionData, toHex, zeroHash } from "viem";
 import {
   buildClaimDeveloperFeesPageTransaction, buildNextTransaction, buildPoolBoundHookDeploymentTransaction,
-  createControlledLifecycleFork, decodeDeveloperClaimReceipt, decodePoolBoundV4LifecycleMarketConfig,
+  decodeDeveloperClaimReceipt, decodePoolBoundV4LifecycleMarketConfig,
   encodeLaunchPlan, encodePoolBoundV4LifecycleMarketConfig, hashLaunchIdentity, hashLaunchPlan,
   launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleFeeHubAbi,
   LifecyclePhase, parseLaunchPlan, planLaunch, predictLifecycleToken, prepareAndPlanLifecycleLaunch,
   readAuthorHubs, readDeveloperFees, readLaunchProgress, readLifecycleProfiles, readPoolBoundHookDeployment,
-  simulateLaunchPlan, isPoolBoundV4ConfigVersion,
+  isPoolBoundV4ConfigVersion,
 } from "@black-market/sdk/lifecycle";
 const [manifestFile, plansFile] = process.argv.slice(2);
 if (!manifestFile || !plansFile) throw new Error("Usage: node examples/launch-lifecycle-smoke.ts manifest.json sdk-plans.json");
 const manifest = JSON.parse(await readFile(manifestFile, "utf8"));
 const exported = JSON.parse(await readFile(plansFile, "utf8"));
 const rpcUrl = process.env.LAUNCH_LIFECYCLE_RPC_URL;
-const forkRpcUrl = process.env.LAUNCH_LIFECYCLE_FORK_RPC_URL;
-if (!rpcUrl || !forkRpcUrl || !["127.0.0.1", "localhost", "[::1]"].includes(new URL(rpcUrl).hostname) || process.env.LAUNCH_LIFECYCLE_ALLOW_LOCAL_EXECUTION !== "1" || manifest.fixtureOnly !== true) throw new Error("Smoke requires explicitly authorized owned loopback fixture execution and a separate disposable fork");
+if (!rpcUrl || !["127.0.0.1", "localhost", "[::1]"].includes(new URL(rpcUrl).hostname) || process.env.LAUNCH_LIFECYCLE_ALLOW_LOCAL_EXECUTION !== "1" || manifest.fixtureOnly !== true) throw new Error("Smoke requires explicitly authorized owned loopback fixture execution");
 if (!Array.isArray(exported.plans) || exported.plans.length === 0) throw new Error("Current Solidity-exported reviewed plans are required");
 let requestId = 0;
 const client = { async request({ method, params = [] }) {
@@ -36,7 +35,6 @@ const limits = async ({ block, chainId, account, orchestrator }) => ({
   chainGasLimit: BigInt(policy.chainTransactionGasLimit), rpcGasLimit: BigInt(policy.rpcTransactionGasLimit),
   accountGasLimit: BigInt(policy.accountTransactionGasLimit), maxCalldataBytes: Number(policy.maxCalldataBytes), headroomBps: Number(policy.headroomBps),
 });
-const fork = createControlledLifecycleFork({ sourceRpcUrl: rpcUrl, forkRpcUrl, allowTransactions: true, impersonation: "anvil" });
 async function readContract(to, abi, functionName, args = []) {
   return decodeFunctionResult({ abi, functionName, data: await client.request({ method: "eth_call", params: [{ to, data: encodeFunctionData({ abi, functionName, args }) }, "latest"] }) });
 }
@@ -81,7 +79,7 @@ for (const row of exported.plans) for (const mode of ["atomic", "staged"]) {
     const draft = { ...plan, markets: plan.markets.map((market) => isPoolBoundV4ConfigVersion(market.configVersion) ? {
       ...market, config: encodePoolBoundV4LifecycleMarketConfig({ ...decodePoolBoundV4LifecycleMarketConfig(market.config, market.configVersion), hookSalt: zeroHash }),
     } : market) };
-    let planned = await prepareAndPlanLifecycleLaunch({ client, account: draft.creator, plan: draft, mode, limits, fork });
+    let planned = await prepareAndPlanLifecycleLaunch({ client, account: draft.creator, plan: draft, mode, limits });
     plan = planned.plan;
     assert.equal(hashLaunchPlan(plan).toLowerCase(), row.planHash.toLowerCase(), "Offchain mining reproduces the independent constructor/salt vector");
     if (mode === "staged") for (const deployment of planned.hookDeployments) {
@@ -90,24 +88,14 @@ for (const row of exported.plans) for (const mode of ["atomic", "staged"]) {
       const actual = await readPoolBoundHookDeployment({ client, plan, marketIndex: deployment.marketIndex });
       assert.equal(actual.predictedHook.toLowerCase(), deployment.predictedHook.toLowerCase());
     }
-    if (mode === "staged" && planned.hookDeployments.length > 0) planned = await planLaunch({ client, account: plan.creator, plan, mode, limits, fork });
-    assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
-    const atomicReceipt = planned.simulation.steps.find((step) => step.transactionId === "atomic")?.returnData;
-    if (atomicReceipt) {
-      const decoded = decodeFunctionResult({ abi: launchLifecycleAbi, functionName: "launchAtomic", data: atomicReceipt });
-      assert.equal(decoded.planHash.toLowerCase(), planned.planHash.toLowerCase());
-      for (let i = 0; i < plan.buys.length; ++i) assert.ok(decoded.tokenOut[i] >= plan.buys[i].minTokenOut);
-    }
-    const replay = await simulateLaunchPlan({ client, planned, limits, fork });
-    assert.equal(replay.admitted, true, replay.reason);
+    if (mode === "staged" && planned.hookDeployments.length > 0) planned = await planLaunch({ client, account: plan.creator, plan, mode, limits });
+    assert.equal(planned.assessment.ready, true, planned.assessment.reason);
     const receipts = [];
     let activationReceipt;
     for (let guard = 0; guard < 64; ++guard) {
-      const next = await buildNextTransaction({ client, planned, receipts, limits, fork });
+      const next = await buildNextTransaction({ client, planned, receipts, limits });
       if (!next) break;
-      assert.equal(next.admission?.admitted, true);
-      assert.ok(next.admission.executionProof === "proved" && next.admission.protocolFit === "proved" ||
-        next.admission.executionProof === "not-run" && next.admission.protocolFit === "profiled");
+      assert.equal(next.assessment?.ready, true);
       const submitted = await send(next);
       receipts.push(submitted.reference);
       if (["atomic", "activate"].includes(next.kind)) activationReceipt = submitted.receipt;
@@ -132,7 +120,7 @@ for (const row of exported.plans) for (const mode of ["atomic", "staged"]) {
         assert.equal(liquidity, position.liquidity); assert.equal(custody.toLowerCase(), market.prepared.custody.toLowerCase());
       }
     }
-    assert.equal(await buildNextTransaction({ client, planned, receipts, limits, fork }), undefined);
+    assert.equal(await buildNextTransaction({ client, planned, receipts, limits }), undefined);
     const hub = progress.canonical.feeHub;
     assert.equal(await readContract(hub, lifecycleFeeHubAbi, "economicVersion"), 3);
     const authors = new Map();

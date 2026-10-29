@@ -827,7 +827,6 @@ test("config5 consumers prepare, hash, mine and predeploy V1 without requesting 
     const planned = await prepareAndPlanLifecycleLaunch({ client, plan: client.plan, account: client.plan.creator, mode: "staged" });
     assert.equal(hashLaunchPlan(client.plan), draftHash);
     assert.equal(planned.hookDeployments.length, 2);
-    assert.equal(planned.simulation.admitted, false, "A read fixture must not claim an EVM execution proof");
     for (const deployment of planned.hookDeployments) {
       const market = planned.plan.markets[deployment.marketIndex];
       const config = decodePoolBoundV4LifecycleMarketConfig(market.config, 5);
@@ -873,12 +872,11 @@ test("combined preparation reads every unchanged draft constructor before mining
     assert.equal(hashLaunchPlan(client.plan), originalHash, "The caller's draft is never mutated");
     assert.notEqual(planned.planHash, originalHash);
     assert.equal(planned.progress.blockNumber, 42n);
-    assert.equal(planned.simulation.blockNumber, 42n);
+    assert.equal(planned.assessment.blockNumber, 42n);
     assert.equal(client.state.latestReads, 1, "Salt mining and admission use one initial snapshot");
     assert.equal(planned.hookDeployments.length, 2);
     assert.deepEqual(progress.filter((event) => event.attempts === 0n).map((event) => event.marketIndex), [0, 1]);
-    assert.equal(planned.simulation.admitted, false, "A smart account is not converted to successful execution evidence");
-    assert.ok(planned.simulation.reason);
+    assert.ok(planned.assessment.reason);
     assert.ok(batching ? client.state.peak > 1 && client.state.peak <= 8 : client.state.peak === 1);
     const predictions = client.captured.filter((row) => row.functionName === "predictToken");
     assert.equal(predictions.length, 1, "Only the finalized unknown-core prediction needs a direct dependent read");

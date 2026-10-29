@@ -3,27 +3,57 @@ import { launchLifecycleAbi } from "./abi.js";
 import { LifecycleFundingKind, LifecycleMode, type LaunchPlanV1 } from "./schema.js";
 import { LifecyclePlanningError, type BuildLaunchTransactionsOptions, type LifecycleTransaction } from "./types.js";
 import { assertLifecycleTokenAllocation } from "./allocations.js";
-import { HMM_V2_PREPARE_GAS } from "./presets.js";
-import { isHmmProfile } from "./hmm.js";
 import { ufgLaunchProxyV1Abi } from "./ufg-abi.js";
-import { UFG_LAUNCH_PROXY_ADDRESS } from "./ufg-config.js";
+import { UFG_LAUNCH_PROXY_ADDRESS, isUfgProfile } from "./ufg-config.js";
+import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, isPoolBoundV4ConfigVersion } from "./markets.js";
+import { isHmmProfile } from "./hmm.js";
 import type { UfgLaunchConfig } from "./ufg-config.js";
 
-const OTHER_MARKET_PREPARE_GAS = 16_000_000n;
+// Native9,723,187 Abyss3 (0x679d…e77), fork32-position10,900,786;
+// fork V4 fixed/dynamic8-position8,804,466; UFG9,896,176; native HMM8-position14,676,638 (0x459c…5b7).
+const preparationCosts = {
+  abyss: { market: 9_800_000n, position: 70_000n },
+  v4: { market: 9_000_000n, position: 40_000n },
+  ufg: { market: 10_000_000n, position: 70_000n },
+  hmm: { market: 15_000_000n, position: 50_000n },
+} as const;
+export const LIFECYCLE_CAPACITY_PADDING_BPS = 2500;
+/** Full single-market observations include call overhead. Add conservative full
+ * calldata/hash processing (16 intrinsic gas per nonzero byte plus8 for copying). */
+export function preparationCalldataGas(data: `0x${string}`): bigint { return 24n * BigInt((data.length - 2) / 2); }
 
 export function preparationGasEstimate(plan: LaunchPlanV1, first: number, count: number): bigint {
   let gas = 0n;
-  for (let index = first; index < first + count; index += 1) gas += isHmmProfile(plan.markets[index]!.profileId) ? HMM_V2_PREPARE_GAS : OTHER_MARKET_PREPARE_GAS;
+  for (let index = first; index < first + count; index += 1) {
+    const market = plan.markets[index]!;
+    const positions = market.configVersion === 1 ? decodeAbyssLifecycleMarketConfig(market.config).positions.length
+      : isPoolBoundV4ConfigVersion(market.configVersion) ? decodePoolBoundV4LifecycleMarketConfig(market.config, market.configVersion).positions.length
+      : decodeV4LifecycleMarketConfig(market.config).positions.length;
+    const cost = market.configVersion === 1 ? preparationCosts.abyss : isHmmProfile(market.profileId) ? preparationCosts.hmm
+      : isUfgProfile(market.profileId) ? preparationCosts.ufg : preparationCosts.v4;
+    gas += cost.market + cost.position * BigInt(positions - 1);
+  }
   return gas;
 }
 
-/** Contiguous cost packing preserves committed market order and recovery progress. */
-export function packPreparationBatches(plan: LaunchPlanV1, prepared: number, computeCap: bigint): number[] {
+/** Contiguous deterministic packing with compute headroom. The caller reserves
+ * poster allocation separately from computeCap; neither resizes transaction gas. */
+export function packPreparationBatches(plan: LaunchPlanV1, prepared: number, computeCap: bigint, headroomBps = 1500): number[] {
+  const data = buildLifecycleCommand(plan, { kind: "prepare", first: prepared, count: 1 }).data;
+  return packLifecyclePreparationBatches(plan, prepared, computeCap, headroomBps, preparationCalldataGas(data));
+}
+
+/** Internal path reuses the command already encoded for poster allocation. */
+export function packLifecyclePreparationBatches(plan: LaunchPlanV1, prepared: number, computeCap: bigint, headroomBps: number, calldataGas: bigint): number[] {
+  if (!Number.isSafeInteger(headroomBps) || headroomBps < 0 || headroomBps > 10000) throw new LifecyclePlanningError("INVALID_LIMITS", "Headroom must be between zero and10000 basis points");
+  const padding = BigInt(10000 + Math.max(LIFECYCLE_CAPACITY_PADDING_BPS, headroomBps));
+  const fits = (gas: bigint) => ((gas + calldataGas) * padding + 9999n) / 10000n <= computeCap;
   const batches = prepared > 0 ? [prepared] : [];
   let count = 0, gas = 0n;
   for (let index = prepared; index < plan.markets.length; index += 1) {
     const estimate = preparationGasEstimate(plan, index, 1);
-    if (count > 0 && gas + estimate > computeCap) { batches.push(count); count = 0; gas = 0n; }
+    if (!fits(estimate)) throw new LifecyclePlanningError("PREPARATION_GAS_LIMIT", "A market exceeds the preparation gas budget. Reduce its positions before launching.");
+    if (count > 0 && !fits(gas + estimate)) { batches.push(count); count = 0; gas = 0n; }
     count += 1;
     gas += estimate;
   }
@@ -53,7 +83,7 @@ export function buildLifecycleCommand(plan: LaunchPlanV1, command: LifecycleComm
 
 /** Pure unsigned launch commands. Every command carries the complete commitment;
  * preparation splits only empty markets, never positions, buys or public opening.
- * Allowance discovery, recovery and execution proof belong to the planner. */
+ * Allowance discovery, recovery and gas-budget checks belong to the planner. */
 export function buildLifecycleCommands({ plan, mode, preparationBatches }: BuildLaunchTransactionsOptions, ufg?: LifecycleUfgRoute): LifecycleTransaction[] {
   if (mode !== "atomic" && mode !== "staged") throw new LifecyclePlanningError("EXPLICIT_MODE_REQUIRED", "Choose atomic or staged explicitly; staged is never silently substituted");
   if (plan.chainId <= 0n || plan.chainId > BigInt(Number.MAX_SAFE_INTEGER)) throw new LifecyclePlanningError("CHAIN_MISMATCH", "Chain ID must be a positive exact JavaScript integer");

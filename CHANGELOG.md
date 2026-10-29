@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.1
+
+- Remove every launch planning/build-next simulation, including aggregator-funded launches, exact proofs, buy-output diagnostics and controlled-fork execution. No `eth_simulateV1` or launch-calldata execution occurs before or between wallet transactions. Routers enforce their committed conversion output floors/deadlines on-chain.
+- Multi-market or conversion-funded launches are always staged. Atomic is available only for a single non-conversion market whose known capacity budget fits with headroom. This fixes the TAZE three-market/24-position holders-earn launch being incorrectly selected for one32M atomic transaction.
+- Pack contiguous preparation batches deterministically from template/per-position costs plus headroom and poster allocation. Refuse an activation above its known budget with `ACTIVATION_GAS_LIMIT` and the actionable reduce-positions/pools reason before begin; unknown unbounded templates refuse `UNKNOWN_GAS_PROFILE`, never a simulation fallback. Exported capacity bounds remain available for builder UI limits.
+- Preserve32M total native gas per launch command on4663, pinned fee floors, full-ceiling affordability, receipt/confirmation recovery and wallet-owned nonces. Approvals still leave gas to the wallet. Opening-buy protection uses only exact local ordered integer math and `buySlippageBps`.
+- **Caller migration:** replace `planned.simulation` with `planned.assessment`, transaction `.admission` with `.assessment`, and `LifecyclePlanningError.simulation` with `.assessment`. Check `LifecyclePlanningAssessment.ready`; `code` and SDK-authored user-safe `reason` describe input/budget refusals, not execution proof. Consume optional `assessment.estimate` and `assessment.gasProfile.initialBuys`. `LifecycleLaunchGasBounds.atomicComputeGasUpperBound` is optional when atomic is ineligible.
+- Remove `simulateLaunchPlan`, `createControlledLifecycleFork`, fork options, `maxSimulationGas`, simulation diagnostics, ArbOS/backend/account-code probes, `LifecycleSimulation`/step/proof/admission-only types and all execution evidence fields. `LifecycleTransactionEstimate` has no `gasUsed`; gas profiles contain budgets/local quotes only. Keep actual confirmed receipts distinct from a ready assessment.
+
 ## 0.15.0
 
 - Remove wallet nonce reads from lifecycle planning/build-next and remove fixed nonces from unsigned `LifecycleTransaction` envelopes. The plan identity nonce is unchanged. Learn the submitted nonce from the wallet/transaction, retain optional exact `LifecycleReceiptReference.nonce`, and keep queue/reload recovery with the wallet. Progress no longer exposes confirmed/head/pending account nonce gates.
