@@ -10,7 +10,7 @@ export { ABYSS_LIFECYCLE_CONFIG_SCHEMA, readLifecycleTokenAtBlock, readLifecycle
   buildPoolBoundHookDeploymentTransaction, validateLifecycleMarketIdentity, readLaunchProgress } from "./progress.js";
 export * from "./authors.js";
 export * from "./presets.js";
-export { preparationGasEstimate, packPreparationBatches, buildLaunchTransactions } from "./transactions.js";
+export { preparationGasEstimate, packPreparationBatches, buildLaunchTransactions, LIFECYCLE_CAPACITY_PADDING_BPS } from "./transactions.js";
 export { createLifecycleSessionCache } from "./rpc.js";
 export { launchLensAbi } from "./lens.js";
 export { hookSaltMinerAbi } from "./mining.js";

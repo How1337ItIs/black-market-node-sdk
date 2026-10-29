@@ -252,14 +252,10 @@ export function exampleError(code, message, details = {}) {
   return Object.assign(new Error(message), { name: "LaunchExampleError", code, ...details });
 }
 
-/** An interrupted simulation still must restore its snapshot; never revert source state. */
-export function rpcRequestSignal(signal, backend, method) {
-  const cleanup = backend === "simulation" && ["evm_revert", "anvil_stopImpersonatingAccount", "hardhat_stopImpersonatingAccount"].includes(method);
-  if (!cleanup) signal.throwIfAborted();
-  // Cold nested-fork state fetches can exceed 30 seconds. Bound each request,
-  // including instrumented controlled simulation; never retry a source broadcast.
-  const timeout = AbortSignal.timeout(120_000);
-  return cleanup ? timeout : AbortSignal.any([signal, timeout]);
+/** Bound each request and preserve interruption; launch planning owns no fork cleanup. */
+export function rpcRequestSignal(signal) {
+  signal.throwIfAborted();
+  return AbortSignal.any([signal, AbortSignal.timeout(120_000)]);
 }
 
 
@@ -540,7 +536,6 @@ export async function readExampleConfiguration(sdk, redactor, env = process.env)
       chainTransactionGasLimit: gasCap("EXAMPLE_CHAIN_GAS_CAP"),
       rpcTransactionGasLimit: gasCap("EXAMPLE_RPC_GAS_CAP"),
       accountTransactionGasLimit: gasCap("EXAMPLE_ACCOUNT_GAS_CAP"),
-      rpcTotalSimulationGasLimit: gasCap("EXAMPLE_SIMULATION_GAS_CAP"),
       maxCalldataBytes: integer("EXAMPLE_MAX_CALLDATA_BYTES", undefined, 1, Number.MAX_SAFE_INTEGER),
       headroomBps: integer("EXAMPLE_HEADROOM_BPS", 1500, 0, 10000),
       provenance: { scope: "user-ceilings", note: "Optional local tightening restrictions, not verified provider or account limits" },

@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
-const { createControlledLifecycleFork, encodeLaunchPlan, hashLaunchIdentity, hashLaunchPlan, LifecycleRewardMode, LifecycleTokenKind, LIFECYCLE_MAX_REWARD_ERC20_SUPPLY, LIFECYCLE_MAX_ERC404_SUPPLY, parseLaunchPlan, planLaunch, serializeLaunchPlan } = await import(sdkPath);
+const { encodeLaunchPlan, hashLaunchIdentity, hashLaunchPlan, LifecycleRewardMode, LifecycleTokenKind, LIFECYCLE_MAX_REWARD_ERC20_SUPPLY, LIFECYCLE_MAX_ERC404_SUPPLY, parseLaunchPlan, planLaunch, serializeLaunchPlan } = await import(sdkPath);
 const fixture = JSON.parse(await readFile(new URL("./fixtures/launch-lifecycle-v1.json", import.meta.url), "utf8"));
 const plan = parseLaunchPlan(JSON.stringify(fixture.plan));
 
@@ -67,8 +67,3 @@ test("supplies within ABI uint256 but outside the token/reward precision domain 
   ]) await assert.rejects(planLaunch({ client, plan: { ...plan, token }, account: plan.creator, mode: "atomic" }), { code: "INVALID_TOKEN_SUPPLY" });
 });
 
-test("controlled fork setup refuses a production write endpoint or the source RPC itself", () => {
-  assert.throws(() => createControlledLifecycleFork({ sourceRpcUrl: "https://chain.example", forkRpcUrl: "https://another-chain.example", allowTransactions: true }), { code: "UNSAFE_FORK" });
-  assert.throws(() => createControlledLifecycleFork({ sourceRpcUrl: "http://127.0.0.1:8545", forkRpcUrl: "http://127.0.0.1:8545", allowTransactions: true }), { code: "UNSAFE_FORK" });
-  assert.throws(() => createControlledLifecycleFork({ sourceRpcUrl: "http://127.0.0.1:8545", forkRpcUrl: "http://localhost:8545", allowTransactions: true }), { code: "UNSAFE_FORK" });
-});

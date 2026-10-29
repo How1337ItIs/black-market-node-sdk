@@ -73,16 +73,16 @@ test("default dry-run exits zero, prints the full review and command, and never 
   assert.equal(existsSync(join(c.directory, "published-token.json")), false);
 });
 
-test("profiled dry-run reviews exact local buy amounts without inventing an activation receipt", (t) => {
-  const c = offlineRun(t, [], { profiled: true });
+test("dry-run reviews exact local buy amounts without inventing an activation receipt", (t) => {
+  const c = offlineRun(t);
   assert.equal(c.child.status, 0, c.child.stderr);
-  const review = c.json("economic-review.json"), simulation = c.json("planning.json").simulation;
+  const review = c.json("economic-review.json"), assessment = c.json("planning.json").assessment;
   assert.equal(review.schema, "black-market.launch-economic-review.v2");
   assert.equal(review.initialBuy.evidence, "local-exact-curve");
   assert.equal(review.initialBuy.reviewedBuys[0].tokenOut, "1000");
   assert.equal(review.initialBuy.reviewedBuys[0].quoteSpent, review.initialBuy.orderedBuys[0].quoteAmountIn);
-  assert.equal(simulation.executionProof, "not-run"); assert.deepEqual(simulation.steps, []);
-  assert.equal(Object.hasOwn(simulation.gasProfile, "receipts"), false);
+  assert.equal(assessment.ready, true); assert.equal(Object.hasOwn(assessment, "executionProof"), false);
+  assert.equal(Object.hasOwn(assessment.gasProfile, "receipts"), false);
   assert.equal(c.result.chain.status, "not-run"); assert.equal(c.calls.signTransaction, 0); assert.equal(c.calls.send, 0);
 });
 
@@ -110,11 +110,11 @@ test("--broadcast needs no hash input and routes through guarded signing, execut
   }
 });
 
-test("neither mode bypasses planner admission or reaches a signer after refusal", (t) => {
+test("neither mode bypasses planner readiness or reaches a signer after refusal", (t) => {
   for (const argv of [[], ["--broadcast"]]) {
     const c = offlineRun(t, argv, { admitted: false });
     assert.equal(c.child.status, 1);
-    assert.equal(c.result.error.code, "PLAN_NOT_ADMITTED");
+    assert.equal(c.result.error.code, "PLAN_NOT_READY");
     assert.equal(c.result.error.message, "Offline planner refusal");
     assert.equal(c.calls.planning, 1);
     for (const name of ["wallet", "signTypedData", "signTransaction", "send", "stage", "execute", "verify", "publish"]) {

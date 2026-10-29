@@ -197,15 +197,11 @@ test("late publication success cannot become an in-bound pass", async (t) => {
   }), { code: "PUBLISH_TIMEOUT" });
 });
 
-test("interruption refuses more work but permits bounded simulation-only cleanup", () => {
+test("interruption refuses every further RPC request without a simulation cleanup bypass", () => {
   const controller = new AbortController();
-  const failure = exampleError("INTERRUPTED", "Preserve source state and restore simulation");
+  const failure = exampleError("INTERRUPTED", "Preserve the original launch and reconcile its receipts");
   controller.abort(failure);
-  assert.throws(() => rpcRequestSignal(controller.signal, "execution", "eth_sendTransaction"), failure);
-  assert.throws(() => rpcRequestSignal(controller.signal, "simulation", "eth_sendTransaction"), failure);
-  assert.throws(() => rpcRequestSignal(controller.signal, "execution", "evm_revert"), failure);
-  assert.equal(rpcRequestSignal(controller.signal, "simulation", "evm_revert").aborted, false);
-  assert.equal(rpcRequestSignal(controller.signal, "simulation", "anvil_stopImpersonatingAccount").aborted, false);
+  assert.throws(() => rpcRequestSignal(controller.signal), failure);
 });
 
 test("serialized diagnostic JSON redacts secrets without treating repeated objects as cycles", () => {
@@ -444,14 +440,12 @@ test("fixed example configuration never invents optional execution caps and defa
   assert.equal(configuration.implementationRegistry, transaction.wire.to);
   const policy = configuration.executionLimits;
   assert.equal(policy.headroomBps, 1500);
-  for (const field of ["chainTransactionGasLimit", "rpcTransactionGasLimit", "accountTransactionGasLimit", "rpcTotalSimulationGasLimit", "maxCalldataBytes"]) assert.equal(policy[field], undefined);
+  for (const field of ["chainTransactionGasLimit", "rpcTransactionGasLimit", "accountTransactionGasLimit", "maxCalldataBytes"]) assert.equal(policy[field], undefined);
   assert.equal("forkRpcUrl" in configuration, false);
-  const { fixture: restrictedConfiguration } = await readExampleConfiguration(sdk, new Redactor(), { ...env, EXAMPLE_RPC_GAS_CAP: "12000000", EXAMPLE_SIMULATION_GAS_CAP: "100000000", EXAMPLE_MAX_CALLDATA_BYTES: "120000", EXAMPLE_HEADROOM_BPS: "0" });
+  const { fixture: restrictedConfiguration } = await readExampleConfiguration(sdk, new Redactor(), { ...env, EXAMPLE_RPC_GAS_CAP: "12000000", EXAMPLE_MAX_CALLDATA_BYTES: "120000", EXAMPLE_HEADROOM_BPS: "0" });
   const restricted = restrictedConfiguration.executionLimits;
   assert.equal(restricted.rpcTransactionGasLimit, "12000000"); assert.equal(restricted.maxCalldataBytes, 120000); assert.equal(restricted.headroomBps, 0);
-  assert.equal(restricted.rpcTotalSimulationGasLimit, "100000000");
   for (const value of ["-1", "0", "1.5", "unknown"]) await assert.rejects(readExampleConfiguration(sdk, new Redactor(), { ...env, EXAMPLE_RPC_GAS_CAP: value }), { code: "INVALID_CONFIGURATION" });
-  for (const value of ["-1", "0", "1.5", "unknown"]) await assert.rejects(readExampleConfiguration(sdk, new Redactor(), { ...env, EXAMPLE_SIMULATION_GAS_CAP: value }), { code: "INVALID_CONFIGURATION" });
 });
 
 test("launch receipt accounting accepts burned mint residuals without a creator reserve", () => {

@@ -1,31 +1,25 @@
 import { toHex, type Address } from "viem";
-import { getTickAtSqrtRatio } from "../launch.js";
 import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig } from "./markets.js";
 import { computeLifecycleOpeningBuys, hasProfiledOpeningMath } from "./opening-buys.js";
-import { getKnownLifecycleProfile, hmmV2ForwardingReserve } from "./presets.js";
+import { hmmV2ForwardingReserve } from "./presets.js";
 import { lifecyclePinnedRpc, lifecycleSourceClient, nitroPosterGasBound, readLifecycleGasPrice, readNitroPrices, registerLifecycleFinalCheck, resolveLifecycleLimits, rpcQuantity } from "./rpc.js";
 import { LifecycleFundingKind, LifecycleRewardMode, LifecycleTokenKind, type LaunchPlanV1 } from "./schema.js";
-import { buildLifecycleCommand, preparationGasEstimate } from "./transactions.js";
-import { UFG_LAUNCH_PROXY_ADDRESS, ufgPlanPrincipal, type UfgLaunchConfig } from "./ufg-config.js";
+import { buildLifecycleCommand, LIFECYCLE_CAPACITY_PADDING_BPS, preparationCalldataGas, preparationGasEstimate } from "./transactions.js";
+import { UFG_LAUNCH_PROXY_ADDRESS, isUfgProfile, ufgPlanPrincipal, type UfgLaunchConfig } from "./ufg-config.js";
 import { LifecyclePlanningError, type LifecycleBlock, type LifecycleLaunchGasBounds, type LifecycleLimitSource, type LifecycleOpeningBuyQuote, type LifecyclePlanningAssessment, type LifecycleRpcClient, type LifecycleTransaction, type PlannedLaunch } from "./types.js";
+import { isHmmProfile } from "./hmm.js";
 
-export const LIFECYCLE_GAS_PROFILE_VERSION = "robinhood-4663-capacity-v2";
+export const LIFECYCLE_GAS_PROFILE_VERSION = "robinhood-4663-capacity-v3";
 export type NextTransactionEnvelope = Readonly<{ gas: bigint; gasPrice: bigint }>;
 const ceil = (value: bigint, divisor: bigint) => (value + divisor - 1n) / divisor;
 const approval = (transaction: LifecycleTransaction) => transaction.kind === "approve" || transaction.kind === "approve-reset";
-type MarketGas = { abyss: boolean; hmm: boolean; ufgHook: boolean; positions: number; spacing: number; openingTick: number; ticks: number[] };
+type MarketGas = { abyss: boolean; hmm: boolean; ufgHook: boolean; positions: number };
 
 function marketGas(plan: LaunchPlanV1): MarketGas[] {
   return plan.markets.map((market) => {
-    const preset = getKnownLifecycleProfile({ chainId: plan.chainId, orchestrator: plan.orchestrator, profileId: market.profileId })!;
     const abyss = market.configVersion === 1;
     const config = abyss ? decodeAbyssLifecycleMarketConfig(market.config) : decodePoolBoundV4LifecycleMarketConfig(market.config, 6);
-    const price = "openingSqrtPriceX96" in config ? config.openingSqrtPriceX96 : config.sqrtPriceX96;
-    const spacing = "tickSpacing" in config ? config.tickSpacing : config.fee === 100 ? 1 : config.fee === 500 ? 10 : config.fee === 3000 ? 60 : 200;
-    const ticks = new Set<number>();
-    for (const position of config.positions) { ticks.add(position.tickLower); ticks.add(position.tickUpper); }
-    return { abyss, hmm: preset.key.includes("hmm"), ufgHook: preset.key.includes("ufg"), positions: config.positions.length,
-      spacing, openingTick: getTickAtSqrtRatio(price), ticks: [...ticks] };
+    return { abyss, hmm: isHmmProfile(market.profileId), ufgHook: isUfgProfile(market.profileId), positions: config.positions.length };
   });
 }
 
@@ -44,33 +38,41 @@ function utf8Bytes(value: string): number {
 function tokenCreationGas(token: LaunchPlanV1["token"]): bigint {
   return (token.kind === LifecycleTokenKind.ERC404 ? 2_500_000n : 0n) +
     (token.rewardMode === LifecycleRewardMode.Staking ? 2_500_000n : token.rewardMode === LifecycleRewardMode.Dividends ? 500_000n : 0n) +
-    22_000n * BigInt(Math.ceil(utf8Bytes(token.name) / 32) + Math.ceil(utf8Bytes(token.symbol) / 32) + Math.ceil(utf8Bytes(token.metadataURI) / 32));
+    25_000n * BigInt(Math.ceil(utf8Bytes(token.name) / 32) + Math.ceil(utf8Bytes(token.symbol) / 32) + Math.ceil(utf8Bytes(token.metadataURI) / 32));
 }
 
-/** Empirical template compute budgets, never transaction gas limits or execution evidence. */
+// Max observed compute: native Abyss atomic21,584,262; V4 fixed20,833,003;
+// HMM26,395,772; UFG27,941,420 (historical-receipts.json,195 transactions).
+// fork-matrix.json: Abyss activation8 positions11.08M/32 positions39.72M;
+// fork-v4-matrix.json: dynamic V4 eight positions5,906,285.
+// Native mixed HMM8/Abyss8/HMM8 activation23,883,893 (0xf05e…fe98).
+const activationCosts = {
+  call: 1_500_000n,
+  abyss: { market: 500_000n, position: 1_250_000n },
+  v4: { market: 250_000n, position: 500_000n },
+  hmm: 1_000_000n,
+  ufg: 250_000n,
+  // Fork Abyss32: 64 buys78.44M minimum versus one buy47.49M;
+  // max observed marginal is below0.5M/buy. ERC404 pairs add below0.1M/NFT.
+  buy: 500_000n,
+  nft: 100_000n,
+} as const;
+
+/** Measured-max template budgets, never gas-limit sizing or execution evidence. */
 function capacityBasis(plan: LaunchPlanV1, transaction: LifecycleTransaction, markets: readonly MarketGas[], quotes: readonly LifecycleOpeningBuyQuote[], ufgRoute: boolean): bigint {
   const atomic = transaction.kind === "atomic";
-  let gas = atomic ? 19_500_000n + tokenCreationGas(plan.token) + (ufgRoute ? 6_500_000n : 0n) : 1_500_000n;
-  for (const [index, market] of markets.entries()) {
-    // One shared activation overhead, not a full independent-call overhead per pool.
-    // Retained 8-position minima: Abyss13.52M, dynamic V4 6.90M; Abyss32 exceeds47M.
-    if (!atomic) gas += market.abyss ? 1_000_000n + 1_300_000n * BigInt(market.positions) : 500_000n + 600_000n * BigInt(market.positions);
-    else gas += (index === 0 ? market.hmm ? 7_000_000n : market.ufgHook ? 1_000_000n : market.abyss ? 500_000n : 0n
-      : market.hmm ? 15_000_000n : market.ufgHook ? 9_000_000n : 8_000_000n) +
+  let gas = atomic ? 22_000_000n + tokenCreationGas(plan.token) + (ufgRoute ? 6_500_000n : 0n)
+    : activationCosts.call + (ufgRoute ? activationCosts.ufg : 0n);
+  for (const market of markets) {
+    if (atomic) gas += (market.hmm ? 7_000_000n : market.ufgHook ? 1_000_000n : market.abyss ? 500_000n : 0n) +
       (market.abyss ? 1_500_000n : 600_000n) * BigInt(market.positions - 1);
-    if (!atomic && market.hmm) gas += 6_000_000n;
+    else {
+      const cost = market.abyss ? activationCosts.abyss : activationCosts.v4;
+      gas += cost.market + cost.position * BigInt(market.positions) + (market.hmm ? activationCosts.hmm : market.ufgHook ? activationCosts.ufg : 0n);
+    }
   }
-  const ticks = markets.map((market) => market.openingTick);
-  for (const quote of quotes) {
-    const market = markets[quote.marketIndex]!, before = ticks[quote.marketIndex]!, after = getTickAtSqrtRatio(quote.sqrtPriceAfterX96);
-    const low = Math.min(before, after), high = Math.max(before, after);
-    const words = Math.abs(Math.floor(after / (market.spacing * 256)) - Math.floor(before / (market.spacing * 256))) + 2;
-    let crossings = 0;
-    for (const tick of market.ticks) if (tick >= low && tick <= high) crossings += 1;
-    gas += 300_000n + 8_000n * BigInt(words) + 80_000n * BigInt(crossings);
-    if (plan.token.kind === LifecycleTokenKind.ERC404) gas += 70_000n * ceil(quote.tokenOut, plan.token.nftUnit);
-    ticks[quote.marketIndex] = after;
-  }
+  gas += activationCosts.buy * BigInt(quotes.length);
+  if (plan.token.kind === LifecycleTokenKind.ERC404) for (const quote of quotes) gas += activationCosts.nft * ceil(quote.tokenOut, plan.token.nftUnit);
   return gas + 24n * BigInt((transaction.data.length - 2) / 2) + 100_000n * BigInt(plan.feeAssets.length);
 }
 
@@ -94,7 +96,7 @@ export function deriveLifecycleLaunchCapacity(options: CapacityOptions, openingB
   const markets = marketGas(plan), reserve = hmmV2ForwardingReserve(plan);
   const bound = (transaction: LifecycleTransaction) => {
     const basis = capacityBasis(plan, transaction, markets, initialBuys, ufg !== undefined);
-    const buffered = ceil(basis * BigInt(10000 + headroomBps), 10000n);
+    const buffered = ceil(basis * BigInt(10000 + Math.max(LIFECYCLE_CAPACITY_PADDING_BPS, headroomBps)), 10000n);
     return buffered > basis + reserve ? buffered : basis + reserve;
   };
   return { bounds: { ...(atomic === undefined ? {} : { atomicComputeGasUpperBound: bound(atomic) }), activationComputeGasUpperBound: bound(activation) }, initialBuys, headroomBps, atomic, activation };
@@ -141,7 +143,7 @@ export async function assessLifecycleTransactions(options: LifecycleBudgetOption
   for (const transaction of transactions) {
     if (transaction.kind === "atomic" && (currentCapacity?.bounds.atomicComputeGasUpperBound === undefined || currentCapacity.bounds.atomicComputeGasUpperBound + poster(transaction) > gasLimit))
       return refuse("STAGED_EXECUTION_REQUIRED", "This launch requires staged execution. Refresh the review before continuing.", "capacity", "gas-envelope", transaction.id);
-    if (transaction.kind === "prepare" && ceil(preparationGasEstimate(plan, transaction.marketStart!, transaction.marketCount!) * BigInt(10000 + limits.headroomBps), 10000n) + poster(transaction) > gasLimit)
+    if (transaction.kind === "prepare" && ceil((preparationGasEstimate(plan, transaction.marketStart!, transaction.marketCount!) + preparationCalldataGas(transaction.data)) * BigInt(10000 + Math.max(LIFECYCLE_CAPACITY_PADDING_BPS, limits.headroomBps)), 10000n) + poster(transaction) > gasLimit)
       return refuse("PREPARATION_GAS_LIMIT", "This preparation batch exceeds the gas budget. Refresh the review to split it.", "capacity", "preparation", transaction.id);
     if (limits.maxCalldataBytes !== undefined && (transaction.data.length - 2) / 2 > limits.maxCalldataBytes)
       return refuse("CALLDATA_LIMIT", "The launch exceeds the transaction data limit. Reduce its positions or pools.", "capacity", "calldata", transaction.id);

@@ -78,7 +78,7 @@ function rpcClient(url, artifacts, signal, label) {
   // the example RPC client is admitted identically to the UI it validates.
   if (endpoint.hostname === "rpc.mainnet.chain.robinhood.com") headers.Origin = "https://abyss.trading";
   return { async request({ method, params = [] }) {
-    const requestSignal = rpcRequestSignal(signal, label, method);
+    const requestSignal = rpcRequestSignal(signal);
     const started = Date.now();
     try {
       const response = await fetch(endpoint, {
@@ -90,7 +90,6 @@ function rpcClient(url, artifacts, signal, label) {
       const body = await response.json();
       if (body.error) throw exampleError(body.error.code ?? "RPC_ERROR", `${label} ${method}: ${body.error.message}`, { data: body.error.data, cause: body.error });
       if (!("result" in body)) throw exampleError("INVALID_RPC_RESPONSE", `${label} ${method}: result was omitted`, { data: body });
-      if (method === "eth_simulateV1") artifacts.event("rpc-observation", { backend: label, method, params, result: body.result, elapsedMs: Date.now() - started });
       return body.result;
     } catch (error) {
       artifacts.event("rpc-error", { backend: label, method, params, elapsedMs: Date.now() - started, error: errorEvidence(error) });
@@ -307,21 +306,9 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
     market.retainedSupplyOpeningValuationUsdX18 = ratio.numerator * retainedSupply * market.quoteUsdX18 /
       (ratio.denominator * 10n ** BigInt(market.quoteDecimals));
   }
-  const activationTransaction = planned.transactions.find((transaction) => ["atomic", "activate"].includes(transaction.kind));
-  const activationStep = planned.simulation.steps.find((step) => step.transactionId === activationTransaction?.id);
-  let orderedOutputs, buyEvidence;
-  if (activationStep?.success && activationStep.returnData) {
-    const receipt = decodeFunctionResult({ abi: sdk.launchLifecycleAbi,
-      functionName: activationTransaction.kind === "atomic" ? "launchAtomic" : "activateLaunch", data: activationStep.returnData });
-    assert.equal(receipt.planHash.toLowerCase(), planned.planHash.toLowerCase(), "Economic receipt exact plan");
-    assert.equal(receipt.tokenOut.length, planned.plan.buys.length, "Economic receipt ordered outputs");
-    assert.equal(receipt.quoteSpent.length, planned.plan.buys.length, "Economic receipt ordered spending");
-    orderedOutputs = receipt.tokenOut.map((tokenOut, index) => ({ tokenOut, quoteSpent: receipt.quoteSpent[index] }));
-    buyEvidence = "simulated-execution";
-  } else if (planned.simulation.backend === "profiled" && planned.simulation.gasProfile) {
-    orderedOutputs = planned.simulation.gasProfile.initialBuys;
-    buyEvidence = "local-exact-curve";
-  } else throw exampleError("MISSING_ECONOMIC_OUTPUTS", "Economic review requires ordered buy outputs from exact execution or the covered local curve");
+  const orderedOutputs = planned.assessment.gasProfile?.initialBuys;
+  if (!orderedOutputs) throw exampleError("MISSING_ECONOMIC_OUTPUTS", "Economic review requires the supported exact local opening curve");
+  const buyEvidence = "local-exact-curve";
   assert.equal(orderedOutputs.length, planned.plan.buys.length, "Economic review ordered outputs");
   const reviewedBuys = planned.plan.buys.map((buy, index) => {
     const { tokenOut, quoteSpent } = orderedOutputs[index];
@@ -346,7 +333,7 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
         [{ marketIndex, feeMode: spec.feeMode ?? 0, protocolFeeDenominator: selected.v4.envelope.protocolFeeDenominator,
           treasury: selected.v4.envelope.protocolTreasury, developerBeneficiary: selected.v4.envelope.beneficiary, developerFeeBps: 0 }] : []) },
     initialBuy: { slippageBps: BUY_SLIPPAGE_BPS, funding: planned.plan.funding, orderedBuys: planned.plan.buys, reviewedBuys, evidence: buyEvidence,
-      observedBlockNumber: planned.simulation.blockNumber, observedBlockHash: planned.simulation.blockHash },
+      observedBlockNumber: planned.assessment.blockNumber, observedBlockHash: planned.assessment.blockHash },
     planHash: planned.planHash, finalizedPlan: finalizedPlan,
   };
   const reviewHash = economicReviewHash(economicReview);
@@ -485,7 +472,6 @@ function limitSource(fixture, artifacts) {
       chainGasLimit: policy.chainTransactionGasLimit === undefined ? undefined : BigInt(policy.chainTransactionGasLimit),
       rpcGasLimit: policy.rpcTransactionGasLimit === undefined ? undefined : BigInt(policy.rpcTransactionGasLimit),
       accountGasLimit: policy.accountTransactionGasLimit === undefined ? undefined : BigInt(policy.accountTransactionGasLimit),
-      maxSimulationGas: policy.rpcTotalSimulationGasLimit === undefined ? undefined : BigInt(policy.rpcTotalSimulationGasLimit),
       maxCalldataBytes: policy.maxCalldataBytes, headroomBps: policy.headroomBps,
     };
     artifacts.event("execution-limits", { limits, provenance: policy.provenance });
@@ -517,12 +503,10 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
     assert.ok(functionName, "Native-input conversion cases do not permit unrelated approval/cancellation writes");
     const args = next.kind === "begin" ? [planned.plan, sdk.LifecycleMode.Staged] : next.kind === "prepare" ? [planned.plan, next.marketStart, next.marketCount] : [planned.plan];
     assert.equal(next.data.toLowerCase(), encodeFunctionData({ abi: sdk.launchLifecycleAbi, functionName, args }).toLowerCase(), "Exact finalized-plan calldata");
-    assert.ok(next.gas !== undefined && (next.gasPrice !== undefined || next.maxFeePerGas !== undefined && next.maxPriorityFeePerGas !== undefined) && next.admission?.admitted === true, "Actual next transaction needs an admitted gas envelope");
-    assert.ok(next.admission.executionProof === "proved" && next.admission.protocolFit === "proved" ||
-      next.admission.executionProof === "not-run" && next.admission.protocolFit === "profiled", "Distinguish exact execution from conditional capacity admission");
-    const ceiling = next.admission.limits.transactionGasCeiling;
-    assert.ok(next.gas === next.admission.limits.executionGasCeiling && (ceiling === undefined || next.gas <= ceiling), "Launch gas must equal the native ceiling and fit supplied restrictions");
-    const calldataCap = next.admission.limits.maxCalldataBytes;
+    assert.ok(next.gas !== undefined && (next.gasPrice !== undefined || next.maxFeePerGas !== undefined && next.maxPriorityFeePerGas !== undefined) && next.assessment?.ready === true, "Actual next transaction needs a current gas budget");
+    const ceiling = next.assessment.limits.transactionGasCeiling;
+    assert.ok(next.gas === next.assessment.limits.executionGasCeiling && (ceiling === undefined || next.gas <= ceiling), "Launch gas must equal the native ceiling and fit supplied restrictions");
+    const calldataCap = next.assessment.limits.maxCalldataBytes;
     assert.ok(calldataCap === undefined || (next.data.length - 2) / 2 <= calldataCap, "Exact calldata must fit any supplied cap");
     const envelope = transactionEnvelope(next);
     const wire = { ...envelope };
@@ -890,10 +874,10 @@ async function executeExample({ fixture, privateKey, scenario, sdk, artifacts, s
   const { planned, predictedToken, economicReview, reviewHash } = await constructPlan({ client, fixture, scenario, sdk, artifacts, signal, limits, metadata, image });
   const { plan } = planned;
   artifacts.save("planning.json", planned);
-  artifacts.event("execution-plan", { mode: planned.mode, simulation: planned.simulation, prerequisites: planned.prerequisites, transactions: planned.transactions });
+  artifacts.event("execution-plan", { mode: planned.mode, assessment: planned.assessment, prerequisites: planned.prerequisites, transactions: planned.transactions });
   if (scenario.mode === "staged") assert.equal(planned.mode, "staged", "Explicit staged mode is retained");
   addressEqual(planned.predictedToken, predictedToken, "Planner token prediction");
-  if (!planned.simulation.admitted) throw exampleError("PLAN_NOT_ADMITTED", planned.simulation.reason ?? "The actual SDK did not admit this exact launch", { simulation: planned.simulation });
+  if (!planned.assessment.ready) throw exampleError(planned.assessment.code ?? "PLAN_NOT_READY", planned.assessment.reason ?? "Refresh the launch review before continuing.", { assessment: planned.assessment });
   const usd = (value) => `${value / UNIT}.${(value % UNIT).toString().padStart(18, "0")}`;
   const fundingSummary = economicReview.quotes.every((quote) => quote.conversion.nativeWrap === true)
     ? "payable native wrap"
@@ -1089,7 +1073,7 @@ export async function resumeLaunchExample({ fixture, privateKey, sdk, artifacts,
   if (![sdk.LifecyclePhase.Preparing, sdk.LifecyclePhase.Ready, sdk.LifecyclePhase.Active].includes(progress.canonical.phase)) {
     throw exampleError("RESUME_PHASE_UNSUPPORTED", "Resume requires canonical Preparing, Ready or Active; an unstarted or cancelled launch must never be relaunched");
   }
-  if (!planned.simulation.admitted) throw exampleError("PLAN_NOT_ADMITTED", planned.simulation.reason ?? "Remaining committed launch work was not admitted", { simulation: planned.simulation });
+  if (!planned.assessment.ready) throw exampleError(planned.assessment.code ?? "PLAN_NOT_READY", planned.assessment.reason ?? "Refresh the unfinished launch review before continuing.", { assessment: planned.assessment });
   Object.assign(artifacts.result.chain, { planHash: planned.planHash, launchId: planned.launchId, predictedToken: planned.predictedToken });
   // Canonical receipts restore the begin/deployment logs needed by verifyChain.
   for (const reference of references) {

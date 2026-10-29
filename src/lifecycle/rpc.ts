@@ -22,8 +22,8 @@ type IndependentRead = { params: readonly unknown[]; resolve: (value: unknown) =
 const lifecycleReadConcurrency = 8;
 const diagnosticRpcMethods: Record<string, true> = {
   eth_chainId: true, eth_getBlockByNumber: true, eth_getBlockByHash: true, eth_getCode: true,
-  eth_getBalance: true, eth_call: true, eth_estimateGas: true, eth_gasPrice: true,
-  eth_simulateV1: true, eth_getTransactionCount: true, eth_getTransactionReceipt: true, eth_getTransactionByHash: true,
+  eth_getBalance: true, eth_call: true, eth_gasPrice: true,
+  eth_getTransactionReceipt: true, eth_getTransactionByHash: true,
 };
 
 type SessionReadGroup = {
@@ -70,7 +70,7 @@ class SessionLifecycleCache implements LifecycleSessionCache {
   }
 }
 
-/** Opt-in pinned read reuse; client-bound identity/capability facts are separate. */
+/** Opt-in pinned read reuse; client-bound identity/deployment facts are separate. */
 export function createLifecycleSessionCache(): LifecycleSessionCache {
   return new SessionLifecycleCache();
 }
@@ -410,7 +410,7 @@ export function readLifecycleImmutable<T>(client: LifecycleRpcClient, key: strin
   return (client instanceof InvocationLifecycleClient ? client.immutableRead(key, work) : work()) as Promise<T>;
 }
 
-/** Successful deployment/backend observations live for the caller's session, not one block. */
+/** Successful deployment observations live for the caller's session, not one block. */
 export function lifecycleSessionRead<T>(client: LifecycleRpcClient, key: string, work: () => Promise<T>): Promise<T> {
   const source = lifecycleSourceClient(client);
   const owner = source.sessionCache ?? source;

@@ -3,14 +3,24 @@ import { launchLifecycleAbi } from "./abi.js";
 import { LifecycleFundingKind, LifecycleMode, type LaunchPlanV1 } from "./schema.js";
 import { LifecyclePlanningError, type BuildLaunchTransactionsOptions, type LifecycleTransaction } from "./types.js";
 import { assertLifecycleTokenAllocation } from "./allocations.js";
-import { HMM_V2_PREPARE_GAS } from "./presets.js";
-import { isHmmProfile } from "./hmm.js";
 import { ufgLaunchProxyV1Abi } from "./ufg-abi.js";
-import { UFG_LAUNCH_PROXY_ADDRESS } from "./ufg-config.js";
+import { UFG_LAUNCH_PROXY_ADDRESS, isUfgProfile } from "./ufg-config.js";
 import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, isPoolBoundV4ConfigVersion } from "./markets.js";
+import { isHmmProfile } from "./hmm.js";
 import type { UfgLaunchConfig } from "./ufg-config.js";
 
-const V4_MARKET_PREPARE_GAS = 14_000_000n;
+// Native9,723,187 Abyss3 (0x679d…e77), fork32-position10,900,786;
+// fork V4 fixed/dynamic8-position8,804,466; UFG9,896,176; native HMM8-position14,676,638 (0x459c…5b7).
+const preparationCosts = {
+  abyss: { market: 9_800_000n, position: 70_000n },
+  v4: { market: 9_000_000n, position: 40_000n },
+  ufg: { market: 10_000_000n, position: 70_000n },
+  hmm: { market: 15_000_000n, position: 50_000n },
+} as const;
+export const LIFECYCLE_CAPACITY_PADDING_BPS = 2500;
+/** Full single-market observations include call overhead. Add conservative full
+ * calldata/hash processing (16 intrinsic gas per nonzero byte plus8 for copying). */
+export function preparationCalldataGas(data: `0x${string}`): bigint { return 24n * BigInt((data.length - 2) / 2); }
 
 export function preparationGasEstimate(plan: LaunchPlanV1, first: number, count: number): bigint {
   let gas = 0n;
@@ -19,8 +29,9 @@ export function preparationGasEstimate(plan: LaunchPlanV1, first: number, count:
     const positions = market.configVersion === 1 ? decodeAbyssLifecycleMarketConfig(market.config).positions.length
       : isPoolBoundV4ConfigVersion(market.configVersion) ? decodePoolBoundV4LifecycleMarketConfig(market.config, market.configVersion).positions.length
       : decodeV4LifecycleMarketConfig(market.config).positions.length;
-    gas += market.configVersion === 1 ? 2_500_000n + 50_000n * BigInt(positions)
-      : (isHmmProfile(market.profileId) ? HMM_V2_PREPARE_GAS : V4_MARKET_PREPARE_GAS) + 75_000n * BigInt(positions);
+    const cost = market.configVersion === 1 ? preparationCosts.abyss : isHmmProfile(market.profileId) ? preparationCosts.hmm
+      : isUfgProfile(market.profileId) ? preparationCosts.ufg : preparationCosts.v4;
+    gas += cost.market + cost.position * BigInt(positions - 1);
   }
   return gas;
 }
@@ -28,8 +39,15 @@ export function preparationGasEstimate(plan: LaunchPlanV1, first: number, count:
 /** Contiguous deterministic packing with compute headroom. The caller reserves
  * poster allocation separately from computeCap; neither resizes transaction gas. */
 export function packPreparationBatches(plan: LaunchPlanV1, prepared: number, computeCap: bigint, headroomBps = 1500): number[] {
-  if (!Number.isSafeInteger(headroomBps) || headroomBps < 0 || headroomBps > 10000) throw new LifecyclePlanningError("INVALID_LIMITS", "Headroom must be between zero and 10000 basis points");
-  const fits = (gas: bigint) => (gas * BigInt(10000 + headroomBps) + 9999n) / 10000n <= computeCap;
+  const data = buildLifecycleCommand(plan, { kind: "prepare", first: prepared, count: 1 }).data;
+  return packLifecyclePreparationBatches(plan, prepared, computeCap, headroomBps, preparationCalldataGas(data));
+}
+
+/** Internal path reuses the command already encoded for poster allocation. */
+export function packLifecyclePreparationBatches(plan: LaunchPlanV1, prepared: number, computeCap: bigint, headroomBps: number, calldataGas: bigint): number[] {
+  if (!Number.isSafeInteger(headroomBps) || headroomBps < 0 || headroomBps > 10000) throw new LifecyclePlanningError("INVALID_LIMITS", "Headroom must be between zero and10000 basis points");
+  const padding = BigInt(10000 + Math.max(LIFECYCLE_CAPACITY_PADDING_BPS, headroomBps));
+  const fits = (gas: bigint) => ((gas + calldataGas) * padding + 9999n) / 10000n <= computeCap;
   const batches = prepared > 0 ? [prepared] : [];
   let count = 0, gas = 0n;
   for (let index = prepared; index < plan.markets.length; index += 1) {

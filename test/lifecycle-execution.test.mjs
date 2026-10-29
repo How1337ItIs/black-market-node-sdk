@@ -11,7 +11,7 @@ const { ABYSS_LIFECYCLE_CONFIG_SCHEMA, abyssLifecycleAdapterAbi, buildNextTransa
   launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleFundingEscrowAbi,
   lifecycleRegistryAbi, LifecyclePhase, LIFECYCLE_REQUIRED_CAPABILITIES, LIFECYCLE_MULTI_POSITION_CAPABILITY,
   planLaunch, prepareAndPlanLifecycleLaunch, readLifecycleProfiles, readLaunchProgress, hookSaltMinerAbi,
-  minePoolBoundHookSalt, computeLifecycleLaunchGasBounds, packPreparationBatches,
+  minePoolBoundHookSalt, computeLifecycleLaunchGasBounds, packPreparationBatches, preparationGasEstimate, LIFECYCLE_CAPACITY_PADDING_BPS,
   buildUfgFeeAssetPolicies, UFG_LAUNCH_PROXY_ADDRESS, UFG_ORCHESTRATOR_ADDRESS, ufgLaunchNonce,
   ufgLaunchProxyV1Abi, ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT } = await import(sdkPath);
 const { ABYSS_FEE_TIERS, deriveLaunchPoolRecipe, deriveLaunchPositionRanges } = await import(sdkPath.replace("lifecycle/index.", "index."));
@@ -309,9 +309,18 @@ test("caller progress and nonce extras cannot skip actual pending receipts", asy
   assert.equal(next.nonce, undefined);
 });
 
-test("preparation headroom is deterministic and cannot return a single oversized market", () => {
-  const plan = tazeShape(); assert.deepEqual(packPreparationBatches(plan, 0, 32_000_000n), [2, 1]);
-  assert.deepEqual(packPreparationBatches(plan, 1, 32_000_000n), [1, 1, 1]);
+test("preparation batches cover every market once and each fits 32M with the evidence padding", () => {
+  const plan = tazeShape();
+  for (const prepared of [0, 1]) {
+    const batches = packPreparationBatches(plan, prepared, 32_000_000n);
+    assert.equal(batches.reduce((sum, count) => sum + count, 0), plan.markets.length);
+    let start = prepared;
+    for (const count of prepared > 0 ? batches.slice(1) : batches) {
+      const gas = preparationGasEstimate(plan, start, count);
+      assert.ok(((gas * BigInt(10000 + LIFECYCLE_CAPACITY_PADDING_BPS)) + 9999n) / 10000n <= 32_000_000n);
+      start += count;
+    }
+  }
   assert.throws(() => packPreparationBatches(plan, 0, 2_000_000n), { code: "PREPARATION_GAS_LIMIT" });
 });
 test("selected Abyss profile keeps independent registry reads concurrent", async () => {

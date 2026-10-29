@@ -19,7 +19,7 @@ Read the relevant skill before working on those paths.
 - Keep TypeScript ESM imports and the existing `.js` relative-import suffixes.
 - Use SDK address/ABI/client helpers; do not copy deployment addresses into apps.
 - Select the intended chain explicitly. Use `bigint` for token amounts and fixed-point values.
-- Lifecycle plans/build-next never read or assign wallet nonces. Launch steps use the preset native total gas ceiling, never component-sized envelopes; approvals leave gas to the wallet. Keep conditional capacity admission distinct from exact execution, which conversions/dependent activation and uncertain activation require. Atomic is a preference; persist returned mode. Recreate bound clients on chain changes instead of fresh chain guards.
+- Lifecycle plans/build-next never simulate/execute launch calldata or read/assign wallet nonces. Use the preset native total gas ceiling, deterministic capacity/chunk budgets and exact local buy math; approvals leave gas to the wallet. Multiple markets or conversion funding always stage; atomic needs one non-conversion market with known headroom. Persist returned mode and distinguish `assessment.ready` from actual confirmed receipts. Recreate bound clients on chain changes instead of fresh chain guards.
 - Keep launch cases independently runnable with one command and no arguments.
 - Load secrets from the environment or an existing `.env`; never overwrite it.
 

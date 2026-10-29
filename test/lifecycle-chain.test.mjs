@@ -47,7 +47,7 @@ test("reviewed real-AMM metadata, admission, cancellation and canonical recovery
   }
   async function begin(plan) {
     const planned = await planLaunch({ client, account: plan.creator, plan, mode: "staged", limits, fork });
-    assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+    assert.equal(planned.assessment.admitted, true, planned.assessment.reason);
     const receipts = [];
     for (let guard = 0; guard < 32; ++guard) {
       const next = await buildNextTransaction({ client, planned, receipts, limits, fork });
@@ -117,9 +117,9 @@ test("reviewed real-AMM metadata, admission, cancellation and canonical recovery
     const plan = await currentPlan();
     const planned = await planLaunch({ client, account: plan.creator, plan, mode: "atomic", fork });
     assert.equal(planned.mode, "atomic");
-    assert.ok(planned.simulation.limits.unknownExecutionConstraints.length > 0);
-    assert.doesNotMatch(planned.simulation.reason ?? "", /admission constraints are incomplete/);
-    if (planned.simulation.admitted) {
+    assert.ok(planned.assessment.limits.unknownExecutionConstraints.length > 0);
+    assert.doesNotMatch(planned.assessment.reason ?? "", /admission constraints are incomplete/);
+    if (planned.assessment.admitted) {
       const next = await buildNextTransaction({ client, planned, fork });
       assert.equal(next?.admission.executionProof, "proved");
     } else await assert.rejects(buildNextTransaction({ client, planned, fork }), { code: "PLAN_NOT_ADMITTED" });
@@ -128,7 +128,7 @@ test("reviewed real-AMM metadata, admission, cancellation and canonical recovery
   await t.test("fresh actual-source execution and submission accept a held envelope despite a higher advisory quote", async () => {
     const plan = await currentPlan();
     const planned = await planLaunch({ client, account: plan.creator, plan, mode: "staged", limits, fork });
-    assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+    assert.equal(planned.assessment.admitted, true, planned.assessment.reason);
     const reviewedTransaction = await buildNextTransaction({ client, planned, limits, fork });
     let advisoryReads = 0;
     const higherRecommendation = { async request(args) {
@@ -140,10 +140,10 @@ test("reviewed real-AMM metadata, admission, cancellation and canonical recovery
     const next = await buildNextTransaction({ client: higherRecommendation, planned, limits, fork, reviewedTransaction });
     assert.equal(advisoryReads, 0, "A held envelope does not request a new fee recommendation");
     for (const field of ["id", "kind", "chainId", "from", "to", "data", "value", "gas", "gasPrice"]) assert.equal(next[field], reviewedTransaction[field]);
-    assert.equal(next.admission.executionProof, "proved");
-    assert.equal(next.admission.protocolFit, "proved");
-    const canonical = await client.request({ method: "eth_getBlockByNumber", params: [toHex(next.admission.blockNumber), false] });
-    assert.equal(next.admission.blockHash.toLowerCase(), canonical.hash.toLowerCase());
+    assert.equal(next.assessment.executionProof, "proved");
+    assert.equal(next.assessment.protocolFit, "proved");
+    const canonical = await client.request({ method: "eth_getBlockByNumber", params: [toHex(next.assessment.blockNumber), false] });
+    assert.equal(next.assessment.blockHash.toLowerCase(), canonical.hash.toLowerCase());
     await assert.rejects(buildNextTransaction({ client, planned, limits, fork, reviewedTransaction: { ...reviewedTransaction, value: reviewedTransaction.value + 1n } }), { code: "REVIEWED_TRANSACTION_MISMATCH" });
   });
 
