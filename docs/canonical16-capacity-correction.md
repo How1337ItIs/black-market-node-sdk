@@ -4,7 +4,7 @@ This change does **not** enable a canonical sixteen-market launch. It restores c
 
 ## Evidence and rationale
 
-- Upstream baseline: `cedf9587767f2da2b63041fd5bf5e29eeebeed86` (fetched `origin/main`). The different historical token `cedf9587767f2da2b63041fd5bf5e29ebeed86` is not the verified source hash.
+- Upstream baseline: `cedf9587767f2da2b63041fd5bf5e29eeebeed86` (fetched `origin/main`).
 - Public case: https://github.com/abysshopper/black-market-node-sdk/issues/21
 - Public unsigned fixture: https://gist.github.com/How1337ItIs/daf1bec51f78b821297ce60a00bb578c
 - Exact unchanged fixture SHA256: `547b928cf2eac4b30493018486805bba0b7d72b32b4f1233c5357dd9bc10878f`.
@@ -20,7 +20,7 @@ Restore only those earlier per-market allowances, keep the current per-position 
 - `gas-profile.ts`: `capacityBasis` sums per-call, per-market, per-position, hook, buy, NFT, calldata and fee-asset budgets; `deriveLifecycleLaunchCapacity` applies at least 25% padding and HMM reserve.
 - `planner.ts`: `selectLaunchMode` always stages multiple markets; `orderedTransactions` compiles begin/preparation/activation. Staging cannot split activation.
 - `transactions.ts`: preparation has separately calibrated full-market costs and deterministic padded packing. Those costs and returned native envelopes are unchanged.
-- `assessLifecycleTransactions` compares the activation compute bound plus poster allocation against the native total ceiling and returns `ACTIVATION_GAS_LIMIT` before admitting begin. Existing build-next tests verify that refusal also blocks continued execution.
+- `assessLifecycleTransactions` compares the activation compute bound plus poster allocation against the native total ceiling and returns `ACTIVATION_GAS_LIMIT` before admitting begin. The exact public fixture is also checked through offline `planLaunch` and `buildNextTransaction`: review returns `ready: false` / `ACTIVATION_GAS_LIMIT`, and build-next refuses with that code. The mock rejects simulation, gas-estimation, nonce and transaction-send RPCs.
 
 The corrected canonical16 compute budget is **37,384,020** before poster allocation, versus the prior **29,571,520**. Both are model outputs, not execution measurements.
 
@@ -38,6 +38,10 @@ Environment: Windows, Node `v24.22.1`, installed pnpm `9.15.9` (repository decla
 
 Existing baseline failures include Windows permissions (`EPERM`), recovery-file security checks and platform path quoting in example tests. They are not made green by this narrow patch. Offline fixtures in existing tests are not public chain execution evidence. No API integration or live signing/broadcast test was run; no private keys accessed.
 
+## Independent-review verification
+
+The review follow-up preserves model code except the conservative-empirical comment. `pnpm build` and `pnpm typecheck` both pass. The focused canonical16 plus lifecycle-execution run now passes **41/41**, including the exact-fixture readiness and build-next refusal regression. The fixture bytes/hash remain unchanged; injected token prediction matches the fixture identity. No live RPC execution fallback is used. The full suite was not rerun for this docs/tests/comment-only follow-up; the earlier baseline comparison above remains historical evidence, not a new full-suite claim.
+
 ## Limits
 
-This patch corrects a demonstrated unsafe admission regression, not the contract's gas root cause. Restored earlier allowances have not been calibrated against a new successful sixteen-market native activation. Additional false positives/false negatives remain possible. No funding, signing, broadcast, API publication, push or PR creation is authorized or performed by this work. The parent owns publication decisions and the complementary contract investigation.
+This patch corrects a demonstrated unsafe admission regression, not the contract's gas root cause. Restored earlier allowances have not been calibrated against a new successful sixteen-market native activation. Additional false positives/false negatives remain possible. The user explicitly authorizes a PR for this SDK correction, but no chain writes. This review-fix pass performs no funding, signing, broadcast, API publication, commit, push or PR creation.

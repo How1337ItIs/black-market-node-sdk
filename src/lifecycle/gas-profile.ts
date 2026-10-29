@@ -63,7 +63,7 @@ const activationCosts = {
   nft: 100_000n,
 } as const;
 
-/** Measured-max template budgets, never gas-limit sizing or execution evidence. */
+/** Conservative empirical template budgets, never gas-limit sizing or execution evidence. */
 function capacityBasis(plan: LaunchPlanV1, transaction: LifecycleTransaction, markets: readonly MarketGas[], quotes: readonly LifecycleOpeningBuyQuote[], ufgRoute: boolean): bigint {
   const atomic = transaction.kind === "atomic";
   let gas = atomic ? 22_000_000n + tokenCreationGas(plan.token) + (ufgRoute ? 6_500_000n : 0n)
